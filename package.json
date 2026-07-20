@@ -1,0 +1,49 @@
+{
+  "name": "@butternetwork/wdk-protocol-swidge-butter",
+  "version": "0.1.0",
+  "description": "Butter Network Swidge provider for WDK.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/*.js",
+    "dist/*.js.map",
+    "dist/*.d.ts",
+    "dist/*.d.ts.map",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "lint": "npm run typecheck",
+    "prepack": "npm run build"
+  },
+  "keywords": [
+    "wdk",
+    "swidge",
+    "butter",
+    "bridge",
+    "swap"
+  ],
+  "license": "Apache-2.0",
+  "dependencies": {
+    "viem": "^2.43.1"
+  },
+  "peerDependencies": {
+    "@tetherto/wdk-wallet": ">=1.0.0-beta.14"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@tetherto/wdk-wallet": ">=1.0.0-beta.14",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
