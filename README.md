@@ -120,3 +120,16 @@ npm run typecheck
 npm run build
 npm pack --dry-run
 ```
+
+## Examples
+
+Runnable Node.js examples for discovery, exact-in quotes, status lookup, and a
+confirmation-gated same-chain EVM swap are available in
+[`examples/`](./examples/README.md).
+
+```sh
+npm run example:discover
+npm run example:quote
+npm run example:status
+npm run example:swap
+```
