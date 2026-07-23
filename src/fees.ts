@@ -67,11 +67,6 @@ export function validateFeeLimits (config: SwidgeProtocolConfig): void {
   resolveFeeLimits(config, {})
 }
 
-/** Returns true when the resolved limits contain at least one active cap. */
-export function hasFeeLimits (limits: ResolvedFeeLimits): boolean {
-  return limits.maxNetworkFeeBps != null || limits.maxProtocolFeeBps != null
-}
-
 /** Maps Butter fee metadata into WDK fee entries using denomination-specific decimals. */
 export function mapRouteFees (route: ButterRoute, context: FeeContext): SwidgeFee[] {
   const fees: SwidgeFee[] = []

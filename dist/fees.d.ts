@@ -14,8 +14,6 @@ export interface ResolvedFeeLimits {
 export declare function resolveFeeLimits(defaults: SwidgeProtocolConfig, overrides: SwidgeProtocolConfig): ResolvedFeeLimits;
 /** Validates configured fee limits eagerly, rejecting malformed bps values. */
 export declare function validateFeeLimits(config: SwidgeProtocolConfig): void;
-/** Returns true when the resolved limits contain at least one active cap. */
-export declare function hasFeeLimits(limits: ResolvedFeeLimits): boolean;
 /** Maps Butter fee metadata into WDK fee entries using denomination-specific decimals. */
 export declare function mapRouteFees(route: ButterRoute, context: FeeContext): SwidgeFee[];
 /** Returns the route's additional native protocol fee in source-chain base units. */

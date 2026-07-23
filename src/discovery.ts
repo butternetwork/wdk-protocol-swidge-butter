@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { TRON_CHAIN_ID } from './constants.js'
+import { TOKEN_NOT_FOUND_ERRNO, TRON_CHAIN_ID } from './constants.js'
 import { ButterApiError } from './errors.js'
 import { chainToSupportedChain, normalizeId, tokenToSupportedToken } from './mappers.js'
 import { routerDeploymentsForChain, type ButterRouterRegistry } from './router-registry.js'
-import type { ButterChainInfo, ButterTokenInfo, ButterSwidgeProtocolConfig, SwidgeSupportedChain, SwidgeSupportedToken } from './types.js'
+import type { ButterChainExecution, ButterChainInfo, ButterTokenInfo, ButterSupportedChain, ButterSwidgeProtocolConfig, SwidgeSupportedToken } from './types.js'
 
 export class DiscoveryService {
   private readonly config: ButterSwidgeProtocolConfig
@@ -24,8 +24,11 @@ export class DiscoveryService {
   private readonly requestToken: <T>(path: string, params?: Record<string, unknown>) => Promise<T>
   private readonly strictSlippageChainIds: Set<string>
   private readonly routerRegistry: ButterRouterRegistry
-  private readonly tokenDecimalsCache = new Map<string, number>()
+  // null marks a confirmed miss (Butter does not know the token) so it is not
+  // re-queried; a number is a resolved decimals value.
+  private readonly tokenDecimalsCache = new Map<string, number | null>()
   private chainDetails?: Map<string, ButterChainInfo>
+  private chainDetailsPromise: Promise<unknown> | undefined
 
   constructor (config: ButterSwidgeProtocolConfig, requestRouter: <T>(path: string, params?: Record<string, unknown>) => Promise<T>, requestToken: <T>(path: string, params?: Record<string, unknown>) => Promise<T>, strictSlippageChainIds: Set<string>, routerRegistry: ButterRouterRegistry) {
     this.config = config
@@ -35,7 +38,7 @@ export class DiscoveryService {
     this.routerRegistry = routerRegistry
   }
 
-  async getSupportedChains (): Promise<Array<SwidgeSupportedChain & { execution: string }>> {
+  async getSupportedChains (): Promise<ButterSupportedChain[]> {
     const [routerChains, tokenChains] = await Promise.all([
       this.requestRouter<ButterChainInfo[]>('/supportedChainInfo'),
       this.requestToken<{ chains?: ButterChainInfo[] }>('/api/queryChainList')
@@ -55,22 +58,33 @@ export class DiscoveryService {
   /**
    * Resolves a token's decimals via Butter's `/findToken` router API.
    *
-   * Results (including confirmed misses) are cached per chain and address.
-   * Returns undefined when Butter does not know the token or the response
-   * carries no usable decimals.
+   * Results, including confirmed misses (Butter does not know the token), are
+   * cached per chain and address so an unknown token is queried only once.
+   * Returns undefined on a genuine miss. Transport/auth failures are *not*
+   * swallowed — they rethrow so a network blip is not misreported as an
+   * unknown token.
    */
   async findTokenDecimals (chainId: string, address: string): Promise<number | undefined> {
     const key = `${chainId}:${address}`.toLowerCase()
-    if (this.tokenDecimalsCache.has(key)) return this.tokenDecimalsCache.get(key)
+    const cached = this.tokenDecimalsCache.get(key)
+    if (cached !== undefined) return cached ?? undefined
+
     let data: ButterTokenInfo | ButterTokenInfo[] | undefined
     try {
       data = await this.requestRouter<ButterTokenInfo | ButterTokenInfo[]>('/findToken', { chainId, address })
-    } catch {
-      return undefined
+    } catch (error) {
+      if (isTokenNotFound(error)) {
+        this.tokenDecimalsCache.set(key, null)
+        return undefined
+      }
+      throw error
     }
     const token = Array.isArray(data) ? data[0] : data
     const decimals = Number(token?.decimals ?? token?.decimal)
-    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) return undefined
+    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
+      this.tokenDecimalsCache.set(key, null)
+      return undefined
+    }
     this.tokenDecimalsCache.set(key, decimals)
     return decimals
   }
@@ -119,11 +133,23 @@ export class DiscoveryService {
 
   private async networkKeyForChain (chainId: string): Promise<string> {
     if (!this.chainDetails) {
-      await this.getSupportedChains()
+      // Dedupe concurrent priming so parallel getSupportedTokens calls share a
+      // single discovery request rather than each fetching chain metadata.
+      this.chainDetailsPromise ??= this.getSupportedChains().finally(() => {
+        this.chainDetailsPromise = undefined
+      })
+      await this.chainDetailsPromise
     }
     const chain = this.chainDetails?.get(chainId)
     return chain?.key ?? chainId
   }
+}
+
+/** True when an error is Butter's "token not found" response, not a transport failure. */
+function isTokenNotFound (error: unknown): boolean {
+  if (!(error instanceof ButterApiError)) return false
+  const details = error.details as { errno?: number } | undefined
+  return details?.errno === TOKEN_NOT_FOUND_ERRNO
 }
 
 function isStrictSlippageChain (chain: ButterChainInfo): boolean {
@@ -134,7 +160,7 @@ function isStrictSlippageChain (chain: ButterChainInfo): boolean {
   })
 }
 
-function executionFor (chainId: string, config: ButterSwidgeProtocolConfig, registry: ButterRouterRegistry): string {
+function executionFor (chainId: string, config: ButterSwidgeProtocolConfig, registry: ButterRouterRegistry): ButterChainExecution {
   if (chainId === TRON_CHAIN_ID) return config.transactionAdapters?.[chainId] ? 'adapter' : 'quote-only'
   if (routerDeploymentsForChain(registry, chainId).length > 0) return 'native'
   if (config.transactionAdapters?.[chainId]) return 'adapter'

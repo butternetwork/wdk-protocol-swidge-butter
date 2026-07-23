@@ -31,10 +31,6 @@ export function resolveFeeLimits(defaults, overrides) {
 export function validateFeeLimits(config) {
     resolveFeeLimits(config, {});
 }
-/** Returns true when the resolved limits contain at least one active cap. */
-export function hasFeeLimits(limits) {
-    return limits.maxNetworkFeeBps != null || limits.maxProtocolFeeBps != null;
-}
 /** Maps Butter fee metadata into WDK fee entries using denomination-specific decimals. */
 export function mapRouteFees(route, context) {
     const fees = [];

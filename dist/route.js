@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-import { NATIVE_TOKEN_ADDRESSES, ROUTE_EXPIRY_MARGIN_SECONDS, ROUTE_TTL_SECONDS, SOLANA_CHAIN_ID, STRICT_CHAIN_MIN_SLIPPAGE_BPS } from './constants.js';
+import { NATIVE_TOKEN_ADDRESSES, ROUTE_CACHE_MAX_ENTRIES, ROUTE_EXPIRY_MARGIN_SECONDS, ROUTE_TTL_SECONDS, SOLANA_CHAIN_ID, STRICT_CHAIN_MIN_SLIPPAGE_BPS } from './constants.js';
 import { nativeDecimalsForChain } from './fees.js';
 import { ButterActionRequiredError, ButterApiError, ButterExactOutUnsupportedError } from './errors.js';
 import { formatTokenAmount, parseTokenAmount } from './amounts.js';
@@ -48,9 +48,28 @@ export class RouteManager {
             slippageBps: Number(request.slippage),
             expiresAt: routeExpiresAt(route, this.context.now())
         };
-        if (!forExecution)
+        if (!forExecution) {
+            this.evictStaleRoutes();
             this.cache.set(key, cachedRoute);
+        }
         return cachedRoute;
+    }
+    /**
+     * Bounds cache growth for long-lived quote-only instances: drops expired
+     * entries, then evicts oldest (insertion-ordered) entries until under the cap.
+     */
+    evictStaleRoutes() {
+        const now = this.context.now();
+        for (const [key, entry] of this.cache) {
+            if (entry.expiresAt <= now)
+                this.cache.delete(key);
+        }
+        while (this.cache.size >= ROUTE_CACHE_MAX_ENTRIES) {
+            const oldest = this.cache.keys().next().value;
+            if (oldest === undefined)
+                break;
+            this.cache.delete(oldest);
+        }
     }
     async buildRouteRequest(options) {
         const toChainId = normalizeId(options.toChain ?? this.context.sourceChainId);
@@ -83,7 +102,7 @@ export class RouteManager {
     enforceMinAmountOut(options, route) {
         if (options.minAmountOut == null)
             return;
-        const destinationDecimals = decimalsOf(route.dstChain?.tokenOut ?? route.srcChain?.tokenOut);
+        const destinationDecimals = decimalsOf(route.dstChain?.tokenOut ?? route.srcChain?.tokenOut, 'destination token');
         const routeMinimum = parseTokenAmount(route.minAmountOut?.amount ?? route.amountOutMin, destinationDecimals);
         if (routeMinimum < BigInt(options.minAmountOut)) {
             throw new ButterActionRequiredError('Butter route minimum output is below requested minAmountOut', {
@@ -135,8 +154,19 @@ export function routeExpiresAt(route, now) {
     }
     return now + ROUTE_TTL_SECONDS;
 }
-export function decimalsOf(token) {
-    return Number(token?.decimals ?? 18);
+/**
+ * Reads a route token's decimals, requiring them to be present and valid.
+ *
+ * Butter always echoes token decimals on a route; a missing value indicates
+ * malformed data, so we fail rather than silently defaulting to 18 (which
+ * would misscale amounts by orders of magnitude).
+ */
+export function decimalsOf(token, label = 'token') {
+    const decimals = Number(token?.decimals);
+    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
+        throw new ButterApiError(`Butter route is missing valid ${label} decimals`, token);
+    }
+    return decimals;
 }
 function stableRouteKey(request, options) {
     return JSON.stringify({

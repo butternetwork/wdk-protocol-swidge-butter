@@ -32,8 +32,7 @@ runExample(async () => {
     sourceChainId,
     entrance: requireEnv('BUTTER_ENTRANCE'),
     ...butterAuthFromEnv(),
-    tokenDecimals,
-    exposeQuoteOnlyChains: true
+    tokenDecimals
   })
 
   const quote = await protocol.quoteSwidge(options)

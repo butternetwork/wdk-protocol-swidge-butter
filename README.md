@@ -55,9 +55,12 @@ anonymous requests.
 - `getSwidgeStatus(id)` calls
   `/api/queryBridgeInfoBySourceHash`; `{ byOrderId: true }` calls
   `/api/queryCrossInfoByOrderId`.
-- `getSwidgeStatus` maps Butter states `0 → pending`, `1 → completed`,
-  `2 → failed`, and `6 → refunded`. Unknown state codes throw instead of being
-  reported as `pending`, so refunds and failures are never masked.
+- `getSwidgeStatus` maps Butter cross states `0 → pending` (crossing),
+  `1 → completed`, and `6 → refunded`. There is no numeric `failed` state.
+  Any undocumented or intermediate code (e.g. a relaying state) maps
+  conservatively to `pending` rather than a terminal status, so an in-flight
+  transfer is never misreported as failed. A response with no swidge info or
+  no state still throws (the id is invalid/unknown).
 - `getSupportedChains()` merges Router-supported chains with token API
   metadata. Each entry carries an extra `execution` field describing how this
   instance would execute on that chain: `native` (built-in EVM), `adapter`
@@ -95,11 +98,13 @@ anonymous requests.
   Cross-chain value additionally includes the decoded and quoted
   `bridge.nativeFee`; mismatches between route, calldata, and transaction value
   fail closed.
-- `maxNetworkFeeBps` and `maxProtocolFeeBps` are enforced at quote time and
-  again before `/swap`, approvals, or transaction submission. Per-call values
-  override constructor defaults. Cross-token fees require route-provided USD or
-  same-stage valuation metadata when a cap is enabled; unvaluable fees fail
-  closed with `ButterFeeValuationError`.
+- `maxNetworkFeeBps` and `maxProtocolFeeBps` are enforced only in `swidge`,
+  before `/swap`, approvals, or transaction submission. `quoteSwidge` never
+  throws on a cap — a quote is a non-binding estimate and always returns the
+  full fee breakdown for inspection. Per-call values override constructor
+  defaults. Cross-token fees require route-provided USD or same-stage valuation
+  metadata when a cap is enabled; unvaluable fees fail closed with
+  `ButterFeeValuationError`.
 - Quotes and discovery do not require a signer or local transaction adapter.
   Execution without a send-capable account or configured signer fails before a
   route request.

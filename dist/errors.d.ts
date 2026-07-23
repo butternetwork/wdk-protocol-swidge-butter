@@ -38,14 +38,6 @@ export declare class ButterReadOnlyAccountError extends ButterConfigurationError
 export declare class ButterExactOutUnsupportedError extends ButterUnsupportedError {
     constructor();
 }
-/** @deprecated Execution now obtains a route automatically when no quote is cached. */
-export declare class ButterQuoteRequiredError extends ButterActionRequiredError {
-    constructor();
-}
-/** @deprecated Execution now refreshes expired cached quotes automatically. */
-export declare class ButterQuoteExpiredError extends ButterActionRequiredError {
-    constructor();
-}
 /** Indicates that `/swap` transaction data does not match the requested intent. */
 export declare class ButterTransactionValidationError extends ButterApiError {
     constructor(message: string, details?: unknown);

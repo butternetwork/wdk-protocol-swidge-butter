@@ -14,8 +14,7 @@ runExample(async () => {
   const protocol = new ButterSwidgeProtocol(undefined, {
     sourceChainId,
     entrance: envOrDefault('BUTTER_ENTRANCE', 'wdk'),
-    ...butterAuthFromEnv(),
-    exposeQuoteOnlyChains: true
+    ...butterAuthFromEnv()
   })
   const byOrderId = process.env.STATUS_BY_ORDER_ID?.trim().toLowerCase() === 'true'
   const fromChain = process.env.STATUS_FROM_CHAIN?.trim()

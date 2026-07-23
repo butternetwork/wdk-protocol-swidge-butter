@@ -44,33 +44,41 @@ export function mapStatusResponse(id, data, hints = {}) {
     };
 }
 /**
- * Maps a Butter state code to a WDK SwidgeStatus.
+ * Authoritative Butter cross-state codes (bs-app-api), confirmed 2026-07-24:
+ * `0` crossing, `1` completed, `6` refund. There is deliberately no numeric
+ * `failed` code. Canonical WDK status strings are also honored in case Butter
+ * ever emits them directly.
+ */
+const BUTTER_STATE_MAP = {
+    0: 'pending',
+    crossing: 'pending',
+    pending: 'pending',
+    1: 'completed',
+    completed: 'completed',
+    success: 'completed',
+    6: 'refunded',
+    refund: 'refunded',
+    refunded: 'refunded',
+    'action-required': 'action-required',
+    'refund-pending': 'refund-pending',
+    failed: 'failed',
+    cancelled: 'cancelled',
+    expired: 'expired',
+    partial: 'partial'
+};
+/**
+ * Maps a Butter state to a WDK SwidgeStatus.
  *
- * Known numeric codes: 0 crossing, 1 completed, 2 failed, 6 refunded. Any
- * unrecognized value throws instead of being silently reported as `pending`,
- * so real refund/partial/failure states are never masked. Extend this table
- * once Butter publishes the authoritative state enumeration.
+ * Unrecognized values map conservatively to `pending` (in-flight) rather than
+ * throwing or being reported as terminal: `getSwidgeStatus` is a polling
+ * method, and Butter may return intermediate codes (e.g. relaying) beyond the
+ * documented `0/1/6`. Mislabeling an in-flight transfer as failed/refunded
+ * would be worse than reporting it as still pending.
  */
 function mapButterStatus(state) {
-    if (state === 0 || state === '0' || state === 'crossing' || state === 'pending')
+    if (state == null)
         return 'pending';
-    if (state === 1 || state === '1' || state === 'completed' || state === 'success')
-        return 'completed';
-    if (state === 6 || state === '6' || state === 'refunded')
-        return 'refunded';
-    if (state === 2 || state === '2' || state === 'failed')
-        return 'failed';
-    if (state === 'action-required')
-        return 'action-required';
-    if (state === 'refund-pending')
-        return 'refund-pending';
-    if (state === 'cancelled')
-        return 'cancelled';
-    if (state === 'expired')
-        return 'expired';
-    if (state === 'partial')
-        return 'partial';
-    throw new ButterApiError('Unrecognized Butter swidge state', { state });
+    return BUTTER_STATE_MAP[String(state).toLowerCase()] ?? 'pending';
 }
 function chainIdOf(value) {
     if (!value || typeof value !== 'object')

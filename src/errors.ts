@@ -96,22 +96,6 @@ export class ButterExactOutUnsupportedError extends ButterUnsupportedError {
   }
 }
 
-/** @deprecated Execution now obtains a route automatically when no quote is cached. */
-export class ButterQuoteRequiredError extends ButterActionRequiredError {
-  constructor () {
-    super('A confirmed Butter quote is required before execution')
-    this.name = 'ButterQuoteRequiredError'
-  }
-}
-
-/** @deprecated Execution now refreshes expired cached quotes automatically. */
-export class ButterQuoteExpiredError extends ButterActionRequiredError {
-  constructor () {
-    super('The confirmed Butter quote has expired; request a new quote')
-    this.name = 'ButterQuoteExpiredError'
-  }
-}
-
 /** Indicates that `/swap` transaction data does not match the requested intent. */
 export class ButterTransactionValidationError extends ButterApiError {
   constructor (message: string, details?: unknown) {

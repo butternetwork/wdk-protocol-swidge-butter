@@ -17,8 +17,6 @@ import ButterSwidgeProtocol, {
   ButterExactOutUnsupportedError,
   ButterFeeLimitExceededError,
   ButterReadOnlyAccountError,
-  ButterQuoteExpiredError,
-  ButterQuoteRequiredError,
   ButterTransactionValidationError,
   ButterUnsupportedError,
   parseTokenAmount,
@@ -201,8 +199,7 @@ describe('ButterSwidgeProtocol formal behavior', () => {
       apiSecret: 'secret',
       fetch,
       now: () => 1000,
-      tokenDecimals: DEFAULT_TOKEN_DECIMALS,
-      exposeQuoteOnlyChains: true
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS
     })
 
     const quote = await protocol.quoteSwidge({
@@ -237,8 +234,7 @@ describe('ButterSwidgeProtocol formal behavior', () => {
       apiSecret: 'secret',
       fetch,
       now: () => 1000,
-      tokenDecimals: DEFAULT_TOKEN_DECIMALS,
-      exposeQuoteOnlyChains: true
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS
     })
 
     const quote = await protocol.quoteSwidge({
@@ -268,8 +264,7 @@ describe('ButterSwidgeProtocol formal behavior', () => {
       apiSecret: 'secret',
       fetch,
       now: () => 1000,
-      tokenDecimals: DEFAULT_TOKEN_DECIMALS,
-      exposeQuoteOnlyChains: true
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS
     })
 
     const quote = await protocol.quoteSwidge({
@@ -629,8 +624,7 @@ describe('ButterSwidgeProtocol formal behavior', () => {
       apiSecret: 'secret',
       fetch,
       now: () => 1000,
-      tokenDecimals: DEFAULT_TOKEN_DECIMALS,
-      exposeQuoteOnlyChains: true
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS
     })
 
     await assert.rejects(
@@ -740,8 +734,7 @@ describe('ButterSwidgeProtocol formal behavior', () => {
       apiKeyId: 'key',
       apiSecret: 'secret',
       fetch,
-      tokenDecimals: DEFAULT_TOKEN_DECIMALS,
-      exposeQuoteOnlyChains: true
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS
     })
 
     await assert.rejects(
@@ -1048,6 +1041,128 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     }), ButterActionRequiredError)
   })
 
+  it('caches a Butter token-not-found miss instead of re-querying /findToken', async () => {
+    const fetch = makeFetch({
+      '/findToken': async () => ({ errno: 2002, message: 'The Token not found' })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      apiKeyId: 'key',
+      apiSecret: 'secret',
+      fetch
+    })
+    const options = { fromToken: ERC20_TOKEN, toToken: DEST_TOKEN, toChain: 137, fromTokenAmount: 1n, slippage: 0.02 }
+
+    await assert.rejects(protocol.quoteSwidge(options), ButterActionRequiredError)
+    await assert.rejects(protocol.quoteSwidge(options), ButterActionRequiredError)
+    assert.equal(fetch.calls.filter(({ url }) => url.pathname === '/findToken').length, 1)
+  })
+
+  it('does not mask a /findToken transport failure as an unknown token', async () => {
+    const fetch = makeFetch({
+      '/findToken': async () => { throw new Error('network down') }
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      apiKeyId: 'key',
+      apiSecret: 'secret',
+      fetch
+    })
+
+    await assert.rejects(
+      protocol.quoteSwidge({ fromToken: ERC20_TOKEN, toToken: DEST_TOKEN, toChain: 137, fromTokenAmount: 1n, slippage: 0.02 }),
+      (error: unknown) => error instanceof Error && error.message.includes('network down')
+    )
+  })
+
+  it('rejects a raw evm.sendTransaction with no address source using a specific error', async () => {
+    const fetch = makeFetch({})
+    const protocol = new ButterSwidgeProtocol(undefined, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch,
+      evm: { sendTransaction: async () => '0xshould-not-send' }
+    })
+
+    await assert.rejects(
+      protocol.swidge({ fromToken: NATIVE_TOKEN, toToken: DEST_TOKEN, toChain: 137, fromTokenAmount: 1n, slippage: 0.02 }),
+      (error: unknown) => error instanceof ButterConfigurationError && /sender address/.test(error.message)
+    )
+    assert.equal(fetch.calls.length, 0)
+  })
+
+  it('rejects when account and evm.walletClient sender addresses diverge', async () => {
+    const fetch = makeFetch({
+      '/route': async () => ({ errno: 0, message: 'success', data: [quoteRoute()] })
+    })
+    const protocol = new ButterSwidgeProtocol({ getAddress: async () => VALID_SENDER, sendTransaction: async () => '0xhash' }, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch,
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS,
+      evm: { walletClient: { account: { address: VALID_RECIPIENT }, sendTransaction: async () => '0xhash' } }
+    })
+
+    await assert.rejects(
+      protocol.swidge({ fromToken: '0xfrom', toToken: '0xto', toChain: 137, fromTokenAmount: 1500000000000000000n, slippage: 0.02 }),
+      (error: unknown) => error instanceof ButterConfigurationError && /differ/.test(error.message)
+    )
+  })
+
+  it('echoes the requested input amount as the quote fromTokenAmount', async () => {
+    const fetch = makeFetch({
+      '/route': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [quoteRoute({
+          // Butter echoes a slightly different totalAmountIn; the quote must
+          // still report exactly what the caller requested.
+          srcChain: { chainId: '56', tokenIn: { address: '0xfrom', decimals: 18, symbol: 'BNB' }, totalAmountIn: '1.499', totalAmountOut: '1.5' }
+        })]
+      })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch,
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS
+    })
+
+    const quote = await protocol.quoteSwidge({
+      fromToken: '0xfrom',
+      toToken: '0xto',
+      toChain: 137,
+      fromTokenAmount: 1500000000000000000n,
+      slippage: 0.02
+    })
+    assert.equal(quote.fromTokenAmount, 1500000000000000000n)
+  })
+
+  it('rejects a route that omits destination token decimals instead of defaulting to 18', async () => {
+    const fetch = makeFetch({
+      '/route': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [quoteRoute({
+          dstChain: { chainId: '137', tokenOut: { address: '0xto', symbol: 'USDT' }, totalAmountOut: '10.25' }
+        })]
+      })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch,
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS
+    })
+
+    await assert.rejects(
+      protocol.quoteSwidge({ fromToken: '0xfrom', toToken: '0xto', toChain: 137, fromTokenAmount: 1500000000000000000n, slippage: 0.02 }),
+      (error: unknown) => error instanceof ButterApiError && /decimals/.test(error.message)
+    )
+  })
+
   it('applies the TON strict slippage floor without a prior getSupportedChains call', async () => {
     const fetch = makeFetch({})
     const protocol = new ButterSwidgeProtocol(undefined, {
@@ -1069,7 +1184,7 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     assert.equal(fetch.calls.length, 0)
   })
 
-  it('enforces configured fee limits already at quote time', async () => {
+  it('returns an inspectable quote even when a configured fee cap is exceeded', async () => {
     const fetch = makeFetch({
       // tokenFee 0.02 on 1.5 input is ~133 bps, above the 1 bps cap below.
       '/route': async () => ({ errno: 0, message: 'success', data: [quoteRoute({ bridgeFee: { amount: '0' } })] })
@@ -1084,14 +1199,17 @@ describe('ButterSwidgeProtocol formal behavior', () => {
       maxProtocolFeeBps: 1
     })
 
-    await assert.rejects(protocol.quoteSwidge({
+    // A quote is a non-binding estimate: it must surface the fees, not throw.
+    const quote = await protocol.quoteSwidge({
       fromToken: '0xfrom',
       toToken: '0xto',
       toChain: 137,
       recipient: '0xrecipient',
       fromTokenAmount: 1500000000000000000n,
       slippage: 0.02
-    }), ButterFeeLimitExceededError)
+    })
+    assert.equal(quote.fromTokenAmount, 1500000000000000000n)
+    assert.ok(quote.fees.some((fee) => fee.type === 'protocol'))
   })
 
   it('rejects exact-out before requesting a route or sending a transaction', async () => {
@@ -1134,8 +1252,7 @@ describe('ButterSwidgeProtocol formal behavior', () => {
       apiKeyId: 'key',
       apiSecret: 'secret',
       fetch,
-      tokenDecimals: DEFAULT_TOKEN_DECIMALS,
-      exposeQuoteOnlyChains: true
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS
     })
     const base = {
       fromToken: '0xfrom',
@@ -1514,8 +1631,20 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     ])
   })
 
-  it('rejects unknown Butter status values instead of masking them as pending', async () => {
-    for (const state of [3, 99, 'weird-state']) {
+  it('maps documented Butter states and conservatively treats unknown states as pending', async () => {
+    const cases: Array<[unknown, string]> = [
+      [0, 'pending'],
+      ['crossing', 'pending'],
+      [1, 'completed'],
+      [6, 'refunded'],
+      // Undocumented/intermediate codes must not be reported as terminal: an
+      // in-flight relaying state (2) or any unknown code stays pending.
+      [2, 'pending'],
+      [3, 'pending'],
+      [99, 'pending'],
+      ['weird-state', 'pending']
+    ]
+    for (const [state, expected] of cases) {
       const fetch = makeFetch({
         '/api/queryBridgeInfoBySourceHash': async () => ({
           code: 200,
@@ -1531,10 +1660,7 @@ describe('ButterSwidgeProtocol formal behavior', () => {
         fetch
       })
 
-      await assert.rejects(
-        protocol.getSwidgeStatus('0xsourcehash'),
-        (error: unknown) => error instanceof ButterApiError && error.message.includes('Unrecognized Butter swidge state')
-      )
+      assert.equal((await protocol.getSwidgeStatus('0xsourcehash')).status, expected)
     }
   })
 
@@ -1613,8 +1739,7 @@ describe('ButterSwidgeProtocol formal behavior', () => {
       apiKeyId: 'key',
       apiSecret: 'secret',
       fetch,
-      tokenDecimals: DEFAULT_TOKEN_DECIMALS,
-      exposeQuoteOnlyChains: true
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS
     })
 
     await assert.rejects(protocol.quoteSwidge({

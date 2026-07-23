@@ -17,13 +17,25 @@ export declare class RouteManager {
     getRoute(options: SwidgeOptions, { forExecution }?: {
         forExecution?: boolean;
     }): Promise<CachedRoute>;
+    /**
+     * Bounds cache growth for long-lived quote-only instances: drops expired
+     * entries, then evicts oldest (insertion-ordered) entries until under the cap.
+     */
+    private evictStaleRoutes;
     buildRouteRequest(options: SwidgeOptions): Promise<Record<string, unknown>>;
     enforceMinAmountOut(options: SwidgeOptions, route: ButterRoute): void;
     private decimalsFor;
     private validateRouteMatchesRequest;
 }
 export declare function routeExpiresAt(route: ButterRoute, now: number): number;
+/**
+ * Reads a route token's decimals, requiring them to be present and valid.
+ *
+ * Butter always echoes token decimals on a route; a missing value indicates
+ * malformed data, so we fail rather than silently defaulting to 18 (which
+ * would misscale amounts by orders of magnitude).
+ */
 export declare function decimalsOf(token: {
     decimals?: string | number;
-} | undefined): number;
+} | undefined, label?: string): number;
 //# sourceMappingURL=route.d.ts.map

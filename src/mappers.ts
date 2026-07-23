@@ -16,21 +16,31 @@ import { parseTokenAmount } from './amounts.js'
 import { mapRouteFees, type FeeContext } from './fees.js'
 import { decimalsOf } from './route.js'
 import type {
+  ButterChainExecution,
   ButterChainInfo,
   ButterRoute,
+  ButterSupportedChain,
   ButterTokenInfo,
-  SwidgeFee,
   SwidgeQuote,
-  SwidgeSupportedChain,
   SwidgeSupportedToken
 } from './types.js'
 
-export function routeToQuote (route: ButterRoute, now: () => number, expiry: number | undefined, feeContext: FeeContext): SwidgeQuote {
-  const sourceDecimals = decimalsOf(route.srcChain?.tokenIn)
-  const destinationDecimals = decimalsOf(route.dstChain?.tokenOut ?? route.srcChain?.tokenOut)
+/**
+ * Builds a WDK quote from a Butter route.
+ *
+ * For exact-in the caller passes `requestedAmountIn` (the base-unit input the
+ * user asked for); the quote echoes it verbatim so `fromTokenAmount` can never
+ * drift from the request due to a decimals-source mismatch. Output amounts use
+ * the route-echoed destination decimals, which must be present.
+ */
+export function routeToQuote (route: ButterRoute, now: () => number, expiry: number | undefined, feeContext: FeeContext, requestedAmountIn?: number | bigint): SwidgeQuote {
+  const destinationDecimals = decimalsOf(route.dstChain?.tokenOut ?? route.srcChain?.tokenOut, 'destination token')
   const toTokenAmountMin = parseTokenAmount(route.minAmountOut?.amount ?? route.amountOutMin, destinationDecimals)
+  const fromTokenAmount = requestedAmountIn != null
+    ? BigInt(requestedAmountIn)
+    : parseTokenAmount(route.srcChain?.totalAmountIn ?? route.totalAmountIn, decimalsOf(route.srcChain?.tokenIn, 'source token'))
   return {
-    fromTokenAmount: parseTokenAmount(route.srcChain?.totalAmountIn ?? route.totalAmountIn, sourceDecimals),
+    fromTokenAmount,
     toTokenAmount: parseTokenAmount(route.dstChain?.totalAmountOut ?? route.srcChain?.totalAmountOut ?? route.totalAmountOut, destinationDecimals),
     toTokenAmountMin,
     fees: mapRouteFees(route, feeContext),
@@ -40,7 +50,7 @@ export function routeToQuote (route: ButterRoute, now: () => number, expiry: num
   }
 }
 
-export function chainToSupportedChain (chain: ButterChainInfo, execution: string): SwidgeSupportedChain & { execution: string } {
+export function chainToSupportedChain (chain: ButterChainInfo, execution: ButterChainExecution): ButterSupportedChain {
   const nativeToken = parseJsonMaybe<ButterTokenInfo>(chain.nativeToken)
   return {
     id: normalizeId(chain.chainId ?? chain.id),
