@@ -17,8 +17,11 @@ import type { SwidgeStatusResult } from './types.js'
 
 export function mapStatusResponse (id: string, data: unknown, hints: { fromChain?: string | number, toChain?: string | number, byOrderId?: boolean } = {}): SwidgeStatusResult {
   const info = ((data as { info?: unknown })?.info ?? data) as Record<string, unknown>
-  if (!info || typeof info !== 'object') {
-    throw new ButterApiError('Butter status response is missing info', data)
+  if (!info || typeof info !== 'object' || Object.keys(info).length === 0) {
+    throw new ButterApiError('Butter returned no swidge for the requested id', { id, data })
+  }
+  if (info.state == null && info.status == null) {
+    throw new ButterApiError('Butter status response is missing a state', { id, data })
   }
   const sourceHash = stringValue(info.sourceHash ?? info.fromHash ?? id)
   if (!hints.byOrderId && sourceHash && sourceHash.toLowerCase() !== id.toLowerCase()) {
@@ -42,6 +45,14 @@ export function mapStatusResponse (id: string, data: unknown, hints: { fromChain
   }
 }
 
+/**
+ * Maps a Butter state code to a WDK SwidgeStatus.
+ *
+ * Known numeric codes: 0 crossing, 1 completed, 2 failed, 6 refunded. Any
+ * unrecognized value throws instead of being silently reported as `pending`,
+ * so real refund/partial/failure states are never masked. Extend this table
+ * once Butter publishes the authoritative state enumeration.
+ */
 function mapButterStatus (state: unknown): SwidgeStatusResult['status'] {
   if (state === 0 || state === '0' || state === 'crossing' || state === 'pending') return 'pending'
   if (state === 1 || state === '1' || state === 'completed' || state === 'success') return 'completed'
@@ -52,7 +63,7 @@ function mapButterStatus (state: unknown): SwidgeStatusResult['status'] {
   if (state === 'cancelled') return 'cancelled'
   if (state === 'expired') return 'expired'
   if (state === 'partial') return 'partial'
-  return 'pending'
+  throw new ButterApiError('Unrecognized Butter swidge state', { state })
 }
 
 function chainIdOf (value: unknown): string | undefined {

@@ -14,8 +14,11 @@
 import { ButterApiError } from './errors.js';
 export function mapStatusResponse(id, data, hints = {}) {
     const info = (data?.info ?? data);
-    if (!info || typeof info !== 'object') {
-        throw new ButterApiError('Butter status response is missing info', data);
+    if (!info || typeof info !== 'object' || Object.keys(info).length === 0) {
+        throw new ButterApiError('Butter returned no swidge for the requested id', { id, data });
+    }
+    if (info.state == null && info.status == null) {
+        throw new ButterApiError('Butter status response is missing a state', { id, data });
     }
     const sourceHash = stringValue(info.sourceHash ?? info.fromHash ?? id);
     if (!hints.byOrderId && sourceHash && sourceHash.toLowerCase() !== id.toLowerCase()) {
@@ -40,6 +43,14 @@ export function mapStatusResponse(id, data, hints = {}) {
         transactions
     };
 }
+/**
+ * Maps a Butter state code to a WDK SwidgeStatus.
+ *
+ * Known numeric codes: 0 crossing, 1 completed, 2 failed, 6 refunded. Any
+ * unrecognized value throws instead of being silently reported as `pending`,
+ * so real refund/partial/failure states are never masked. Extend this table
+ * once Butter publishes the authoritative state enumeration.
+ */
 function mapButterStatus(state) {
     if (state === 0 || state === '0' || state === 'crossing' || state === 'pending')
         return 'pending';
@@ -59,7 +70,7 @@ function mapButterStatus(state) {
         return 'expired';
     if (state === 'partial')
         return 'partial';
-    return 'pending';
+    throw new ButterApiError('Unrecognized Butter swidge state', { state });
 }
 function chainIdOf(value) {
     if (!value || typeof value !== 'object')

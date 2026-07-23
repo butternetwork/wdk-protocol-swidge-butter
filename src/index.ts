@@ -13,12 +13,14 @@
 // limitations under the License.
 
 export { default, ButterSwidgeProtocol } from './protocol.js'
+export { ISwidgeProtocol } from '@tetherto/wdk-wallet/protocols'
 export {
   ButterApiError,
   ButterUnsupportedError,
   ButterConfigurationError,
   ButterActionRequiredError,
   ButterFeeLimitExceededError,
+  ButterFeeValuationError,
   ButterReadOnlyAccountError,
   ButterExactOutUnsupportedError,
   ButterQuoteRequiredError,

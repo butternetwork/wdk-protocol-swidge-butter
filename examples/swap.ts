@@ -56,7 +56,9 @@ runExample(async () => {
     fromTokenAmount: positiveBigIntFromEnv('EXECUTION_AMOUNT', process.env, 100000000000000n),
     slippage: numberFromEnv('EXECUTION_SLIPPAGE', process.env, 0.01)
   }
-  const tokenDecimals = fromToken.toLowerCase() === NATIVE_TOKEN
+  // Optional: decimals resolve automatically via Butter /findToken when unset.
+  const configuredDecimals = process.env.EXECUTION_FROM_TOKEN_DECIMALS
+  const tokenDecimals = fromToken.toLowerCase() === NATIVE_TOKEN || configuredDecimals == null
     ? {}
     : { [fromToken]: integerFromEnv('EXECUTION_FROM_TOKEN_DECIMALS') }
   const protocol = new ButterSwidgeProtocol(undefined, {

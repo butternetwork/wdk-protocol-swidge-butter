@@ -25,6 +25,10 @@ export const STRICT_CHAIN_MIN_SLIPPAGE_BPS = 300
 export const BTC_CHAIN_ID = '1360095883558913'
 export const SOLANA_CHAIN_ID = '1360108768460801'
 export const TRON_CHAIN_ID = '728126428'
+// Butter's SDK chain ID for TON. Not currently advertised by
+// /supportedChainInfo; kept so the 300 bps strict-slippage floor applies
+// without requiring a prior getSupportedChains() call if TON routing returns.
+export const TON_CHAIN_ID = '1360104473493505'
 
 export const NATIVE_TOKEN_ADDRESSES = new Set([
   '0x0000000000000000000000000000000000000000',

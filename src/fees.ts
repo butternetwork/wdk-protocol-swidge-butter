@@ -17,7 +17,8 @@ import { parseTokenAmount } from './amounts.js'
 import {
   ButterApiError,
   ButterConfigurationError,
-  ButterFeeLimitExceededError
+  ButterFeeLimitExceededError,
+  ButterFeeValuationError
 } from './errors.js'
 import type {
   ButterBridgeFee,
@@ -59,6 +60,16 @@ export function resolveFeeLimits (
   if (network != null) result.maxNetworkFeeBps = parseBps(network, 'maxNetworkFeeBps')
   if (protocol != null) result.maxProtocolFeeBps = parseBps(protocol, 'maxProtocolFeeBps')
   return result
+}
+
+/** Validates configured fee limits eagerly, rejecting malformed bps values. */
+export function validateFeeLimits (config: SwidgeProtocolConfig): void {
+  resolveFeeLimits(config, {})
+}
+
+/** Returns true when the resolved limits contain at least one active cap. */
+export function hasFeeLimits (limits: ResolvedFeeLimits): boolean {
+  return limits.maxNetworkFeeBps != null || limits.maxProtocolFeeBps != null
 }
 
 /** Maps Butter fee metadata into WDK fee entries using denomination-specific decimals. */
@@ -177,7 +188,7 @@ function protocolFeeRatios (route: ButterRoute, context: FeeContext): Ratio[] {
       const gasAmount = parseTokenAmount(route.gasFee?.amount, nativeDecimals)
       const gasUsd = parseUsd(route.gasFee?.inUSD, 'native protocol fee')
       const inputUsd = parseUsd(route.totalAmountInUSD, 'native protocol fee')
-      if (gasAmount === 0n) throw new ButterApiError('Cannot value Butter native protocol fee without a nonzero gas fee')
+      if (gasAmount === 0n) throw new ButterFeeValuationError('Cannot value Butter native protocol fee without a nonzero gas fee')
       ratios.push({ numerator: nativeFee * gasUsd, denominator: gasAmount * inputUsd })
     }
   }
@@ -198,7 +209,7 @@ function bridgeFeeRatio (route: ButterRoute): Ratio {
   ]
   const denominator = candidates.find((candidate) => sameToken(candidate.token, token) && candidate.amount != null)
   if (!denominator?.amount) {
-    throw new ButterApiError('Cannot value Butter bridge fee against a matching route amount')
+    throw new ButterFeeValuationError('Cannot value Butter bridge fee against a matching route amount')
   }
   return { numerator, denominator: parseTokenAmount(denominator.amount, decimals) }
 }
@@ -206,7 +217,7 @@ function bridgeFeeRatio (route: ButterRoute): Ratio {
 function enforceLimit (type: 'network' | 'protocol', ratios: Ratio[], maximumBps: bigint): void {
   let total: Ratio = { numerator: 0n, denominator: 1n }
   for (const ratio of ratios) {
-    if (ratio.denominator <= 0n) throw new ButterApiError(`Cannot value Butter ${type} fee against a zero amount`)
+    if (ratio.denominator <= 0n) throw new ButterFeeValuationError(`Cannot value Butter ${type} fee against a zero amount`)
     total = {
       numerator: total.numerator * ratio.denominator + ratio.numerator * total.denominator,
       denominator: total.denominator * ratio.denominator
@@ -226,7 +237,7 @@ function usdRatio (feeUsd: string | undefined, inputUsd: string | undefined, lab
 }
 
 function parseUsd (value: string | undefined, label: string): bigint {
-  if (value == null) throw new ButterApiError(`Cannot value Butter ${label} without USD metadata`)
+  if (value == null) throw new ButterFeeValuationError(`Cannot value Butter ${label} without USD metadata`)
   return parseTokenAmount(value, USD_DECIMALS)
 }
 

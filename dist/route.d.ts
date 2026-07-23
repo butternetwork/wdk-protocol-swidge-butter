@@ -7,6 +7,8 @@ export interface RouteRequestContext {
     nativeTokenDecimals: Record<string, number>;
     strictSlippageChainIds: Set<string>;
     requestRoute: (params: Record<string, unknown>) => Promise<ButterRoute[] | ButterRoute>;
+    /** Optional fallback resolving decimals for tokens absent from `tokenDecimals`. */
+    lookupDecimals?: (token: string) => Promise<number | undefined>;
 }
 export declare class RouteManager {
     private readonly context;
@@ -15,7 +17,7 @@ export declare class RouteManager {
     getRoute(options: SwidgeOptions, { forExecution }?: {
         forExecution?: boolean;
     }): Promise<CachedRoute>;
-    buildRouteRequest(options: SwidgeOptions): Record<string, unknown>;
+    buildRouteRequest(options: SwidgeOptions): Promise<Record<string, unknown>>;
     enforceMinAmountOut(options: SwidgeOptions, route: ButterRoute): void;
     private decimalsFor;
     private validateRouteMatchesRequest;
