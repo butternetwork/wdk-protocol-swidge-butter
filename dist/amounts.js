@@ -1,4 +1,18 @@
+// Copyright 2026 Butter Network
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 import { ButterApiError } from './errors.js';
+/** Converts a non-negative decimal token amount into integer base units. */
 export function parseTokenAmount(amount, decimals = 18) {
     assertDecimals(decimals);
     if (amount == null)
@@ -23,6 +37,7 @@ export function parseTokenAmount(amount, decimals = 18) {
     const normalizedFraction = fraction.slice(0, decimals).padEnd(decimals, '0');
     return BigInt(whole) * 10n ** BigInt(decimals) + BigInt(normalizedFraction || '0');
 }
+/** Formats integer base units as a decimal token amount without floating point conversion. */
 export function formatTokenAmount(amount, decimals = 18) {
     assertDecimals(decimals);
     if (typeof amount === 'number' && (!Number.isSafeInteger(amount) || amount < 0)) {
@@ -38,6 +53,7 @@ export function formatTokenAmount(amount, decimals = 18) {
         return whole.toString();
     return `${whole}.${fraction.toString().padStart(decimals, '0').replace(/0+$/, '')}`;
 }
+/** Parses a decimal or hexadecimal integer amount returned by Butter. */
 export function parseIntegerAmount(value) {
     if (value == null)
         return 0n;

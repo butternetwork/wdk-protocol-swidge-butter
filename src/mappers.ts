@@ -1,4 +1,19 @@
+// Copyright 2026 Butter Network
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 import { parseTokenAmount } from './amounts.js'
+import { mapRouteFees, type FeeContext } from './fees.js'
 import { decimalsOf } from './route.js'
 import type {
   ButterChainInfo,
@@ -10,7 +25,7 @@ import type {
   SwidgeSupportedToken
 } from './types.js'
 
-export function routeToQuote (route: ButterRoute, now: () => number, expiry?: number): SwidgeQuote {
+export function routeToQuote (route: ButterRoute, now: () => number, expiry: number | undefined, feeContext: FeeContext): SwidgeQuote {
   const sourceDecimals = decimalsOf(route.srcChain?.tokenIn)
   const destinationDecimals = decimalsOf(route.dstChain?.tokenOut ?? route.srcChain?.tokenOut)
   const toTokenAmountMin = parseTokenAmount(route.minAmountOut?.amount ?? route.amountOutMin, destinationDecimals)
@@ -18,55 +33,11 @@ export function routeToQuote (route: ButterRoute, now: () => number, expiry?: nu
     fromTokenAmount: parseTokenAmount(route.srcChain?.totalAmountIn ?? route.totalAmountIn, sourceDecimals),
     toTokenAmount: parseTokenAmount(route.dstChain?.totalAmountOut ?? route.srcChain?.totalAmountOut ?? route.totalAmountOut, destinationDecimals),
     toTokenAmountMin,
-    fees: routeFees(route),
+    fees: mapRouteFees(route, feeContext),
     estimatedDuration: Number(route.timeEstimated ?? route.estimatedTime ?? 0),
     expiry: expiry ?? now() + 300,
     priceImpact: route.priceImpact == null ? undefined : Number(route.priceImpact)
   }
-}
-
-export function routeFees (route: ButterRoute): SwidgeFee[] {
-  const fees: SwidgeFee[] = []
-  const destinationDecimals = decimalsOf(route.dstChain?.tokenOut ?? route.srcChain?.tokenOut)
-  if (route.bridgeFee?.amount != null) {
-    fees.push({
-      type: 'protocol',
-      amount: parseTokenAmount(route.bridgeFee.amount, destinationDecimals),
-      token: route.bridgeFee.address ?? route.bridgeFee.symbol ?? '',
-      symbol: route.bridgeFee.symbol,
-      chain: route.bridgeFee.chainId,
-      included: true,
-      description: 'Butter bridge fee'
-    } as SwidgeFee & { symbol?: string })
-  }
-  if (route.gasFee?.amount != null) {
-    fees.push({
-      type: 'network',
-      amount: parseTokenAmount(route.gasFee.amount, 18),
-      token: route.gasFee.symbol ?? '',
-      included: false,
-      description: 'Estimated source chain gas fee'
-    })
-  }
-  if (route.swapFee?.nativeFee != null) {
-    fees.push({
-      type: 'protocol',
-      amount: parseTokenAmount(route.swapFee.nativeFee, 18),
-      token: route.swapFee.nativeSymbol ?? '',
-      included: false,
-      description: 'Butter native swap fee'
-    })
-  }
-  if (route.swapFee?.tokenFee != null) {
-    fees.push({
-      type: 'protocol',
-      amount: parseTokenAmount(route.swapFee.tokenFee, destinationDecimals),
-      token: route.swapFee.tokenSymbol ?? '',
-      included: true,
-      description: 'Butter token swap fee'
-    })
-  }
-  return fees
 }
 
 export function chainToSupportedChain (chain: ButterChainInfo, execution: string): SwidgeSupportedChain & { execution: string } {

@@ -1,6 +1,6 @@
-import type { ButterChainInfo, ButterRoute, ButterTokenInfo, SwidgeFee, SwidgeQuote, SwidgeSupportedChain, SwidgeSupportedToken } from './types.js';
-export declare function routeToQuote(route: ButterRoute, now: () => number, expiry?: number): SwidgeQuote;
-export declare function routeFees(route: ButterRoute): SwidgeFee[];
+import { type FeeContext } from './fees.js';
+import type { ButterChainInfo, ButterRoute, ButterTokenInfo, SwidgeQuote, SwidgeSupportedChain, SwidgeSupportedToken } from './types.js';
+export declare function routeToQuote(route: ButterRoute, now: () => number, expiry: number | undefined, feeContext: FeeContext): SwidgeQuote;
 export declare function chainToSupportedChain(chain: ButterChainInfo, execution: string): SwidgeSupportedChain & {
     execution: string;
 };

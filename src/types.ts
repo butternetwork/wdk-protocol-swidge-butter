@@ -1,3 +1,17 @@
+// Copyright 2026 Butter Network
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 import type {
   SwidgeFee,
   SwidgeOptions,
@@ -22,30 +36,36 @@ export type {
   SwidgeSupportedTokensOptions
 }
 
+/** Minimal account surface accepted by the Butter provider. */
 export interface ButterAccount {
   getAddress?: () => Promise<string> | string
   address?: string
   sendTransaction?: (tx: unknown) => Promise<{ hash?: string } | string>
 }
 
+/** Fetch response subset consumed by the Butter HTTP client. */
 export interface ButterFetchResponse {
   ok: boolean
   status: number
   json: () => Promise<unknown>
 }
 
+/** Fetch-compatible function used for dependency injection and testing. */
 export type ButterFetch = (url: string, init?: { method?: string, headers?: Record<string, string> }) => Promise<ButterFetchResponse>
 
+/** Read-only EVM client capabilities needed for allowance checks. */
 export interface EvmPublicClient {
   readContract: (args: unknown) => Promise<bigint>
   waitForTransactionReceipt?: (args: { hash: string, confirmations?: number, timeout?: number }) => Promise<unknown>
 }
 
+/** EVM wallet client capabilities needed for transaction submission. */
 export interface EvmWalletClient {
   account?: { address: string }
   sendTransaction: (args: unknown) => Promise<string | { hash?: string }>
 }
 
+/** Converts Butter transaction data for a non-viem execution environment. */
 export type ButterTransactionAdapter = (swapTx: ButterSwapTx, context: {
   sender: string
   receiver: string
@@ -53,15 +73,20 @@ export type ButterTransactionAdapter = (swapTx: ButterSwapTx, context: {
   options: SwidgeOptions
 }) => unknown
 
+/** Router calldata validator versions implemented by this package. */
 export type ButterRouterVersion = 'v3'
 
+/** Allowlisted Butter Router deployment and its validator version. */
 export interface ButterRouterDeployment {
   address: `0x${string}`
   version: ButterRouterVersion
 }
 
+/** Construction and execution configuration for {@link ButterSwidgeProtocol}. */
 export interface ButterSwidgeProtocolConfig extends SwidgeProtocolConfig {
+  /** Source chain handled by this protocol instance. */
   sourceChainId: string | number
+  /** Butter-issued integration entrance identifier. */
   entrance: string
   apiKeyId?: string | undefined
   apiSecret?: string | undefined
@@ -73,7 +98,12 @@ export interface ButterSwidgeProtocolConfig extends SwidgeProtocolConfig {
   now?: () => number
   routerContracts?: Partial<Record<number, readonly ButterRouterDeployment[]>>
   tokenDecimals?: Record<string, number>
+  /** Per-chain native token decimals overriding built-in chain defaults. */
+  nativeTokenDecimals?: Record<string, number>
+  /** Additional chain IDs requiring Butter's strict 300 bps slippage floor. */
+  strictSlippageChainIds?: Array<string | number>
   transactionAdapters?: Record<string, ButterTransactionAdapter>
+  /** @deprecated Quote-only Butter chains are always exposed. */
   exposeQuoteOnlyChains?: boolean
   evm?: {
     publicClient?: EvmPublicClient
@@ -86,6 +116,7 @@ export interface ButterSwidgeProtocolConfig extends SwidgeProtocolConfig {
   }
 }
 
+/** Token metadata returned inside a Butter route. */
 export interface ButterRouteToken {
   address?: string
   decimals?: number | string
@@ -93,14 +124,18 @@ export interface ButterRouteToken {
   name?: string
 }
 
+/** Per-chain route segment returned by Butter. */
 export interface ButterRouteChain {
   chainId?: string | number
   tokenIn?: ButterRouteToken
   tokenOut?: ButterRouteToken
   totalAmountIn?: string
   totalAmountOut?: string
+  totalAmountInUSD?: string
+  totalAmountOutUSD?: string
 }
 
+/** Normalized shape of a Butter `/route` result. */
 export interface ButterRoute {
   hash: string
   timestamp?: number
@@ -109,24 +144,43 @@ export interface ButterRoute {
   estimatedTime?: number
   contract?: string
   priceImpact?: string | number
-  bridgeFee?: ButterFee
+  bridgeFee?: ButterBridgeFee
   gasFee?: ButterFee
   swapFee?: { nativeFee?: string, tokenFee?: string, nativeSymbol?: string, tokenSymbol?: string }
   minAmountOut?: { amount?: string, symbol?: string }
   amountOutMin?: string
   srcChain?: ButterRouteChain
+  bridgeChain?: ButterRouteChain
   dstChain?: ButterRouteChain
   totalAmountIn?: string
   totalAmountOut?: string
+  totalAmountInUSD?: string
+  totalAmountOutUSD?: string
 }
 
+/** Common Butter fee fields. */
 export interface ButterFee {
   amount?: string
   symbol?: string
   address?: string
   chainId?: string | number
+  inUSD?: string
 }
 
+/** Token-denominated component of a Butter bridge fee. */
+export interface ButterFeePart {
+  amount?: string
+  token?: ButterRouteToken
+}
+
+/** Detailed bridge and affiliate fee information. */
+export interface ButterBridgeFee extends ButterFee {
+  in?: ButterFeePart
+  out?: ButterFeePart
+  affiliate?: ButterFeePart & { list?: unknown[], data?: string }
+}
+
+/** Transaction request returned by Butter `/swap`. */
 export interface ButterSwapTx {
   to: string
   value: string
@@ -137,6 +191,7 @@ export interface ButterSwapTx {
   memo?: string | undefined
 }
 
+/** Chain metadata returned by Butter discovery APIs. */
 export interface ButterChainInfo {
   id?: string | number
   chainId?: string | number
@@ -147,6 +202,7 @@ export interface ButterChainInfo {
   nativeToken?: string | ButterTokenInfo
 }
 
+/** Token metadata returned by Butter discovery APIs. */
 export interface ButterTokenInfo {
   chainId?: string | number
   address?: string
@@ -157,6 +213,7 @@ export interface ButterTokenInfo {
   name?: string
 }
 
+/** EVM transaction request passed to configured senders. */
 export interface EvmTransactionRequest {
   to: `0x${string}` | string
   value?: bigint | undefined
@@ -164,6 +221,7 @@ export interface EvmTransactionRequest {
   chainId?: number | undefined
 }
 
+/** Internal cached route envelope. */
 export interface CachedRoute {
   key: string
   route: ButterRoute
