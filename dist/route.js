@@ -23,7 +23,7 @@ export class RouteManager {
         this.context = context;
     }
     async getRoute(options, { forExecution = false } = {}) {
-        const request = this.buildRouteRequest(options);
+        const request = await this.buildRouteRequest(options);
         const key = stableRouteKey(request, options);
         const cached = this.cache.get(key);
         if (forExecution) {
@@ -52,7 +52,7 @@ export class RouteManager {
             this.cache.set(key, cachedRoute);
         return cachedRoute;
     }
-    buildRouteRequest(options) {
+    async buildRouteRequest(options) {
         const toChainId = normalizeId(options.toChain ?? this.context.sourceChainId);
         if (this.context.sourceChainId === SOLANA_CHAIN_ID && !options.recipient) {
             throw new ButterActionRequiredError('Butter requires receiver when source chain is Solana');
@@ -60,7 +60,7 @@ export class RouteManager {
         if (!('fromTokenAmount' in options) || options.fromTokenAmount == null) {
             throw new ButterExactOutUnsupportedError();
         }
-        const amount = formatTokenAmount(options.fromTokenAmount, this.decimalsFor(options.fromToken));
+        const amount = formatTokenAmount(options.fromTokenAmount, await this.decimalsFor(options.fromToken));
         const strictChain = this.context.strictSlippageChainIds.has(this.context.sourceChainId) || this.context.strictSlippageChainIds.has(toChainId);
         const slippage = toButterSlippage(options.slippage, {
             crossChain: toChainId !== this.context.sourceChainId,
@@ -92,17 +92,19 @@ export class RouteManager {
             });
         }
     }
-    decimalsFor(token) {
+    async decimalsFor(token) {
         const normalized = token.toLowerCase();
         if (normalized === 'btc')
             return 8;
         if (NATIVE_TOKEN_ADDRESSES.has(normalized))
             return nativeDecimalsForChain(this.context.sourceChainId, this.context.nativeTokenDecimals);
-        const decimals = this.context.tokenDecimals[token] ?? this.context.tokenDecimals[normalized];
-        if (decimals == null) {
-            throw new ButterActionRequiredError(`Token decimals are required for ${token}`);
-        }
-        return decimals;
+        const configured = this.context.tokenDecimals[token] ?? this.context.tokenDecimals[normalized];
+        if (configured != null)
+            return configured;
+        const resolved = await this.context.lookupDecimals?.(token);
+        if (resolved != null)
+            return resolved;
+        throw new ButterActionRequiredError(`Token decimals are required for ${token}; Butter could not resolve them, configure tokenDecimals`);
     }
     validateRouteMatchesRequest(route, request) {
         if (!route.hash)

@@ -13,7 +13,7 @@
 // limitations under the License.
 import { NATIVE_TOKEN_ADDRESSES, SOLANA_CHAIN_ID, BTC_CHAIN_ID, TRON_CHAIN_ID } from './constants.js';
 import { parseTokenAmount } from './amounts.js';
-import { ButterApiError, ButterConfigurationError, ButterFeeLimitExceededError } from './errors.js';
+import { ButterApiError, ButterConfigurationError, ButterFeeLimitExceededError, ButterFeeValuationError } from './errors.js';
 const USD_DECIMALS = 18;
 const BPS_DENOMINATOR = 10000n;
 /** Resolves and validates constructor and per-call WDK fee limits. */
@@ -26,6 +26,14 @@ export function resolveFeeLimits(defaults, overrides) {
     if (protocol != null)
         result.maxProtocolFeeBps = parseBps(protocol, 'maxProtocolFeeBps');
     return result;
+}
+/** Validates configured fee limits eagerly, rejecting malformed bps values. */
+export function validateFeeLimits(config) {
+    resolveFeeLimits(config, {});
+}
+/** Returns true when the resolved limits contain at least one active cap. */
+export function hasFeeLimits(limits) {
+    return limits.maxNetworkFeeBps != null || limits.maxProtocolFeeBps != null;
 }
 /** Maps Butter fee metadata into WDK fee entries using denomination-specific decimals. */
 export function mapRouteFees(route, context) {
@@ -130,7 +138,7 @@ function protocolFeeRatios(route, context) {
             const gasUsd = parseUsd(route.gasFee?.inUSD, 'native protocol fee');
             const inputUsd = parseUsd(route.totalAmountInUSD, 'native protocol fee');
             if (gasAmount === 0n)
-                throw new ButterApiError('Cannot value Butter native protocol fee without a nonzero gas fee');
+                throw new ButterFeeValuationError('Cannot value Butter native protocol fee without a nonzero gas fee');
             ratios.push({ numerator: nativeFee * gasUsd, denominator: gasAmount * inputUsd });
         }
     }
@@ -150,7 +158,7 @@ function bridgeFeeRatio(route) {
     ];
     const denominator = candidates.find((candidate) => sameToken(candidate.token, token) && candidate.amount != null);
     if (!denominator?.amount) {
-        throw new ButterApiError('Cannot value Butter bridge fee against a matching route amount');
+        throw new ButterFeeValuationError('Cannot value Butter bridge fee against a matching route amount');
     }
     return { numerator, denominator: parseTokenAmount(denominator.amount, decimals) };
 }
@@ -158,7 +166,7 @@ function enforceLimit(type, ratios, maximumBps) {
     let total = { numerator: 0n, denominator: 1n };
     for (const ratio of ratios) {
         if (ratio.denominator <= 0n)
-            throw new ButterApiError(`Cannot value Butter ${type} fee against a zero amount`);
+            throw new ButterFeeValuationError(`Cannot value Butter ${type} fee against a zero amount`);
         total = {
             numerator: total.numerator * ratio.denominator + ratio.numerator * total.denominator,
             denominator: total.denominator * ratio.denominator
@@ -177,7 +185,7 @@ function usdRatio(feeUsd, inputUsd, label) {
 }
 function parseUsd(value, label) {
     if (value == null)
-        throw new ButterApiError(`Cannot value Butter ${label} without USD metadata`);
+        throw new ButterFeeValuationError(`Cannot value Butter ${label} without USD metadata`);
     return parseTokenAmount(value, USD_DECIMALS);
 }
 function sourceAmount(route) {

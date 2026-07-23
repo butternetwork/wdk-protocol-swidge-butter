@@ -37,6 +37,8 @@ export interface RouteRequestContext {
   nativeTokenDecimals: Record<string, number>
   strictSlippageChainIds: Set<string>
   requestRoute: (params: Record<string, unknown>) => Promise<ButterRoute[] | ButterRoute>
+  /** Optional fallback resolving decimals for tokens absent from `tokenDecimals`. */
+  lookupDecimals?: (token: string) => Promise<number | undefined>
 }
 
 export class RouteManager {
@@ -48,7 +50,7 @@ export class RouteManager {
   }
 
   async getRoute (options: SwidgeOptions, { forExecution = false }: { forExecution?: boolean } = {}): Promise<CachedRoute> {
-    const request = this.buildRouteRequest(options)
+    const request = await this.buildRouteRequest(options)
     const key = stableRouteKey(request, options)
     const cached = this.cache.get(key)
     if (forExecution) {
@@ -77,7 +79,7 @@ export class RouteManager {
     return cachedRoute
   }
 
-  buildRouteRequest (options: SwidgeOptions): Record<string, unknown> {
+  async buildRouteRequest (options: SwidgeOptions): Promise<Record<string, unknown>> {
     const toChainId = normalizeId(options.toChain ?? this.context.sourceChainId)
     if (this.context.sourceChainId === SOLANA_CHAIN_ID && !options.recipient) {
       throw new ButterActionRequiredError('Butter requires receiver when source chain is Solana')
@@ -85,7 +87,7 @@ export class RouteManager {
     if (!('fromTokenAmount' in options) || options.fromTokenAmount == null) {
       throw new ButterExactOutUnsupportedError()
     }
-    const amount = formatTokenAmount(options.fromTokenAmount, this.decimalsFor(options.fromToken))
+    const amount = formatTokenAmount(options.fromTokenAmount, await this.decimalsFor(options.fromToken))
     const strictChain = this.context.strictSlippageChainIds.has(this.context.sourceChainId) || this.context.strictSlippageChainIds.has(toChainId)
     const slippage = toButterSlippage(options.slippage, {
       crossChain: toChainId !== this.context.sourceChainId,
@@ -119,15 +121,17 @@ export class RouteManager {
     }
   }
 
-  private decimalsFor (token: string): number {
+  private async decimalsFor (token: string): Promise<number> {
     const normalized = token.toLowerCase()
     if (normalized === 'btc') return 8
     if (NATIVE_TOKEN_ADDRESSES.has(normalized)) return nativeDecimalsForChain(this.context.sourceChainId, this.context.nativeTokenDecimals)
-    const decimals = this.context.tokenDecimals[token] ?? this.context.tokenDecimals[normalized]
-    if (decimals == null) {
-      throw new ButterActionRequiredError(`Token decimals are required for ${token}`)
-    }
-    return decimals
+    const configured = this.context.tokenDecimals[token] ?? this.context.tokenDecimals[normalized]
+    if (configured != null) return configured
+    const resolved = await this.context.lookupDecimals?.(token)
+    if (resolved != null) return resolved
+    throw new ButterActionRequiredError(
+      `Token decimals are required for ${token}; Butter could not resolve them, configure tokenDecimals`
+    )
   }
 
   private validateRouteMatchesRequest (route: ButterRoute, request: Record<string, unknown>): void {

@@ -16,7 +16,8 @@ import {
   BTC_CHAIN_ID,
   CROSS_CHAIN_MIN_SLIPPAGE_BPS,
   DEFAULT_SLIPPAGE_BPS,
-  STRICT_CHAIN_MIN_SLIPPAGE_BPS
+  STRICT_CHAIN_MIN_SLIPPAGE_BPS,
+  TON_CHAIN_ID
 } from './constants.js'
 import { ButterActionRequiredError, ButterUnsupportedError } from './errors.js'
 
@@ -59,5 +60,5 @@ function normalizeId (id: string | number | undefined): string | undefined {
 }
 
 function isStrictChain (id: string | undefined): boolean {
-  return id === BTC_CHAIN_ID || id === 'btc' || id === 'ton'
+  return id === BTC_CHAIN_ID || id === TON_CHAIN_ID || id === 'btc' || id === 'ton'
 }

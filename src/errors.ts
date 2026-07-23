@@ -56,6 +56,18 @@ export class ButterActionRequiredError extends Error {
   }
 }
 
+/**
+ * Indicates that a configured fee cap could not be evaluated because the
+ * Butter route lacks the metadata (USD values, gas fee) needed to value a fee
+ * against the input amount. Fee limits fail closed on unvaluable routes.
+ */
+export class ButterFeeValuationError extends ButterApiError {
+  constructor (message: string, details?: unknown) {
+    super(message, details)
+    this.name = 'ButterFeeValuationError'
+  }
+}
+
 /** Indicates that a configured WDK network or protocol fee cap was exceeded. */
 export class ButterFeeLimitExceededError extends ButterActionRequiredError {
   constructor (feeType: 'network' | 'protocol', actualBps: bigint, maximumBps: bigint) {

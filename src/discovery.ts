@@ -15,7 +15,7 @@
 import { TRON_CHAIN_ID } from './constants.js'
 import { ButterApiError } from './errors.js'
 import { chainToSupportedChain, normalizeId, tokenToSupportedToken } from './mappers.js'
-import { createRouterRegistry, routerDeploymentsForChain } from './router-registry.js'
+import { routerDeploymentsForChain, type ButterRouterRegistry } from './router-registry.js'
 import type { ButterChainInfo, ButterTokenInfo, ButterSwidgeProtocolConfig, SwidgeSupportedChain, SwidgeSupportedToken } from './types.js'
 
 export class DiscoveryService {
@@ -23,13 +23,16 @@ export class DiscoveryService {
   private readonly requestRouter: <T>(path: string, params?: Record<string, unknown>) => Promise<T>
   private readonly requestToken: <T>(path: string, params?: Record<string, unknown>) => Promise<T>
   private readonly strictSlippageChainIds: Set<string>
+  private readonly routerRegistry: ButterRouterRegistry
+  private readonly tokenDecimalsCache = new Map<string, number>()
   private chainDetails?: Map<string, ButterChainInfo>
 
-  constructor (config: ButterSwidgeProtocolConfig, requestRouter: <T>(path: string, params?: Record<string, unknown>) => Promise<T>, requestToken: <T>(path: string, params?: Record<string, unknown>) => Promise<T>, strictSlippageChainIds: Set<string>) {
+  constructor (config: ButterSwidgeProtocolConfig, requestRouter: <T>(path: string, params?: Record<string, unknown>) => Promise<T>, requestToken: <T>(path: string, params?: Record<string, unknown>) => Promise<T>, strictSlippageChainIds: Set<string>, routerRegistry: ButterRouterRegistry) {
     this.config = config
     this.requestRouter = requestRouter
     this.requestToken = requestToken
     this.strictSlippageChainIds = strictSlippageChainIds
+    this.routerRegistry = routerRegistry
   }
 
   async getSupportedChains (): Promise<Array<SwidgeSupportedChain & { execution: string }>> {
@@ -45,8 +48,31 @@ export class DiscoveryService {
       const id = normalizeId(chain.chainId ?? chain.id)
       const detail = this.chainDetails?.get(id) ?? chain
       if (isStrictSlippageChain({ ...chain, ...detail })) this.strictSlippageChainIds.add(id)
-      return chainToSupportedChain({ ...chain, ...detail }, executionFor(id, this.config))
+      return chainToSupportedChain({ ...chain, ...detail }, executionFor(id, this.config, this.routerRegistry))
     })
+  }
+
+  /**
+   * Resolves a token's decimals via Butter's `/findToken` router API.
+   *
+   * Results (including confirmed misses) are cached per chain and address.
+   * Returns undefined when Butter does not know the token or the response
+   * carries no usable decimals.
+   */
+  async findTokenDecimals (chainId: string, address: string): Promise<number | undefined> {
+    const key = `${chainId}:${address}`.toLowerCase()
+    if (this.tokenDecimalsCache.has(key)) return this.tokenDecimalsCache.get(key)
+    let data: ButterTokenInfo | ButterTokenInfo[] | undefined
+    try {
+      data = await this.requestRouter<ButterTokenInfo | ButterTokenInfo[]>('/findToken', { chainId, address })
+    } catch {
+      return undefined
+    }
+    const token = Array.isArray(data) ? data[0] : data
+    const decimals = Number(token?.decimals ?? token?.decimal)
+    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) return undefined
+    this.tokenDecimalsCache.set(key, decimals)
+    return decimals
   }
 
   async getSupportedTokens (chainId: string): Promise<SwidgeSupportedToken[]> {
@@ -108,9 +134,9 @@ function isStrictSlippageChain (chain: ButterChainInfo): boolean {
   })
 }
 
-function executionFor (chainId: string, config: ButterSwidgeProtocolConfig): string {
+function executionFor (chainId: string, config: ButterSwidgeProtocolConfig, registry: ButterRouterRegistry): string {
   if (chainId === TRON_CHAIN_ID) return config.transactionAdapters?.[chainId] ? 'adapter' : 'quote-only'
-  if (routerDeploymentsForChain(createRouterRegistry(config.routerContracts), chainId).length > 0) return 'native'
+  if (routerDeploymentsForChain(registry, chainId).length > 0) return 'native'
   if (config.transactionAdapters?.[chainId]) return 'adapter'
   return 'quote-only'
 }

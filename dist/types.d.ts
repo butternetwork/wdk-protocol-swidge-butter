@@ -1,12 +1,23 @@
 import type { SwidgeFee, SwidgeOptions, SwidgeProtocolConfig, SwidgeQuote, SwidgeResult, SwidgeStatusResult, SwidgeSupportedChain, SwidgeSupportedToken, SwidgeSupportedTokensOptions } from '@tetherto/wdk-wallet/protocols';
 export type { SwidgeFee, SwidgeOptions, SwidgeProtocolConfig, SwidgeQuote, SwidgeResult, SwidgeStatusResult, SwidgeSupportedChain, SwidgeSupportedToken, SwidgeSupportedTokensOptions };
-/** Minimal account surface accepted by the Butter provider. */
+/**
+ * Structural subset of a WDK wallet account used by the Butter provider.
+ *
+ * Mirrors `IWalletAccountReadOnly` / `IWalletAccount` from `@tetherto/wdk-wallet`:
+ * read-only accounts expose {@link getAddress} and {@link getTransactionReceipt},
+ * while full accounts additionally expose {@link sendTransaction}. Execution
+ * requires a full account (or an explicit `evm.*` sender override).
+ */
 export interface ButterAccount {
-    getAddress?: () => Promise<string> | string;
-    address?: string;
+    /** Returns the account's address (present on every WDK account shape). */
+    getAddress: () => Promise<string> | string;
+    /** Sends a transaction; present only on full (send-capable) accounts. */
     sendTransaction?: (tx: unknown) => Promise<{
         hash?: string;
+        fee?: bigint;
     } | string>;
+    /** Returns a transaction's receipt, or null while unconfirmed. */
+    getTransactionReceipt?: (hash: string) => Promise<unknown | null>;
 }
 /** Fetch response subset consumed by the Butter HTTP client. */
 export interface ButterFetchResponse {
@@ -71,19 +82,32 @@ export interface ButterSwidgeProtocolConfig extends SwidgeProtocolConfig {
     nativeTokenDecimals?: Record<string, number>;
     /** Additional chain IDs requiring Butter's strict 300 bps slippage floor. */
     strictSlippageChainIds?: Array<string | number>;
+    /**
+     * Per-chain adapters converting Butter `/swap` data for non-EVM execution.
+     *
+     * Trust boundary note: adapter execution bypasses the Router V3 calldata
+     * validation performed on the built-in EVM path. Only the transaction's
+     * chain ID and required fields are checked; the adapter is responsible for
+     * any deeper validation of the provider-supplied transaction data.
+     */
     transactionAdapters?: Record<string, ButterTransactionAdapter>;
     /** @deprecated Quote-only Butter chains are always exposed. */
     exposeQuoteOnlyChains?: boolean;
     evm?: {
+        /**
+         * Read-only client for ERC-20 allowance checks. Optional: without it the
+         * provider skips the allowance read and always submits an approval.
+         */
         publicClient?: EvmPublicClient;
+        /** Optional viem-style wallet client overriding account-based sending. */
         walletClient?: EvmWalletClient;
+        /** Optional raw sender overriding both the wallet client and the account. */
         sendTransaction?: (tx: EvmTransactionRequest) => Promise<string | {
             hash?: string;
         }>;
         approvalAmount?: 'exact' | 'max';
         approvalConfirmations?: number;
         approvalTimeoutMs?: number;
-        useAccountTransaction?: boolean;
     };
 }
 /** Token metadata returned inside a Butter route. */

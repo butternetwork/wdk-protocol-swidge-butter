@@ -14,18 +14,21 @@
 import { TRON_CHAIN_ID } from './constants.js';
 import { ButterApiError } from './errors.js';
 import { chainToSupportedChain, normalizeId, tokenToSupportedToken } from './mappers.js';
-import { createRouterRegistry, routerDeploymentsForChain } from './router-registry.js';
+import { routerDeploymentsForChain } from './router-registry.js';
 export class DiscoveryService {
     config;
     requestRouter;
     requestToken;
     strictSlippageChainIds;
+    routerRegistry;
+    tokenDecimalsCache = new Map();
     chainDetails;
-    constructor(config, requestRouter, requestToken, strictSlippageChainIds) {
+    constructor(config, requestRouter, requestToken, strictSlippageChainIds, routerRegistry) {
         this.config = config;
         this.requestRouter = requestRouter;
         this.requestToken = requestToken;
         this.strictSlippageChainIds = strictSlippageChainIds;
+        this.routerRegistry = routerRegistry;
     }
     async getSupportedChains() {
         const [routerChains, tokenChains] = await Promise.all([
@@ -41,8 +44,33 @@ export class DiscoveryService {
             const detail = this.chainDetails?.get(id) ?? chain;
             if (isStrictSlippageChain({ ...chain, ...detail }))
                 this.strictSlippageChainIds.add(id);
-            return chainToSupportedChain({ ...chain, ...detail }, executionFor(id, this.config));
+            return chainToSupportedChain({ ...chain, ...detail }, executionFor(id, this.config, this.routerRegistry));
         });
+    }
+    /**
+     * Resolves a token's decimals via Butter's `/findToken` router API.
+     *
+     * Results (including confirmed misses) are cached per chain and address.
+     * Returns undefined when Butter does not know the token or the response
+     * carries no usable decimals.
+     */
+    async findTokenDecimals(chainId, address) {
+        const key = `${chainId}:${address}`.toLowerCase();
+        if (this.tokenDecimalsCache.has(key))
+            return this.tokenDecimalsCache.get(key);
+        let data;
+        try {
+            data = await this.requestRouter('/findToken', { chainId, address });
+        }
+        catch {
+            return undefined;
+        }
+        const token = Array.isArray(data) ? data[0] : data;
+        const decimals = Number(token?.decimals ?? token?.decimal);
+        if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255)
+            return undefined;
+        this.tokenDecimalsCache.set(key, decimals);
+        return decimals;
     }
     async getSupportedTokens(chainId) {
         const network = await this.networkKeyForChain(chainId);
@@ -105,10 +133,10 @@ function isStrictSlippageChain(chain) {
         return normalized === 'btc' || normalized === 'ton' || normalized.includes('bitcoin') || normalized.includes('toncoin');
     });
 }
-function executionFor(chainId, config) {
+function executionFor(chainId, config, registry) {
     if (chainId === TRON_CHAIN_ID)
         return config.transactionAdapters?.[chainId] ? 'adapter' : 'quote-only';
-    if (routerDeploymentsForChain(createRouterRegistry(config.routerContracts), chainId).length > 0)
+    if (routerDeploymentsForChain(registry, chainId).length > 0)
         return 'native';
     if (config.transactionAdapters?.[chainId])
         return 'adapter';
