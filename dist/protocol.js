@@ -15,7 +15,7 @@ import { SwidgeProtocol } from '@tetherto/wdk-wallet/protocols';
 import { DEFAULT_APP_BASE_URL, DEFAULT_ROUTER_BASE_URL, DEFAULT_TOKEN_BASE_URL, TRON_CHAIN_ID } from './constants.js';
 import { ButterHttpClient } from './http.js';
 import { RouteManager } from './route.js';
-import { enforceFeeLimits, hasFeeLimits, resolveFeeLimits, routeNativeFee, validateFeeLimits } from './fees.js';
+import { enforceFeeLimits, resolveFeeLimits, routeNativeFee, validateFeeLimits } from './fees.js';
 import { routeToQuote } from './mappers.js';
 import { DiscoveryService } from './discovery.js';
 import { validateSwapTransactions } from './swap-data.js';
@@ -84,18 +84,18 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
             lookupDecimals: (token) => this.discovery.findTokenDecimals(this.sourceChainId, token)
         });
     }
-    /** Returns a non-binding exact-in quote without requiring execution capability. */
+    /**
+     * Returns a non-binding exact-in quote without requiring execution capability.
+     *
+     * Fee caps are intentionally not enforced here: a quote must remain a fully
+     * inspectable estimate (WDK only mandates rejection in {@link swidge}). Fee
+     * limits are applied at execution time.
+     */
     async quoteSwidge(options) {
         this.assertQuoteOptions(options);
         const cached = await this.routes.getRoute(options);
         this.routes.enforceMinAmountOut(options, cached.route);
-        const feeContext = this.feeContextFor(options.fromToken);
-        // Surface fee-cap violations (and unvaluable fees) at quote time already,
-        // instead of only failing later during execution.
-        const limits = resolveFeeLimits(this.config, {});
-        if (hasFeeLimits(limits))
-            enforceFeeLimits(cached.route, feeContext, limits);
-        return routeToQuote(cached.route, this.now, cached.expiresAt, feeContext);
+        return routeToQuote(cached.route, this.now, cached.expiresAt, this.feeContextFor(options.fromToken), options.fromTokenAmount);
     }
     /** Executes an exact-in operation after validating route fees and transaction intent. */
     async swidge(options, config = {}) {
@@ -110,7 +110,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
         this.routes.enforceMinAmountOut(options, cached.route);
         const feeContext = this.feeContextFor(options.fromToken);
         enforceFeeLimits(cached.route, feeContext, resolveFeeLimits(this.config, config));
-        const quote = routeToQuote(cached.route, this.now, cached.expiresAt, feeContext);
+        const quote = routeToQuote(cached.route, this.now, cached.expiresAt, feeContext, options.fromTokenAmount);
         const swapData = await this.http.router('/swap', {
             hash: cached.route.hash,
             slippage: cached.slippageBps,
@@ -185,7 +185,12 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
             : await this.http.app('/api/queryBridgeInfoBySourceHash', { hash: id });
         return mapStatusResponse(id, data, options);
     }
-    /** Lists chains currently advertised by Butter Router. */
+    /**
+     * Lists chains currently advertised by Butter Router.
+     *
+     * Each entry carries an `execution` field (`native` | `adapter` |
+     * `quote-only`) describing how this instance would execute on that chain.
+     */
     async getSupportedChains() {
         return this.discovery.getSupportedChains();
     }
@@ -230,11 +235,26 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
         return this.sourceChainId !== TRON_CHAIN_ID && routerDeploymentsForChain(this.routerRegistry, this.sourceChainId).length > 0;
     }
     async getSender() {
-        if (this.account?.getAddress)
-            return this.account.getAddress();
-        if (this.config.evm?.walletClient?.account?.address)
-            return this.config.evm.walletClient.account.address;
-        throw new ButterReadOnlyAccountError('Swidge execution requires a sender address from an account or wallet client');
+        const accountAddress = this.account?.getAddress ? await this.account.getAddress() : undefined;
+        const walletAddress = this.config.evm?.walletClient?.account?.address;
+        // Guard against a signer/initiator split: if both an account and a wallet
+        // client are configured with different addresses, the on-chain signer and
+        // the calldata initiator would diverge and Butter Router would reject.
+        if (accountAddress && walletAddress && !sameRecipient(accountAddress, walletAddress)) {
+            throw new ButterConfigurationError('Account address and evm.walletClient account address differ; configure a single sender', {
+                accountAddress,
+                walletAddress
+            });
+        }
+        const sender = accountAddress ?? walletAddress;
+        if (!sender) {
+            throw new ButterReadOnlyAccountError('Swidge execution requires a sender address from an account or evm.walletClient');
+        }
+        return sender;
+    }
+    /** Returns true when a sender address can be derived from the configuration. */
+    hasSenderAddress() {
+        return Boolean(this.account?.getAddress || this.config.evm?.walletClient?.account?.address);
     }
     assertExecutionCapability() {
         if (this.isBuiltInEvmExecution()) {
@@ -243,6 +263,12 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
                 this.config.evm?.walletClient);
             if (!canSend)
                 throw new ButterReadOnlyAccountError();
+            // A raw evm.sendTransaction carries no address; without an account or a
+            // wallet client we cannot determine the sender, so reject early with a
+            // specific error instead of a misleading read-only failure later.
+            if (!this.hasSenderAddress()) {
+                throw new ButterConfigurationError('evm.sendTransaction requires evm.walletClient (with an account) or a WDK account to determine the sender address');
+            }
             return;
         }
         if (!this.config.transactionAdapters?.[this.sourceChainId]) {

@@ -18,6 +18,10 @@ export const DEFAULT_APP_BASE_URL = 'https://bs-app-api.chainservice.io'
 
 export const ROUTE_TTL_SECONDS = 300
 export const ROUTE_EXPIRY_MARGIN_SECONDS = 15
+/** Maximum number of cached routes retained by a long-lived instance. */
+export const ROUTE_CACHE_MAX_ENTRIES = 256
+/** Butter router `errno` returned by `/findToken` when a token is unknown. */
+export const TOKEN_NOT_FOUND_ERRNO = 2002
 export const DEFAULT_SLIPPAGE_BPS = 100
 export const CROSS_CHAIN_MIN_SLIPPAGE_BPS = 150
 export const STRICT_CHAIN_MIN_SLIPPAGE_BPS = 300

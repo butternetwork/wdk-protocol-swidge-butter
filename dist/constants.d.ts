@@ -3,6 +3,10 @@ export declare const DEFAULT_TOKEN_BASE_URL = "https://bs-tokens-api.chainservic
 export declare const DEFAULT_APP_BASE_URL = "https://bs-app-api.chainservice.io";
 export declare const ROUTE_TTL_SECONDS = 300;
 export declare const ROUTE_EXPIRY_MARGIN_SECONDS = 15;
+/** Maximum number of cached routes retained by a long-lived instance. */
+export declare const ROUTE_CACHE_MAX_ENTRIES = 256;
+/** Butter router `errno` returned by `/findToken` when a token is unknown. */
+export declare const TOKEN_NOT_FOUND_ERRNO = 2002;
 export declare const DEFAULT_SLIPPAGE_BPS = 100;
 export declare const CROSS_CHAIN_MIN_SLIPPAGE_BPS = 150;
 export declare const STRICT_CHAIN_MIN_SLIPPAGE_BPS = 300;

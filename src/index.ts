@@ -23,8 +23,6 @@ export {
   ButterFeeValuationError,
   ButterReadOnlyAccountError,
   ButterExactOutUnsupportedError,
-  ButterQuoteRequiredError,
-  ButterQuoteExpiredError,
   ButterTransactionValidationError
 } from './errors.js'
 export { parseTokenAmount, formatTokenAmount } from './amounts.js'
@@ -34,6 +32,8 @@ export type {
   ButterRouterDeployment,
   ButterRouterVersion,
   ButterTransactionAdapter,
+  ButterChainExecution,
+  ButterSupportedChain,
   ButterRoute,
   ButterSwapTx,
   ButterAccount,

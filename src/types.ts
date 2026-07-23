@@ -83,6 +83,15 @@ export type ButterTransactionAdapter = (swapTx: ButterSwapTx, context: {
   options: SwidgeOptions
 }) => unknown
 
+/** How this instance would execute on a given chain. */
+export type ButterChainExecution = 'native' | 'adapter' | 'quote-only'
+
+/**
+ * A supported chain enriched with the Butter-specific `execution` mode, so the
+ * extra field is visible in the public type rather than only at runtime.
+ */
+export type ButterSupportedChain = SwidgeSupportedChain & { execution: ButterChainExecution }
+
 /** Router calldata validator versions implemented by this package. */
 export type ButterRouterVersion = 'v3'
 
@@ -121,8 +130,6 @@ export interface ButterSwidgeProtocolConfig extends SwidgeProtocolConfig {
    * any deeper validation of the provider-supplied transaction data.
    */
   transactionAdapters?: Record<string, ButterTransactionAdapter>
-  /** @deprecated Quote-only Butter chains are always exposed. */
-  exposeQuoteOnlyChains?: boolean
   evm?: {
     /**
      * Read-only client for ERC-20 allowance checks. Optional: without it the
