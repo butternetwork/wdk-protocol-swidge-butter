@@ -1,14 +1,29 @@
+// Copyright 2026 Butter Network
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 import { SwidgeProtocol } from '@tetherto/wdk-wallet/protocols';
 import { DEFAULT_APP_BASE_URL, DEFAULT_ROUTER_BASE_URL, DEFAULT_TOKEN_BASE_URL, TRON_CHAIN_ID } from './constants.js';
 import { ButterHttpClient } from './http.js';
 import { RouteManager } from './route.js';
+import { enforceFeeLimits, resolveFeeLimits, routeNativeFee } from './fees.js';
 import { routeToQuote } from './mappers.js';
 import { DiscoveryService } from './discovery.js';
 import { validateSwapTransactions } from './swap-data.js';
 import { executeEvmSwap, isNativeToken } from './evm.js';
 import { mapStatusResponse } from './status.js';
 import { createRouterRegistry, routerDeploymentsForChain } from './router-registry.js';
-import { ButterConfigurationError, ButterExactOutUnsupportedError, ButterUnsupportedError } from './errors.js';
+import { ButterApiError, ButterConfigurationError, ButterExactOutUnsupportedError, ButterReadOnlyAccountError, ButterUnsupportedError } from './errors.js';
+/** Butter Smart Router implementation of the WDK Swidge protocol. */
 export class ButterSwidgeProtocol extends SwidgeProtocol {
     account;
     config;
@@ -18,6 +33,8 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
     now;
     sourceChainId;
     routerRegistry;
+    feeContext;
+    /** Creates a protocol instance bound to one source chain. */
     constructor(account, config) {
         super(account, config);
         if (config.sourceChainId == null || config.sourceChainId === '') {
@@ -30,6 +47,12 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
         this.config = config;
         this.sourceChainId = String(config.sourceChainId);
         this.routerRegistry = createRouterRegistry(config.routerContracts);
+        resolveFeeLimits(config, {});
+        this.feeContext = {
+            sourceChainId: this.sourceChainId,
+            sourceToken: '',
+            ...(config.nativeTokenDecimals ? { nativeTokenDecimals: config.nativeTokenDecimals } : {})
+        };
         this.now = config.now ?? (() => Math.floor(Date.now() / 1000));
         const fetchImpl = config.fetch ?? globalThis.fetch;
         if (!fetchImpl) {
@@ -42,31 +65,41 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
             fetch: fetchImpl,
             apiKeyId: config.apiKeyId,
             apiSecret: config.apiSecret,
-            authMode: config.authMode ?? 'required'
+            authMode: config.authMode ?? 'optional'
         });
+        const strictSlippageChainIds = new Set((config.strictSlippageChainIds ?? []).map(String));
         this.routes = new RouteManager({
             sourceChainId: this.sourceChainId,
             entrance: config.entrance,
             now: this.now,
             tokenDecimals: config.tokenDecimals ?? {},
+            nativeTokenDecimals: config.nativeTokenDecimals ?? {},
+            strictSlippageChainIds,
             requestRoute: (params) => this.http.router('/route', params)
         });
-        this.discovery = new DiscoveryService(config, (path, params) => this.http.router(path, params), (path, params) => this.http.token(path, params));
+        this.discovery = new DiscoveryService(config, (path, params) => this.http.router(path, params), (path, params) => this.http.token(path, params), strictSlippageChainIds);
     }
+    /** Returns a non-binding exact-in quote without requiring execution capability. */
     async quoteSwidge(options) {
         this.assertQuoteOptions(options);
-        this.assertExecutionSupportForQuote();
         const cached = await this.routes.getRoute(options);
         this.routes.enforceMinAmountOut(options, cached.route);
-        return routeToQuote(cached.route, this.now, cached.expiresAt);
+        return routeToQuote(cached.route, this.now, cached.expiresAt, this.feeContextFor(options.fromToken));
     }
-    async swidge(options) {
+    /** Executes an exact-in operation after validating route fees and transaction intent. */
+    async swidge(options, config = {}) {
         this.assertQuoteOptions(options);
+        this.assertExecutionCapability(options);
         const sender = await this.getSender();
+        if (options.refundAddress && !sameRecipient(options.refundAddress, sender)) {
+            throw new ButterUnsupportedError('Butter requires refundAddress to match the source sender');
+        }
         const receiver = options.recipient ?? sender;
         const cached = await this.routes.getRoute(options, { forExecution: true });
         this.routes.enforceMinAmountOut(options, cached.route);
-        const quote = routeToQuote(cached.route, this.now, cached.expiresAt);
+        const feeContext = this.feeContextFor(options.fromToken);
+        enforceFeeLimits(cached.route, feeContext, resolveFeeLimits(this.config, config));
+        const quote = routeToQuote(cached.route, this.now, cached.expiresAt, feeContext);
         const swapData = await this.http.router('/swap', {
             hash: cached.route.hash,
             slippage: cached.slippageBps,
@@ -85,7 +118,8 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
             receiver,
             sourceToken: options.fromToken,
             destinationToken: options.toToken,
-            requireRouterAllowlist: this.isBuiltInEvmExecution()
+            requireRouterAllowlist: this.isBuiltInEvmExecution(),
+            quotedNativeFee: routeNativeFee(cached.route, feeContext)
         };
         if ('fromTokenAmount' in options && options.fromTokenAmount != null) {
             swapValidationContext.requestedAmountIn = BigInt(options.fromTokenAmount);
@@ -126,23 +160,25 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
             toTokenAmountMin: quote.toTokenAmountMin
         };
     }
+    /** Retrieves a Butter operation by source hash or, when requested, order ID. */
     async getSwidgeStatus(id, options = {}) {
+        if (!id.trim())
+            throw new ButterApiError('A non-empty swidge id is required');
         const data = options.byOrderId
             ? await this.http.app('/api/queryCrossInfoByOrderId', { orderId: id })
             : await this.http.app('/api/queryBridgeInfoBySourceHash', { hash: id });
         return mapStatusResponse(id, data, options);
     }
+    /** Lists chains currently advertised by Butter Router. */
     async getSupportedChains() {
         return this.discovery.getSupportedChains();
     }
+    /** Lists all Butter-supported tokens for the selected chain. */
     async getSupportedTokens(options = {}) {
         const chainId = String(options.fromChain ?? options.toChain ?? this.sourceChainId);
         return this.discovery.getSupportedTokens(chainId);
     }
     assertQuoteOptions(options) {
-        if (options.refundAddress) {
-            throw new ButterUnsupportedError('Butter router does not expose an explicit refundAddress parameter');
-        }
         if (!options.fromToken || !options.toToken) {
             throw new ButterUnsupportedError('fromToken and toToken are required');
         }
@@ -168,15 +204,6 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
             throw new ButterUnsupportedError('fromTokenAmount must be a positive integer in base units', { cause });
         }
     }
-    assertExecutionSupportForQuote() {
-        if (this.config.exposeQuoteOnlyChains)
-            return;
-        if (this.isBuiltInEvmExecution())
-            return;
-        if (this.config.transactionAdapters?.[this.sourceChainId])
-            return;
-        throw new ButterUnsupportedError(`Chain ${this.sourceChainId} is not executable without a transaction adapter`);
-    }
     isBuiltInEvmExecution() {
         return this.sourceChainId !== TRON_CHAIN_ID && routerDeploymentsForChain(this.routerRegistry, this.sourceChainId).length > 0;
     }
@@ -187,7 +214,28 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
             return this.account.getAddress();
         if (this.account?.address)
             return this.account.address;
-        throw new ButterUnsupportedError('A sender address is required');
+        throw new ButterReadOnlyAccountError('Swidge execution requires a sender address from an account or wallet client');
+    }
+    assertExecutionCapability(options) {
+        if (this.isBuiltInEvmExecution()) {
+            const canSend = Boolean(this.config.evm?.sendTransaction ||
+                this.config.evm?.walletClient ||
+                (this.config.evm?.useAccountTransaction && this.account?.sendTransaction));
+            if (!canSend)
+                throw new ButterReadOnlyAccountError();
+            if (!isNativeToken(options.fromToken) && !this.config.evm?.publicClient) {
+                throw new ButterConfigurationError('evm.publicClient is required for ERC20 approval checks');
+            }
+            return;
+        }
+        if (!this.config.transactionAdapters?.[this.sourceChainId]) {
+            throw new ButterConfigurationError(`No transaction adapter configured for chain ${this.sourceChainId}`);
+        }
+        if (!this.account?.sendTransaction)
+            throw new ButterReadOnlyAccountError();
+    }
+    feeContextFor(sourceToken) {
+        return { ...this.feeContext, sourceToken };
     }
 }
 function hashOf(result) {
@@ -196,6 +244,9 @@ function hashOf(result) {
     if (result.hash)
         return result.hash;
     throw new ButterConfigurationError('Transaction sender did not return a hash');
+}
+function sameRecipient(left, right) {
+    return left.toLowerCase() === right.toLowerCase();
 }
 export default ButterSwidgeProtocol;
 //# sourceMappingURL=protocol.js.map

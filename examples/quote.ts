@@ -1,11 +1,12 @@
 import ButterSwidgeProtocol from '@butternetwork/wdk-protocol-swidge-butter'
 
 import {
-  butterIntegrationFromEnv,
+  butterAuthFromEnv,
   envOrDefault,
   numberFromEnv,
   positiveBigIntFromEnv,
   printJson,
+  requireEnv,
   runExample
 } from './shared.js'
 
@@ -29,7 +30,8 @@ runExample(async () => {
     : { [fromToken]: numberFromEnv('FROM_TOKEN_DECIMALS') }
   const protocol = new ButterSwidgeProtocol(undefined, {
     sourceChainId,
-    ...butterIntegrationFromEnv(),
+    entrance: requireEnv('BUTTER_ENTRANCE'),
+    ...butterAuthFromEnv(),
     tokenDecimals,
     exposeQuoteOnlyChains: true
   })

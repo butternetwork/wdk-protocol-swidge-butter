@@ -1,3 +1,16 @@
+// Copyright 2026 Butter Network
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 import { decodeAbiParameters, decodeFunctionData, isAddress, parseAbi, parseAbiParameters } from 'viem';
 import { NATIVE_TOKEN_ADDRESSES } from './constants.js';
 import { parseIntegerAmount } from './amounts.js';
@@ -84,6 +97,7 @@ function validateEvmRouterTransaction(tx, context) {
         throw new ButterTransactionValidationError('Butter Router permit data is not supported');
     }
     const sameChain = context.sourceChainId === context.destinationChainId;
+    let bridgeNativeFee = 0n;
     if (sameChain) {
         if (decoded.functionName !== 'swapAndCall') {
             throw new ButterTransactionValidationError('Same-chain Butter execution must use swapAndCall');
@@ -97,7 +111,13 @@ function validateEvmRouterTransaction(tx, context) {
         if (decoded.functionName !== 'swapAndBridge') {
             throw new ButterTransactionValidationError('Cross-chain Butter execution must use swapAndBridge');
         }
-        validateCrossChainParams(encodedSwap, functionData, context);
+        bridgeNativeFee = validateCrossChainParams(encodedSwap, functionData, context);
+        if (context.quotedNativeFee == null || bridgeNativeFee !== context.quotedNativeFee) {
+            throw new ButterTransactionValidationError('Butter Router native fee does not match quote', {
+                expected: context.quotedNativeFee?.toString(),
+                actual: bridgeNativeFee.toString()
+            });
+        }
     }
     let nativeValue;
     try {
@@ -106,7 +126,7 @@ function validateEvmRouterTransaction(tx, context) {
     catch (cause) {
         throw new ButterTransactionValidationError('Butter /swap returned an invalid native value', { cause });
     }
-    const expectedValue = context.nativeSource ? context.requestedAmountIn : 0n;
+    const expectedValue = (context.nativeSource ? context.requestedAmountIn : 0n) + bridgeNativeFee;
     if (expectedValue == null || nativeValue !== expectedValue) {
         throw new ButterTransactionValidationError('Butter /swap native value does not match quoted input', {
             expected: expectedValue?.toString(),
@@ -156,7 +176,7 @@ function validateCrossChainParams(encodedSwap, encodedBridge, context) {
     }
     if (bridge.data === '0x') {
         validateDirectBridgeRecipient(bridge.receiver, bridgedToken, context);
-        return;
+        return bridge.nativeFee;
     }
     let adapter;
     try {
@@ -169,7 +189,7 @@ function validateCrossChainParams(encodedSwap, encodedBridge, context) {
     assertPackedAddressEqual(adapter.refundAddress, context.sender, 'Butter bridge refund address does not match sender');
     if (adapter.swapData === '0x') {
         validateDirectBridgeRecipient(bridge.receiver, bridgedToken, context);
-        return;
+        return bridge.nativeFee;
     }
     const destinationRouter = packedAddress(bridge.receiver, 'Butter destination router address is malformed');
     assertRouterAllowed(destinationRouter, context.destinationChainId, context.routerRegistry);
@@ -198,6 +218,7 @@ function validateCrossChainParams(encodedSwap, encodedBridge, context) {
             actual: destinationSwap.minAmount.toString()
         });
     }
+    return bridge.nativeFee;
 }
 function validateDirectBridgeRecipient(receiver, bridgedToken, context) {
     assertPackedAddressEqual(receiver, context.receiver, 'Butter bridge receiver does not match requested recipient');

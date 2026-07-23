@@ -13,6 +13,7 @@ export interface SwapValidationContext {
     sourceToken: string;
     destinationToken: string;
     requireRouterAllowlist: boolean;
+    quotedNativeFee?: bigint;
 }
 export declare function validateSwapTransactions(swapData: unknown, context: SwapValidationContext): ButterSwapTx[];
 export declare function validateSwapTransaction(value: unknown, context: SwapValidationContext): ButterSwapTx;

@@ -10,9 +10,9 @@ cp examples/.env.example examples/.env
 ```
 
 Never commit `examples/.env`. Discovery and status requests can run without
-Butter credentials. Quotes and swaps require a dedicated `BUTTER_ENTRANCE`,
-`BUTTER_API_KEY_ID`, and `BUTTER_API_SECRET`; obtain these integration values
-from Butter.
+Butter credentials. Quotes require a dedicated `BUTTER_ENTRANCE`; API
+credentials are optional but recommended because anonymous requests are rate
+limited. The real swap example requires all three integration values.
 
 ## Discover chains and tokens
 
@@ -32,8 +32,8 @@ npm run example:quote
 The defaults request a small BNB Smart Chain native-token to Polygon
 native-token quote. Override the chain, token, amount, recipient, or slippage in
 `examples/.env`. ERC20 source tokens also require `FROM_TOKEN_DECIMALS`. The
-script fails locally before contacting Butter when integration credentials are
-missing.
+script fails locally before contacting Butter when `BUTTER_ENTRANCE` is missing
+or only one API credential is provided.
 
 ## Query status
 
@@ -67,5 +67,5 @@ npm run example:swap
 
 The default pair is native BNB to BSC USDT. An ERC20 source token additionally
 requires `EXECUTION_FROM_TOKEN_DECIMALS` and may submit an approval transaction.
-Cross-chain execution is intentionally omitted until its bridge payload encoding
-has a versioned validator.
+The example remains same-chain to limit operational risk. The package supports
+cross-chain Router V3 execution with versioned calldata validation.

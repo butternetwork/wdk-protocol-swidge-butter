@@ -4,6 +4,8 @@ export interface RouteRequestContext {
     entrance: string;
     now: () => number;
     tokenDecimals: Record<string, number>;
+    nativeTokenDecimals: Record<string, number>;
+    strictSlippageChainIds: Set<string>;
     requestRoute: (params: Record<string, unknown>) => Promise<ButterRoute[] | ButterRoute>;
 }
 export declare class RouteManager {

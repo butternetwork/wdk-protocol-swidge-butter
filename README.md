@@ -3,7 +3,7 @@
 Butter Network Swidge provider for WDK.
 
 This package adapts WDK's Swidge interface to Butter Smart Router's `/route`,
-`/swap`, `/supportedChainInfo`, `/findToken`, and Butter swap-data APIs.
+`/swap`, `/supportedChainInfo`, token-discovery, and Butter swap-data APIs.
 
 ## Install
 
@@ -33,16 +33,19 @@ Only exact-in quotes are supported. Pass `fromTokenAmount` as a positive
 `toTokenAmount` is rejected before any network request.
 
 `apiSecret` must not be bundled into browser or mobile clients. For public
-clients, use a backend proxy or explicitly set `authMode: 'optional'` and accept
-Butter's unauthenticated rate-limit behavior.
+clients, use a backend proxy. Authentication defaults to `optional`; anonymous
+requests are subject to Butter's unauthenticated rate limits. Set
+`authMode: 'required'` for production integrations that must never fall back to
+anonymous requests.
 
 ## Behavior
 
-- `quoteSwidge(options)` calls Butter `/route` and stores the confirmed quote.
-- `swidge(options)` consumes that quote once, without silently replacing it,
-  calls `/swap` with the same route hash and slippage, validates the returned
-  transaction intent, performs EVM approval when required, then sends the
-  source transaction. Missing, expired, or already-consumed quotes are rejected.
+- `quoteSwidge(options)` calls Butter `/route` and stores a non-binding quote as
+  an optional execution cache.
+- `swidge(options, config?)` can be called directly. It reuses a matching fresh
+  cached route or obtains a new one, enforces fee limits, calls `/swap`, validates
+  the returned transaction intent, performs EVM approval when required, then
+  sends the source transaction.
 - `getSwidgeStatus(id)` calls
   `/api/queryBridgeInfoBySourceHash`; `{ byOrderId: true }` calls
   `/api/queryCrossInfoByOrderId`.
@@ -55,12 +58,14 @@ Butter's unauthenticated rate-limit behavior.
 - `sourceChainId` and `entrance` are required.
 - Exact-out, zero inputs, unsafe JavaScript numbers, and amount conversions that
   would discard decimal precision are rejected.
-- Cross-chain slippage below Butter's documented floor is rejected instead of
-  silently increased. BTC routes use the stricter 300 bps floor.
+- Explicit cross-chain slippage below Butter's documented floor is rejected.
+  Defaults use the applicable minimum. BTC and TON routes use the stricter 300
+  bps floor; additional IDs can be configured with `strictSlippageChainIds`.
 - `minAmountOut` is enforced locally because Butter's documented `/route` API
   does not expose a separate request parameter for it.
-- `refundAddress` is rejected because Butter's documented Router APIs do not
-  expose a dedicated refund-address parameter.
+- Quotes accept `refundAddress`. Execution requires it to match the source
+  sender because Butter's Router API does not expose an independent refund
+  recipient.
 - EVM Router V3 calldata is ABI-decoded. The target, source and destination
   chains, initiator, source token and amount, final token and recipient, leftover
   and refund recipients, and minimum output must match the confirmed intent.
@@ -69,13 +74,35 @@ Butter's unauthenticated rate-limit behavior.
   to an explicit deployment version.
 - ERC20 approval only occurs after the full calldata validation and only targets
   a configured Butter router for the source chain.
-- Native-source transaction value must equal the exact input amount; ERC20
-  Router transactions must carry zero native value. Routes requiring additional
-  native value fail closed.
+- Same-chain transaction value is the native input amount or zero for ERC20.
+  Cross-chain value additionally includes the decoded and quoted
+  `bridge.nativeFee`; mismatches between route, calldata, and transaction value
+  fail closed.
+- `maxNetworkFeeBps` and `maxProtocolFeeBps` are enforced before `/swap`,
+  approvals, or transaction submission. Per-call values override constructor
+  defaults. Cross-token fees require route-provided USD or same-stage valuation
+  metadata when a cap is enabled.
+- Quotes and discovery do not require a signer or local transaction adapter.
+  Execution without a send-capable account or configured signer fails before a
+  route request.
 - Tron, Solana, BTC, and TON require explicit `transactionAdapters`; Tron is not
   treated as viem-compatible EVM execution.
 - EVM transaction submission requires `evm.walletClient`, `evm.sendTransaction`,
   or explicit `evm.useAccountTransaction`.
+
+Example fee policy:
+
+```ts
+const protocol = new ButterSwidgeProtocol(account, {
+  sourceChainId: 56,
+  entrance: 'wdk',
+  maxNetworkFeeBps: 100,
+  maxProtocolFeeBps: 200,
+  evm: { publicClient, walletClient }
+})
+
+await protocol.swidge(options, { maxNetworkFeeBps: 50 })
+```
 
 ## Router Registry
 

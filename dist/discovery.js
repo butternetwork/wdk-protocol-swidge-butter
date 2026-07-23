@@ -1,15 +1,31 @@
+// Copyright 2026 Butter Network
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 import { TRON_CHAIN_ID } from './constants.js';
+import { ButterApiError } from './errors.js';
 import { chainToSupportedChain, normalizeId, tokenToSupportedToken } from './mappers.js';
 import { createRouterRegistry, routerDeploymentsForChain } from './router-registry.js';
 export class DiscoveryService {
     config;
     requestRouter;
     requestToken;
+    strictSlippageChainIds;
     chainDetails;
-    constructor(config, requestRouter, requestToken) {
+    constructor(config, requestRouter, requestToken, strictSlippageChainIds) {
         this.config = config;
         this.requestRouter = requestRouter;
         this.requestToken = requestToken;
+        this.strictSlippageChainIds = strictSlippageChainIds;
     }
     async getSupportedChains() {
         const [routerChains, tokenChains] = await Promise.all([
@@ -23,6 +39,8 @@ export class DiscoveryService {
         return routerChains.map((chain) => {
             const id = normalizeId(chain.chainId ?? chain.id);
             const detail = this.chainDetails?.get(id) ?? chain;
+            if (isStrictSlippageChain({ ...chain, ...detail }))
+                this.strictSlippageChainIds.add(id);
             return chainToSupportedChain({ ...chain, ...detail }, executionFor(id, this.config));
         });
     }
@@ -30,17 +48,46 @@ export class DiscoveryService {
         const network = await this.networkKeyForChain(chainId);
         const tokens = [];
         let pageNo = 1;
-        let count = 0;
-        do {
+        let count;
+        const seen = new Set();
+        const maxPages = 1000;
+        while (true) {
+            if (pageNo > maxPages)
+                throw new ButterApiError(`Butter token pagination exceeded ${maxPages} pages`);
             const data = await this.requestToken('/api/queryTokenList', {
                 network,
                 pageNo,
                 pageSize: 100
             });
-            count = data.count ?? data.results?.length ?? 0;
-            tokens.push(...(data.results ?? []).map((token) => tokenToSupportedToken(token, chainId)));
+            const results = data.results ?? [];
+            if (data.count != null)
+                count = data.count;
+            if (results.length === 0 && count != null && tokens.length < count) {
+                throw new ButterApiError('Butter token pagination returned an empty page before the advertised count', {
+                    pageNo,
+                    count,
+                    received: tokens.length
+                });
+            }
+            if (results.length === 0)
+                break;
+            let added = 0;
+            for (const token of results.map((item) => tokenToSupportedToken(item, chainId))) {
+                const key = `${token.chain}:${token.token}`.toLowerCase();
+                if (seen.has(key))
+                    continue;
+                seen.add(key);
+                tokens.push(token);
+                added++;
+            }
+            const moreExpected = count != null ? tokens.length < count : results.length >= 100;
+            if (added === 0 && moreExpected) {
+                throw new ButterApiError('Butter token pagination made no progress', { pageNo, count, received: tokens.length });
+            }
+            if (count != null ? tokens.length >= count : results.length < 100)
+                break;
             pageNo++;
-        } while (tokens.length < count);
+        }
         return tokens;
     }
     async networkKeyForChain(chainId) {
@@ -51,6 +98,13 @@ export class DiscoveryService {
         return chain?.key ?? chainId;
     }
 }
+function isStrictSlippageChain(chain) {
+    const values = [chain.chainType, chain.type, chain.name, chain.key];
+    return values.some((value) => {
+        const normalized = String(value ?? '').toLowerCase();
+        return normalized === 'btc' || normalized === 'ton' || normalized.includes('bitcoin') || normalized.includes('toncoin');
+    });
+}
 function executionFor(chainId, config) {
     if (chainId === TRON_CHAIN_ID)
         return config.transactionAdapters?.[chainId] ? 'adapter' : 'quote-only';
@@ -58,6 +112,6 @@ function executionFor(chainId, config) {
         return 'native';
     if (config.transactionAdapters?.[chainId])
         return 'adapter';
-    return config.exposeQuoteOnlyChains ? 'quote-only' : 'unsupported';
+    return 'quote-only';
 }
 //# sourceMappingURL=discovery.js.map

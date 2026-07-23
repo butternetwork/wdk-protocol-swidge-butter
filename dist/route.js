@@ -1,5 +1,19 @@
-import { NATIVE_TOKEN_ADDRESSES, ROUTE_EXPIRY_MARGIN_SECONDS, ROUTE_TTL_SECONDS, SOLANA_CHAIN_ID } from './constants.js';
-import { ButterActionRequiredError, ButterApiError, ButterQuoteExpiredError, ButterQuoteRequiredError } from './errors.js';
+// Copyright 2026 Butter Network
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+import { NATIVE_TOKEN_ADDRESSES, ROUTE_EXPIRY_MARGIN_SECONDS, ROUTE_TTL_SECONDS, SOLANA_CHAIN_ID, STRICT_CHAIN_MIN_SLIPPAGE_BPS } from './constants.js';
+import { nativeDecimalsForChain } from './fees.js';
+import { ButterActionRequiredError, ButterApiError, ButterExactOutUnsupportedError } from './errors.js';
 import { formatTokenAmount, parseTokenAmount } from './amounts.js';
 import { toButterSlippage } from './slippage.js';
 export class RouteManager {
@@ -13,14 +27,13 @@ export class RouteManager {
         const key = stableRouteKey(request, options);
         const cached = this.cache.get(key);
         if (forExecution) {
-            if (!cached)
-                throw new ButterQuoteRequiredError();
-            this.cache.delete(key);
-            if (cached.expiresAt <= this.context.now())
-                throw new ButterQuoteExpiredError();
-            return cached;
+            if (cached) {
+                this.cache.delete(key);
+                if (cached.expiresAt > this.context.now())
+                    return cached;
+            }
         }
-        if (cached && cached.expiresAt - ROUTE_EXPIRY_MARGIN_SECONDS > this.context.now()) {
+        if (!forExecution && cached && cached.expiresAt - ROUTE_EXPIRY_MARGIN_SECONDS > this.context.now()) {
             return cached;
         }
         const response = await this.context.requestRoute(request);
@@ -35,7 +48,8 @@ export class RouteManager {
             slippageBps: Number(request.slippage),
             expiresAt: routeExpiresAt(route, this.context.now())
         };
-        this.cache.set(key, cachedRoute);
+        if (!forExecution)
+            this.cache.set(key, cachedRoute);
         return cachedRoute;
     }
     buildRouteRequest(options) {
@@ -43,14 +57,16 @@ export class RouteManager {
         if (this.context.sourceChainId === SOLANA_CHAIN_ID && !options.recipient) {
             throw new ButterActionRequiredError('Butter requires receiver when source chain is Solana');
         }
-        const exactIn = 'fromTokenAmount' in options && options.fromTokenAmount != null;
-        const amount = exactIn
-            ? formatTokenAmount(options.fromTokenAmount, this.decimalsFor(options.fromToken))
-            : formatTokenAmount(options.toTokenAmount, this.decimalsFor(options.toToken));
+        if (!('fromTokenAmount' in options) || options.fromTokenAmount == null) {
+            throw new ButterExactOutUnsupportedError();
+        }
+        const amount = formatTokenAmount(options.fromTokenAmount, this.decimalsFor(options.fromToken));
+        const strictChain = this.context.strictSlippageChainIds.has(this.context.sourceChainId) || this.context.strictSlippageChainIds.has(toChainId);
         const slippage = toButterSlippage(options.slippage, {
             crossChain: toChainId !== this.context.sourceChainId,
             sourceChainId: this.context.sourceChainId,
-            toChainId
+            toChainId,
+            ...(strictChain ? { strictChainMinimum: STRICT_CHAIN_MIN_SLIPPAGE_BPS } : {})
         });
         return {
             fromChainId: this.context.sourceChainId,
@@ -58,7 +74,7 @@ export class RouteManager {
             amount,
             tokenInAddress: options.fromToken,
             tokenOutAddress: options.toToken,
-            type: exactIn ? 'exactIn' : 'exactOut',
+            type: 'exactIn',
             slippage,
             receiver: options.recipient,
             entrance: this.context.entrance
@@ -81,7 +97,7 @@ export class RouteManager {
         if (normalized === 'btc')
             return 8;
         if (NATIVE_TOKEN_ADDRESSES.has(normalized))
-            return 18;
+            return nativeDecimalsForChain(this.context.sourceChainId, this.context.nativeTokenDecimals);
         const decimals = this.context.tokenDecimals[token] ?? this.context.tokenDecimals[normalized];
         if (decimals == null) {
             throw new ButterActionRequiredError(`Token decimals are required for ${token}`);
