@@ -1140,6 +1140,88 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     assert.equal(quote.fromTokenAmount, 1500000000000000000n)
   })
 
+  it('pins an approved quote by routeHash and skips re-quoting at execution', async () => {
+    const fetch = makeFetch({
+      '/route': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [quoteRoute({
+          swapFee: { nativeFee: '0', tokenFee: '0' },
+          srcChain: sourceChainWithToken(NATIVE_TOKEN),
+          dstChain: {
+            chainId: '137',
+            tokenOut: { address: DEST_TOKEN, decimals: 6, symbol: 'USDT' },
+            totalAmountOut: '10.25'
+          }
+        })]
+      }),
+      '/swap': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [{
+          to: ROUTER,
+          value: '1500000000000000000',
+          data: crossChainSwapData(NATIVE_TOKEN, 1500000000000000000n),
+          chainId: '56',
+          method: 'swapAndBridge'
+        }]
+      })
+    })
+    const protocol = new ButterSwidgeProtocol(account, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch,
+      now: () => 1000,
+      evm: { sendTransaction: async () => '0xsourcehash' }
+    })
+    const options = {
+      fromToken: NATIVE_TOKEN,
+      toToken: DEST_TOKEN,
+      toChain: 137,
+      recipient: VALID_RECIPIENT,
+      fromTokenAmount: 1500000000000000000n,
+      slippage: 0.02
+    }
+
+    const quote = await protocol.quoteSwidge(options)
+    assert.equal(quote.routeHash, '0xroute')
+    const result = await protocol.swidge({ ...options, routeHash: quote.routeHash } as never)
+
+    assert.equal(result.id, '0xsourcehash')
+    // Only the quote called /route; the pinned execution reused that route.
+    assert.equal(fetch.calls.filter(({ url }) => url.pathname === '/route').length, 1)
+  })
+
+  it('rejects a stale or unknown pinned routeHash instead of silently re-quoting', async () => {
+    const fetch = makeFetch({
+      '/route': async () => ({ errno: 0, message: 'success', data: [quoteRoute()] })
+    })
+    const protocol = new ButterSwidgeProtocol(account, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch,
+      now: () => 1000,
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS,
+      evm: { sendTransaction: async () => '0xshould-not-send' }
+    })
+
+    // No prior quote cached this hash: execution must fail, not re-quote.
+    await assert.rejects(
+      protocol.swidge({
+        fromToken: '0xfrom',
+        toToken: '0xto',
+        toChain: 137,
+        recipient: VALID_RECIPIENT,
+        fromTokenAmount: 1500000000000000000n,
+        slippage: 0.02,
+        routeHash: '0xunknown'
+      } as never),
+      ButterActionRequiredError
+    )
+    assert.equal(fetch.calls.filter(({ url }) => url.pathname === '/route').length, 0)
+    assert.equal(fetch.calls.filter(({ url }) => url.pathname === '/swap').length, 0)
+  })
+
   it('rejects a route that omits destination token decimals instead of defaulting to 18', async () => {
     const fetch = makeFetch({
       '/route': async () => ({
@@ -1679,6 +1761,51 @@ describe('ButterSwidgeProtocol formal behavior', () => {
 
       await assert.rejects(protocol.getSwidgeStatus('0xsourcehash'), ButterApiError)
     }
+  })
+
+  it('does not fabricate a source transaction from an order id when Butter omits the source hash', async () => {
+    const fetch = makeFetch({
+      '/api/queryCrossInfoByOrderId': async (url) => {
+        assert.equal(url.searchParams.get('orderId'), 'order-123')
+        return { code: 200, message: 'success', data: { info: { state: 0 } } }
+      }
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+
+    const result = await protocol.getSwidgeStatus('order-123', { byOrderId: true })
+    assert.equal(result.status, 'pending')
+    // The order id must not be surfaced as a (fake) source transaction hash.
+    assert.deepEqual(result.transactions, [])
+  })
+
+  it('uses the queried source hash when Butter omits it on a bySourceHash lookup', async () => {
+    const fetch = makeFetch({
+      '/api/queryBridgeInfoBySourceHash': async () => ({ code: 200, message: 'success', data: { info: { state: 1 } } })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+
+    const result = await protocol.getSwidgeStatus('0xsourcehash')
+    assert.equal(result.status, 'completed')
+    assert.deepEqual(result.transactions, [{ hash: '0xsourcehash', chain: undefined, type: 'source' }])
+  })
+
+  it('parses an array-shaped status response and a scalar chain id', async () => {
+    const fetch = makeFetch({
+      '/api/queryBridgeInfoBySourceHash': async () => ({
+        code: 200,
+        message: 'success',
+        // Array shape + fromChain/toChain as bare scalars rather than objects.
+        data: [{ state: 1, sourceHash: '0xsourcehash', toHash: '0xdest', fromChain: 56, toChain: 137 }]
+      })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+
+    const result = await protocol.getSwidgeStatus('0xsourcehash')
+    assert.equal(result.status, 'completed')
+    assert.deepEqual(result.transactions, [
+      { hash: '0xsourcehash', chain: '56', type: 'source' },
+      { hash: '0xdest', chain: '137', type: 'destination' }
+    ])
   })
 
   it('maps all canonical WDK status strings and rejects an empty id', async () => {

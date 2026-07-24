@@ -1,5 +1,5 @@
 import { SwidgeProtocol } from '@tetherto/wdk-wallet/protocols';
-import type { ButterAccount, ButterSupportedChain, ButterSwidgeProtocolConfig, SwidgeOptions, SwidgeProtocolConfig, SwidgeQuote, SwidgeResult, SwidgeStatusResult, SwidgeSupportedToken, SwidgeSupportedTokensOptions } from './types.js';
+import type { ButterAccount, ButterSupportedChain, ButterSwidgeProtocolConfig, ButterSwidgeQuote, SwidgeOptions, SwidgeProtocolConfig, SwidgeResult, SwidgeStatusResult, SwidgeSupportedToken, SwidgeSupportedTokensOptions } from './types.js';
 /** Butter Smart Router implementation of the WDK Swidge protocol. */
 export declare class ButterSwidgeProtocol extends SwidgeProtocol {
     private readonly account;
@@ -19,8 +19,11 @@ export declare class ButterSwidgeProtocol extends SwidgeProtocol {
      * Fee caps are intentionally not enforced here: a quote must remain a fully
      * inspectable estimate (WDK only mandates rejection in {@link swidge}). Fee
      * limits are applied at execution time.
+     *
+     * The returned quote carries `routeHash`; pass it back as `options.routeHash`
+     * to {@link swidge} to pin this exact route instead of auto-re-quoting.
      */
-    quoteSwidge(options: SwidgeOptions): Promise<SwidgeQuote>;
+    quoteSwidge(options: SwidgeOptions): Promise<ButterSwidgeQuote>;
     /** Executes an exact-in operation after validating route fees and transaction intent. */
     swidge(options: SwidgeOptions, config?: SwidgeProtocolConfig): Promise<SwidgeResult>;
     /** Retrieves a Butter operation by source hash or, when requested, order ID. */
