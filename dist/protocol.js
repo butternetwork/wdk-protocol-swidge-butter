@@ -90,12 +90,16 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
      * Fee caps are intentionally not enforced here: a quote must remain a fully
      * inspectable estimate (WDK only mandates rejection in {@link swidge}). Fee
      * limits are applied at execution time.
+     *
+     * The returned quote carries `routeHash`; pass it back as `options.routeHash`
+     * to {@link swidge} to pin this exact route instead of auto-re-quoting.
      */
     async quoteSwidge(options) {
         this.assertQuoteOptions(options);
         const cached = await this.routes.getRoute(options);
         this.routes.enforceMinAmountOut(options, cached.route);
-        return routeToQuote(cached.route, this.now, cached.expiresAt, this.feeContextFor(options.fromToken), options.fromTokenAmount);
+        const quote = routeToQuote(cached.route, this.now, cached.expiresAt, this.feeContextFor(options.fromToken), options.fromTokenAmount);
+        return { ...quote, routeHash: cached.route.hash };
     }
     /** Executes an exact-in operation after validating route fees and transaction intent. */
     async swidge(options, config = {}) {
@@ -106,7 +110,10 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
             throw new ButterUnsupportedError('Butter requires refundAddress to match the source sender');
         }
         const receiver = options.recipient ?? sender;
-        const cached = await this.routes.getRoute(options, { forExecution: true });
+        const pinnedHash = butterRouteHash(options);
+        const cached = pinnedHash != null
+            ? await this.routes.consumeRouteByHash(pinnedHash, options)
+            : await this.routes.getRoute(options, { forExecution: true });
         this.routes.enforceMinAmountOut(options, cached.route);
         const feeContext = this.feeContextFor(options.fromToken);
         enforceFeeLimits(cached.route, feeContext, resolveFeeLimits(this.config, config));
@@ -290,6 +297,11 @@ function hashOf(result) {
 }
 function sameRecipient(left, right) {
     return left.toLowerCase() === right.toLowerCase();
+}
+/** Reads the optional Butter-specific `routeHash` pin from swidge options. */
+function butterRouteHash(options) {
+    const hash = options.routeHash;
+    return typeof hash === 'string' && hash.length > 0 ? hash : undefined;
 }
 export default ButterSwidgeProtocol;
 //# sourceMappingURL=protocol.js.map

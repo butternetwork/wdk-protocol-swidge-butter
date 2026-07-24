@@ -49,15 +49,18 @@ import type {
   ButterAccount,
   ButterRoute,
   ButterSupportedChain,
+  ButterSwidgeExecutionOptions,
   ButterSwidgeProtocolConfig,
+  ButterSwidgeQuote,
   ButterSwapTx,
+  CachedRoute,
   SwidgeOptions,
   SwidgeProtocolConfig,
-  SwidgeQuote,
   SwidgeResult,
   SwidgeStatusResult,
   SwidgeSupportedToken,
-  SwidgeSupportedTokensOptions
+  SwidgeSupportedTokensOptions,
+  SwidgeTransaction
 } from './types.js'
 
 /** Butter Smart Router implementation of the WDK Swidge protocol. */
@@ -135,12 +138,16 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
    * Fee caps are intentionally not enforced here: a quote must remain a fully
    * inspectable estimate (WDK only mandates rejection in {@link swidge}). Fee
    * limits are applied at execution time.
+   *
+   * The returned quote carries `routeHash`; pass it back as `options.routeHash`
+   * to {@link swidge} to pin this exact route instead of auto-re-quoting.
    */
-  async quoteSwidge (options: SwidgeOptions): Promise<SwidgeQuote> {
+  async quoteSwidge (options: SwidgeOptions): Promise<ButterSwidgeQuote> {
     this.assertQuoteOptions(options)
     const cached = await this.routes.getRoute(options)
     this.routes.enforceMinAmountOut(options, cached.route)
-    return routeToQuote(cached.route, this.now, cached.expiresAt, this.feeContextFor(options.fromToken), options.fromTokenAmount)
+    const quote = routeToQuote(cached.route, this.now, cached.expiresAt, this.feeContextFor(options.fromToken), options.fromTokenAmount)
+    return { ...quote, routeHash: cached.route.hash }
   }
 
   /** Executes an exact-in operation after validating route fees and transaction intent. */
@@ -152,7 +159,10 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
       throw new ButterUnsupportedError('Butter requires refundAddress to match the source sender')
     }
     const receiver = options.recipient ?? sender
-    const cached = await this.routes.getRoute(options, { forExecution: true })
+    const pinnedHash = butterRouteHash(options)
+    const cached: CachedRoute = pinnedHash != null
+      ? await this.routes.consumeRouteByHash(pinnedHash, options)
+      : await this.routes.getRoute(options, { forExecution: true })
     this.routes.enforceMinAmountOut(options, cached.route)
     const feeContext = this.feeContextFor(options.fromToken)
     enforceFeeLimits(cached.route, feeContext, resolveFeeLimits(this.config, config))
@@ -182,7 +192,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
       swapValidationContext.requestedAmountIn = BigInt(options.fromTokenAmount)
     }
     const swapTransactions = validateSwapTransactions(swapData, swapValidationContext)
-    const transactions = []
+    const transactions: SwidgeTransaction[] = []
     for (const swapTx of swapTransactions) {
       if (this.isBuiltInEvmExecution()) {
         transactions.push(...await executeEvmSwap({
@@ -338,6 +348,12 @@ function hashOf (result: string | { hash?: string }): string {
 
 function sameRecipient (left: string, right: string): boolean {
   return left.toLowerCase() === right.toLowerCase()
+}
+
+/** Reads the optional Butter-specific `routeHash` pin from swidge options. */
+function butterRouteHash (options: SwidgeOptions): string | undefined {
+  const hash = (options as ButterSwidgeExecutionOptions).routeHash
+  return typeof hash === 'string' && hash.length > 0 ? hash : undefined
 }
 
 export default ButterSwidgeProtocol

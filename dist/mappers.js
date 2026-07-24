@@ -33,10 +33,19 @@ export function routeToQuote(route, now, expiry, feeContext, requestedAmountIn) 
         toTokenAmount: parseTokenAmount(route.dstChain?.totalAmountOut ?? route.srcChain?.totalAmountOut ?? route.totalAmountOut, destinationDecimals),
         toTokenAmountMin,
         fees: mapRouteFees(route, feeContext),
-        estimatedDuration: Number(route.timeEstimated ?? route.estimatedTime ?? 0),
+        estimatedDuration: finiteOrUndefined(route.timeEstimated ?? route.estimatedTime),
         expiry: expiry ?? now() + 300,
-        priceImpact: route.priceImpact == null ? undefined : Number(route.priceImpact)
+        // Passed through as reported by Butter; the unit (decimal vs percent) is not
+        // formally documented, so we only guard against non-numeric values here.
+        priceImpact: finiteOrUndefined(route.priceImpact)
     };
+}
+/** Returns a finite number, or undefined when the value is absent or unparseable. */
+function finiteOrUndefined(value) {
+    if (value == null)
+        return undefined;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
 }
 export function chainToSupportedChain(chain, execution) {
     const nativeToken = parseJsonMaybe(chain.nativeToken);
@@ -53,6 +62,8 @@ export function tokenToSupportedToken(token, chainId) {
         token: token.address ?? token.token ?? '',
         chain: normalizeId(token.chainId ?? chainId),
         symbol: token.symbol ?? '',
+        // `decimals` is required by SwidgeSupportedToken, so it cannot be undefined;
+        // Butter's token API always reports it, and 18 is only a last-resort default.
         decimals: Number(token.decimals ?? token.decimal ?? 18),
         address: token.address ?? token.token,
         name: token.name

@@ -19,6 +19,9 @@ import { toButterSlippage } from './slippage.js';
 export class RouteManager {
     context;
     cache = new Map();
+    // Secondary index (route hash -> cache key) so a caller can pin an approved
+    // quote by its Butter route hash. Kept in sync with `cache` on set/evict.
+    hashIndex = new Map();
     constructor(context) {
         this.context = context;
     }
@@ -28,7 +31,7 @@ export class RouteManager {
         const cached = this.cache.get(key);
         if (forExecution) {
             if (cached) {
-                this.cache.delete(key);
+                this.evict(key, cached);
                 if (cached.expiresAt > this.context.now())
                     return cached;
             }
@@ -51,8 +54,31 @@ export class RouteManager {
         if (!forExecution) {
             this.evictStaleRoutes();
             this.cache.set(key, cachedRoute);
+            this.hashIndex.set(route.hash, key);
         }
         return cachedRoute;
+    }
+    /**
+     * Consumes a previously quoted route pinned by its Butter hash.
+     *
+     * Returns the cached route (removing it) only when it is still fresh and its
+     * request matches the current options; otherwise throws so the caller
+     * re-quotes rather than silently executing a different or stale price.
+     */
+    async consumeRouteByHash(hash, options) {
+        const request = await this.buildRouteRequest(options);
+        const key = stableRouteKey(request, options);
+        const indexedKey = this.hashIndex.get(hash);
+        const entry = indexedKey ? this.cache.get(indexedKey) : undefined;
+        if (!entry || entry.key !== key || entry.route.hash !== hash || entry.expiresAt <= this.context.now()) {
+            if (indexedKey)
+                this.cache.delete(indexedKey);
+            this.hashIndex.delete(hash);
+            throw new ButterActionRequiredError('Pinned Butter quote is expired or does not match the request; request a new quote', { hash });
+        }
+        this.cache.delete(entry.key);
+        this.hashIndex.delete(hash);
+        return entry;
     }
     /**
      * Bounds cache growth for long-lived quote-only instances: drops expired
@@ -62,14 +88,23 @@ export class RouteManager {
         const now = this.context.now();
         for (const [key, entry] of this.cache) {
             if (entry.expiresAt <= now)
-                this.cache.delete(key);
+                this.evict(key, entry);
         }
         while (this.cache.size >= ROUTE_CACHE_MAX_ENTRIES) {
-            const oldest = this.cache.keys().next().value;
-            if (oldest === undefined)
+            const oldestKey = this.cache.keys().next().value;
+            if (oldestKey === undefined)
                 break;
-            this.cache.delete(oldest);
+            const oldest = this.cache.get(oldestKey);
+            if (oldest)
+                this.evict(oldestKey, oldest);
+            else
+                this.cache.delete(oldestKey);
         }
+    }
+    evict(key, entry) {
+        this.cache.delete(key);
+        if (this.hashIndex.get(entry.route.hash) === key)
+            this.hashIndex.delete(entry.route.hash);
     }
     async buildRouteRequest(options) {
         const toChainId = normalizeId(options.toChain ?? this.context.sourceChainId);

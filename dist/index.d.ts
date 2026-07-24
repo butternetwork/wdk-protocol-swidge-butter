@@ -3,5 +3,5 @@ export { ISwidgeProtocol } from '@tetherto/wdk-wallet/protocols';
 export { ButterApiError, ButterUnsupportedError, ButterConfigurationError, ButterActionRequiredError, ButterFeeLimitExceededError, ButterFeeValuationError, ButterReadOnlyAccountError, ButterExactOutUnsupportedError, ButterTransactionValidationError } from './errors.js';
 export { parseTokenAmount, formatTokenAmount } from './amounts.js';
 export { toButterSlippage } from './slippage.js';
-export type { ButterSwidgeProtocolConfig, ButterRouterDeployment, ButterRouterVersion, ButterTransactionAdapter, ButterChainExecution, ButterSupportedChain, ButterRoute, ButterSwapTx, ButterAccount, EvmPublicClient, EvmWalletClient } from './types.js';
+export type { ButterSwidgeProtocolConfig, ButterSwidgeQuote, ButterSwidgeExecutionOptions, ButterRouterDeployment, ButterRouterVersion, ButterTransactionAdapter, ButterChainExecution, ButterSupportedChain, ButterRoute, ButterSwapTx, ButterAccount, EvmPublicClient, EvmWalletClient } from './types.js';
 //# sourceMappingURL=index.d.ts.map

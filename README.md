@@ -46,12 +46,18 @@ anonymous requests.
 
 ## Behavior
 
-- `quoteSwidge(options)` calls Butter `/route` and stores a non-binding quote as
-  an optional execution cache.
-- `swidge(options, config?)` can be called directly. It reuses a matching fresh
-  cached route or obtains a new one, enforces fee limits, calls `/swap`, validates
-  the returned transaction intent, performs EVM approval when required, then
-  sends the source transaction.
+- `quoteSwidge(options)` calls Butter `/route`, stores a non-binding quote as an
+  optional execution cache, and returns it with a `routeHash` you can pin.
+- `swidge(options, config?)` can be called directly. By default it reuses a
+  matching fresh cached route or obtains a new one, enforces fee limits, calls
+  `/swap`, validates the returned transaction intent, performs EVM approval when
+  required, then sends the source transaction.
+- Pinning a quote: pass `options.routeHash` (from a prior `quoteSwidge` result)
+  to `swidge` to execute that exact quoted route. If it has expired or no longer
+  matches the options, `swidge` throws `ButterActionRequiredError` instead of
+  silently re-quoting at a different price. Pins are held in the instance's
+  in-memory route cache, so quote and execution must use the same protocol
+  instance. Without `routeHash`, execution auto-re-quotes as before.
 - `getSwidgeStatus(id)` calls
   `/api/queryBridgeInfoBySourceHash`; `{ byOrderId: true }` calls
   `/api/queryCrossInfoByOrderId`.

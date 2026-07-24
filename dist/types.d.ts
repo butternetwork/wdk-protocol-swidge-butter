@@ -1,5 +1,18 @@
-import type { SwidgeFee, SwidgeOptions, SwidgeProtocolConfig, SwidgeQuote, SwidgeResult, SwidgeStatusResult, SwidgeSupportedChain, SwidgeSupportedToken, SwidgeSupportedTokensOptions } from '@tetherto/wdk-wallet/protocols';
-export type { SwidgeFee, SwidgeOptions, SwidgeProtocolConfig, SwidgeQuote, SwidgeResult, SwidgeStatusResult, SwidgeSupportedChain, SwidgeSupportedToken, SwidgeSupportedTokensOptions };
+import type { SwidgeFee, SwidgeOptions, SwidgeProtocolConfig, SwidgeQuote, SwidgeResult, SwidgeStatusResult, SwidgeSupportedChain, SwidgeSupportedToken, SwidgeSupportedTokensOptions, SwidgeTransaction } from '@tetherto/wdk-wallet/protocols';
+export type { SwidgeFee, SwidgeOptions, SwidgeProtocolConfig, SwidgeQuote, SwidgeResult, SwidgeStatusResult, SwidgeSupportedChain, SwidgeSupportedToken, SwidgeSupportedTokensOptions, SwidgeTransaction };
+/**
+ * A Butter quote enriched with the provider-specific route `hash`. Pass it back
+ * as `options.routeHash` to {@link ButterSwidgeProtocol.swidge} to pin the exact
+ * quoted route instead of allowing an automatic re-quote at execution time.
+ */
+export type ButterSwidgeQuote = SwidgeQuote & {
+    routeHash: string;
+};
+/** Butter-specific execution options layered on top of the WDK `SwidgeOptions`. */
+export interface ButterSwidgeExecutionOptions {
+    /** Route hash from a prior {@link ButterSwidgeQuote} to pin the approved quote. */
+    routeHash?: string;
+}
 /**
  * Structural subset of a WDK wallet account used by the Butter provider.
  *

@@ -16,31 +16,38 @@ import { ButterApiError } from './errors.js'
 import type { SwidgeStatusResult } from './types.js'
 
 export function mapStatusResponse (id: string, data: unknown, hints: { fromChain?: string | number, toChain?: string | number, byOrderId?: boolean } = {}): SwidgeStatusResult {
-  const info = ((data as { info?: unknown })?.info ?? data) as Record<string, unknown>
-  if (!info || typeof info !== 'object' || Object.keys(info).length === 0) {
+  // Tolerate either an object or a single-element array, and an optional `info`
+  // envelope, since Butter's status response shape is not formally documented.
+  let info = (data as { info?: unknown })?.info ?? data
+  if (Array.isArray(info)) info = info[0]
+  if (!info || typeof info !== 'object' || Array.isArray(info) || Object.keys(info).length === 0) {
     throw new ButterApiError('Butter returned no swidge for the requested id', { id, data })
   }
-  if (info.state == null && info.status == null) {
+  const record = info as Record<string, unknown>
+  if (record.state == null && record.status == null) {
     throw new ButterApiError('Butter status response is missing a state', { id, data })
   }
-  const sourceHash = stringValue(info.sourceHash ?? info.fromHash ?? id)
-  if (!hints.byOrderId && sourceHash && sourceHash.toLowerCase() !== id.toLowerCase()) {
+  // Do not fabricate a source hash from `id`: for a byOrderId lookup `id` is an
+  // order id, not a transaction hash. Only trust a hash Butter actually reports.
+  const reportedSourceHash = stringValue(record.sourceHash ?? record.fromHash)
+  if (!hints.byOrderId && reportedSourceHash && reportedSourceHash.toLowerCase() !== id.toLowerCase()) {
     throw new ButterApiError('Butter status sourceHash does not match requested id', data)
   }
-  const fromChain = chainIdOf(info.fromChain) ?? stringValue(info.fromChainId)
-  const toChain = chainIdOf(info.toChain) ?? stringValue(info.toChainId)
+  const fromChain = chainIdOf(record.fromChain) ?? stringValue(record.fromChainId)
+  const toChain = chainIdOf(record.toChain) ?? stringValue(record.toChainId)
   if (hints.fromChain != null && fromChain && String(hints.fromChain) !== fromChain) {
     throw new ButterApiError('Butter status source chain does not match request hints', data)
   }
   if (hints.toChain != null && toChain && String(hints.toChain) !== toChain) {
     throw new ButterApiError('Butter status destination chain does not match request hints', data)
   }
-  const destinationHash = stringValue(info.toHash ?? info.destHash ?? info.destinationHash)
+  const sourceHash = reportedSourceHash ?? (hints.byOrderId ? undefined : id)
+  const destinationHash = stringValue(record.toHash ?? record.destHash ?? record.destinationHash)
   const transactions = []
   if (sourceHash) transactions.push({ hash: sourceHash, chain: fromChain, type: 'source' as const })
   if (destinationHash) transactions.push({ hash: destinationHash, chain: toChain, type: 'destination' as const })
   return {
-    status: mapButterStatus(info.state ?? info.status),
+    status: mapButterStatus(record.state ?? record.status),
     transactions
   }
 }
@@ -84,8 +91,11 @@ function mapButterStatus (state: unknown): SwidgeStatusResult['status'] {
 }
 
 function chainIdOf (value: unknown): string | undefined {
-  if (!value || typeof value !== 'object') return undefined
-  return stringValue((value as { chainId?: unknown }).chainId)
+  if (value == null) return undefined
+  // Butter may return a chain as a nested object ({ chainId }) or a bare scalar.
+  if (typeof value === 'object') return stringValue((value as { chainId?: unknown }).chainId)
+  if (typeof value === 'string' || typeof value === 'number') return String(value)
+  return undefined
 }
 
 function stringValue (value: unknown): string | undefined {

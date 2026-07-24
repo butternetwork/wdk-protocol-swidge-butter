@@ -29,6 +29,8 @@ export { parseTokenAmount, formatTokenAmount } from './amounts.js'
 export { toButterSlippage } from './slippage.js'
 export type {
   ButterSwidgeProtocolConfig,
+  ButterSwidgeQuote,
+  ButterSwidgeExecutionOptions,
   ButterRouterDeployment,
   ButterRouterVersion,
   ButterTransactionAdapter,
