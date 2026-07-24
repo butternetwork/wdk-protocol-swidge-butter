@@ -14,10 +14,14 @@ export declare class DiscoveryService {
     /**
      * Resolves a token's decimals via Butter's `/findToken` router API.
      *
-     * Results, including confirmed misses (Butter does not know the token), are
-     * cached per chain and address so an unknown token is queried only once.
-     * Returns undefined on a genuine miss. Transport/auth failures are *not*
-     * swallowed — they rethrow so a network blip is not misreported as an
+     * `/findToken` matches by address and ignores the `chainId` parameter, so a
+     * token deployed at the same address on multiple chains returns several
+     * entries. We must filter by `token.chainId` and only trust the entry for the
+     * requested chain — never blindly the first result, whose decimals could be
+     * from another chain.
+     *
+     * Results, including confirmed misses, are cached per chain and address.
+     * Transport/auth failures rethrow so a network blip is not misreported as an
      * unknown token.
      */
     findTokenDecimals(chainId: string, address: string): Promise<number | undefined>;

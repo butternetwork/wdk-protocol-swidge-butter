@@ -15,8 +15,9 @@ export declare class RouteManager {
     private readonly cache;
     private readonly hashIndex;
     constructor(context: RouteRequestContext);
-    getRoute(options: SwidgeOptions, { forExecution }?: {
+    getRoute(options: SwidgeOptions, { forExecution, senderFallback }?: {
         forExecution?: boolean;
+        senderFallback?: string | undefined;
     }): Promise<CachedRoute>;
     /**
      * Consumes a previously quoted route pinned by its Butter hash.
@@ -25,14 +26,14 @@ export declare class RouteManager {
      * request matches the current options; otherwise throws so the caller
      * re-quotes rather than silently executing a different or stale price.
      */
-    consumeRouteByHash(hash: string, options: SwidgeOptions): Promise<CachedRoute>;
+    consumeRouteByHash(hash: string, options: SwidgeOptions, senderFallback?: string): Promise<CachedRoute>;
     /**
      * Bounds cache growth for long-lived quote-only instances: drops expired
      * entries, then evicts oldest (insertion-ordered) entries until under the cap.
      */
     private evictStaleRoutes;
     private evict;
-    buildRouteRequest(options: SwidgeOptions): Promise<Record<string, unknown>>;
+    buildRouteRequest(options: SwidgeOptions, senderFallback?: string): Promise<Record<string, unknown>>;
     enforceMinAmountOut(options: SwidgeOptions, route: ButterRoute): void;
     private decimalsFor;
     private validateRouteMatchesRequest;

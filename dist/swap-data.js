@@ -24,6 +24,7 @@ const SWAP_PARAM = parseAbiParameters('(address dstToken,address receiver,addres
 const BRIDGE_PARAM = parseAbiParameters('(uint256 toChain,uint256 nativeFee,bytes receiver,bytes data)');
 const BRIDGE_ADAPTER_PARAM = parseAbiParameters('(uint256 gasLimit,bytes refundAddress,bytes swapData)');
 const REMOTE_SWAP_AND_CALL = parseAbiParameters('bytes swapData,bytes callbackData');
+const FEE_PARAM = parseAbiParameters('(uint8 feeType,address referrer,uint256 rateOrNativeFee)');
 export function validateSwapTransactions(swapData, context) {
     const transactions = Array.isArray(swapData) ? swapData : [swapData];
     if (transactions.length === 0) {
@@ -84,7 +85,7 @@ function validateEvmRouterTransaction(tx, context) {
         });
     }
     const args = decoded.args;
-    const [, initiator, srcToken, amount, encodedSwap, functionData, permitData] = args;
+    const [, initiator, srcToken, amount, encodedSwap, functionData, permitData, feeData] = args;
     assertAddressEqual(initiator, context.sender, 'Butter Router initiator does not match sender');
     assertTokenEqual(srcToken, context.sourceToken, 'Butter Router source token does not match quote');
     if (context.requestedAmountIn == null || amount !== context.requestedAmountIn) {
@@ -96,6 +97,7 @@ function validateEvmRouterTransaction(tx, context) {
     if (permitData !== '0x') {
         throw new ButterTransactionValidationError('Butter Router permit data is not supported');
     }
+    validateFeeData(feeData, context);
     const sameChain = context.sourceChainId === context.destinationChainId;
     let bridgeNativeFee = 0n;
     if (sameChain) {
@@ -111,13 +113,10 @@ function validateEvmRouterTransaction(tx, context) {
         if (decoded.functionName !== 'swapAndBridge') {
             throw new ButterTransactionValidationError('Cross-chain Butter execution must use swapAndBridge');
         }
+        // The bridge param's nativeFee is the bridge messaging fee; it is a distinct
+        // value from the router protocol fee (route.swapFee.nativeFee) and the two
+        // must NOT be required equal.
         bridgeNativeFee = validateCrossChainParams(encodedSwap, functionData, context);
-        if (context.quotedNativeFee == null || bridgeNativeFee !== context.quotedNativeFee) {
-            throw new ButterTransactionValidationError('Butter Router native fee does not match quote', {
-                expected: context.quotedNativeFee?.toString(),
-                actual: bridgeNativeFee.toString()
-            });
-        }
     }
     let nativeValue;
     try {
@@ -126,11 +125,51 @@ function validateEvmRouterTransaction(tx, context) {
     catch (cause) {
         throw new ButterTransactionValidationError('Butter /swap returned an invalid native value', { cause });
     }
-    const expectedValue = (context.nativeSource ? context.requestedAmountIn : 0n) + bridgeNativeFee;
-    if (expectedValue == null || nativeValue !== expectedValue) {
-        throw new ButterTransactionValidationError('Butter /swap native value does not match quoted input', {
-            expected: expectedValue?.toString(),
-            actual: nativeValue.toString()
+    // Per Butter Router: msg.value = input(if native) + routerFee.nativeFee + bridgeFee.
+    const routerNativeFee = context.routerNativeFee ?? 0n;
+    const expectedValue = (context.nativeSource ? (context.requestedAmountIn ?? 0n) : 0n) + routerNativeFee + bridgeNativeFee;
+    if (context.requestedAmountIn == null || nativeValue !== expectedValue) {
+        throw new ButterTransactionValidationError('Butter /swap native value does not match quoted input plus router and bridge fees', {
+            expected: expectedValue.toString(),
+            actual: nativeValue.toString(),
+            routerNativeFee: routerNativeFee.toString(),
+            bridgeNativeFee: bridgeNativeFee.toString()
+        });
+    }
+}
+/**
+ * Validates that the calldata `feeData` matches the integrator fee config the
+ * route declared. Empty feeData charges no integrator fee (harmless); a
+ * non-empty feeData must match `route.feeConfig` exactly so `/swap` cannot
+ * inject a different fee, referrer, or higher rate than was quoted.
+ */
+function validateFeeData(feeData, context) {
+    if (feeData === '0x')
+        return;
+    let fee;
+    try {
+        ;
+        [fee] = decodeAbiParameters(FEE_PARAM, feeData);
+    }
+    catch (cause) {
+        throw new ButterTransactionValidationError('Butter Router fee data is malformed', { cause });
+    }
+    const config = context.feeConfig;
+    if (!config) {
+        throw new ButterTransactionValidationError('Butter /swap included fee data not declared by the route');
+    }
+    if (config.feeType != null && Number(fee.feeType) !== Number(config.feeType)) {
+        throw new ButterTransactionValidationError('Butter Router fee type does not match the quoted feeConfig', {
+            expected: config.feeType, actual: fee.feeType
+        });
+    }
+    if (config.referrer) {
+        assertAddressEqual(fee.referrer, config.referrer, 'Butter Router fee referrer does not match the quoted feeConfig');
+    }
+    const expectedRate = BigInt(config.rateOrNativeFee ?? 0);
+    if (fee.rateOrNativeFee !== expectedRate) {
+        throw new ButterTransactionValidationError('Butter Router fee rate does not match the quoted feeConfig', {
+            expected: expectedRate.toString(), actual: fee.rateOrNativeFee.toString()
         });
     }
 }

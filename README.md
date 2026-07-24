@@ -53,14 +53,20 @@ anonymous requests.
   `/swap`, validates the returned transaction intent, performs EVM approval when
   required, then sends the source transaction.
 - Pinning a quote: pass `options.routeHash` (from a prior `quoteSwidge` result)
-  to `swidge` to execute that exact quoted route. If it has expired or no longer
-  matches the options, `swidge` throws `ButterActionRequiredError` instead of
-  silently re-quoting at a different price. Pins are held in the instance's
-  in-memory route cache, so quote and execution must use the same protocol
-  instance. Without `routeHash`, execution auto-re-quotes as before.
+  to `swidge` to execute that exact quoted route. `swidge` accepts
+  `ButterSwidgeOptions` (`SwidgeOptions & { routeHash? }`), so the field is part
+  of the public typed API. If the route has expired or no longer matches the
+  options, `swidge` throws `ButterActionRequiredError` instead of silently
+  re-quoting at a different price. Pins are held in the instance's in-memory
+  route cache, so quote and execution must use the same protocol instance.
+  Without `routeHash`, execution auto-re-quotes as before.
 - `getSwidgeStatus(id)` calls
   `/api/queryBridgeInfoBySourceHash`; `{ byOrderId: true }` calls
-  `/api/queryCrossInfoByOrderId`.
+  `/api/queryCrossInfoByOrderId`. For same-chain swaps (pass
+  `{ fromChain, toChain }` equal), Butter produces no cross-chain record, so
+  status is derived from the transaction receipt instead — this requires an
+  `evm.publicClient` with `getTransactionReceipt` or an account that exposes
+  `getTransactionReceipt`.
 - `getSwidgeStatus` maps Butter cross states `0 → pending` (crossing),
   `1 → completed`, and `6 → refunded`. There is no numeric `failed` state.
   Any undocumented or intermediate code (e.g. a relaying state) maps

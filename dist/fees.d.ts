@@ -14,7 +14,18 @@ export interface ResolvedFeeLimits {
 export declare function resolveFeeLimits(defaults: SwidgeProtocolConfig, overrides: SwidgeProtocolConfig): ResolvedFeeLimits;
 /** Validates configured fee limits eagerly, rejecting malformed bps values. */
 export declare function validateFeeLimits(config: SwidgeProtocolConfig): void;
-/** Maps Butter fee metadata into WDK fee entries using denomination-specific decimals. */
+/**
+ * Maps Butter fee metadata into WDK fee entries using denomination-specific decimals.
+ *
+ * NOTE (upstream WDK contract): the base SwidgeProtocol's legacy `swap()` and
+ * `bridge()` sum `fees[].amount` across entries regardless of denomination.
+ * Butter fees can be denominated in different tokens (native, input token,
+ * bridge token), so the legacy aggregated `fee` / `bridgeFee` have no coherent
+ * unit when denominations differ. Consumers needing correct per-currency costs
+ * must read the itemised `fees[]` on the SwidgeQuote/SwidgeResult, not the
+ * legacy scalars. This cannot be fixed here without overriding legacy methods
+ * (which providers must not do); it needs a WDK PR #39 mapping-contract change.
+ */
 export declare function mapRouteFees(route: ButterRoute, context: FeeContext): SwidgeFee[];
 /** Returns the route's additional native protocol fee in source-chain base units. */
 export declare function routeNativeFee(route: ButterRoute, context: FeeContext): bigint;

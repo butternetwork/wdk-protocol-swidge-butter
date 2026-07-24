@@ -30,6 +30,7 @@ export { toButterSlippage } from './slippage.js'
 export type {
   ButterSwidgeProtocolConfig,
   ButterSwidgeQuote,
+  ButterSwidgeOptions,
   ButterSwidgeExecutionOptions,
   ButterRouterDeployment,
   ButterRouterVersion,
