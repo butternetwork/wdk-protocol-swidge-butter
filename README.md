@@ -98,18 +98,21 @@ anonymous requests.
 - Quotes accept `refundAddress`. Execution requires it to match the source
   sender because Butter's Router API does not expose an independent refund
   recipient.
-- EVM Router V3 calldata is ABI-decoded. The target, source and destination
-  chains, initiator, source token and amount, final token and recipient, leftover
-  and refund recipients, and minimum output must match the confirmed intent.
-  Permit and callback payloads are rejected. Unknown or opaque bridge payload
-  encodings are also rejected; support requires a package validator update tied
-  to an explicit deployment version.
-- ERC20 approval only occurs after the full calldata validation and only targets
-  a configured Butter router for the source chain.
-- Same-chain transaction value is the native input amount or zero for ERC20.
-  Cross-chain value additionally includes the decoded and quoted
-  `bridge.nativeFee`; mismatches between route, calldata, and transaction value
-  fail closed.
+- EVM Router V3 calldata is validated at a deliberate middle tier. Always
+  enforced: the target must be an allowlisted router (and match the route's
+  `contract`); the top-level intent — initiator, source token, source amount,
+  and empty permit data — must match the request; the integrator `feeData` must
+  match the route's `feeConfig`; and the transaction value must equal
+  `input (if native) + routerFee + bridgeFee` (guarding against native-balance
+  drain). Same-chain `swapAndCall` additionally verifies the destination token,
+  recipient, leftover receiver, and minimum output.
+- Cross-chain destination routing (destination receiver, output token, and
+  minimum output encoded in the nested bridge payload) is trusted to Butter's
+  `/swap` response and is NOT independently re-verified. The bridge is still
+  checked to target the quoted destination chain. Source-token exposure remains
+  bounded because the module approves only the exact input amount to the router.
+- ERC20 approval only occurs after calldata validation and only targets a
+  configured Butter router for the source chain.
 - `maxNetworkFeeBps` and `maxProtocolFeeBps` are enforced only in `swidge`,
   before `/swap`, approvals, or transaction submission. `quoteSwidge` never
   throws on a cap — a quote is a non-binding estimate and always returns the

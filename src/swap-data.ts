@@ -44,12 +44,6 @@ const BRIDGE_PARAM = parseAbiParameters(
   '(uint256 toChain,uint256 nativeFee,bytes receiver,bytes data)'
 )
 
-const BRIDGE_ADAPTER_PARAM = parseAbiParameters(
-  '(uint256 gasLimit,bytes refundAddress,bytes swapData)'
-)
-
-const REMOTE_SWAP_AND_CALL = parseAbiParameters('bytes swapData,bytes callbackData')
-
 const FEE_PARAM = parseAbiParameters('(uint8 feeType,address referrer,uint256 rateOrNativeFee)')
 
 export interface SwapValidationContext {
@@ -178,9 +172,9 @@ function validateEvmRouterTransaction (
       throw new ButterTransactionValidationError('Cross-chain Butter execution must use swapAndBridge')
     }
     // The bridge param's nativeFee is the bridge messaging fee; it is a distinct
-    // value from the router protocol fee (route.swapFee.nativeFee) and the two
-    // must NOT be required equal.
-    bridgeNativeFee = validateCrossChainParams(encodedSwap, functionData, context)
+    // value from the router protocol fee (route.swapFee.nativeFee). We read it
+    // only for the tx.value check and trust Butter for destination routing.
+    bridgeNativeFee = readBridgeNativeFee(functionData, context)
   }
 
   let nativeValue: bigint
@@ -249,18 +243,18 @@ function validateSameChainSwapParam (encoded: Hex, context: SwapValidationContex
   }
 }
 
-function validateCrossChainParams (encodedSwap: Hex, encodedBridge: Hex, context: SwapValidationContext): bigint {
-  let bridgedToken = context.sourceToken
-  if (encodedSwap !== '0x') {
-    const sourceSwap = decodeSwapParam(encodedSwap)
-    bridgedToken = sourceSwap.dstToken
-    assertAddressEqual(sourceSwap.receiver, context.sender, 'Butter source swap receiver does not match sender')
-    assertAddressEqual(sourceSwap.leftReceiver, context.sender, 'Butter source swap leftover receiver does not match sender')
-    if (sourceSwap.minAmount <= 0n) {
-      throw new ButterTransactionValidationError('Butter source swap minimum output must be positive')
-    }
-  }
-
+/**
+ * Reads the bridge messaging fee from the outer bridge params for the tx.value
+ * check, and confirms the bridge targets the quoted destination chain.
+ *
+ * The nested `bridge.data` (destination swap / adapter) is intentionally NOT
+ * decoded or verified: by policy the module trusts Butter's `/swap` for the
+ * cross-chain destination routing (receiver, output token, minimum output).
+ * The user is still protected against native-balance drain (the returned
+ * nativeFee feeds the exact tx.value check) and against an unbounded source
+ * spend (the module approves only the exact input amount to the router).
+ */
+function readBridgeNativeFee (encodedBridge: Hex, context: SwapValidationContext): bigint {
   let bridge: { toChain: bigint, nativeFee: bigint, receiver: Hex, data: Hex }
   try {
     ;[bridge] = decodeAbiParameters(BRIDGE_PARAM, encodedBridge)
@@ -276,54 +270,7 @@ function validateCrossChainParams (encodedSwap: Hex, encodedBridge: Hex, context
   if (bridge.receiver === '0x') {
     throw new ButterTransactionValidationError('Butter Router bridge receiver is missing')
   }
-  if (bridge.data === '0x') {
-    validateDirectBridgeRecipient(bridge.receiver, bridgedToken, context)
-    return bridge.nativeFee
-  }
-
-  let adapter: { gasLimit: bigint, refundAddress: Hex, swapData: Hex }
-  try {
-    ;[adapter] = decodeAbiParameters(BRIDGE_ADAPTER_PARAM, bridge.data)
-  } catch (cause) {
-    throw new ButterTransactionValidationError('Butter bridge adapter parameters are malformed', { cause })
-  }
-  assertPackedAddressEqual(adapter.refundAddress, context.sender, 'Butter bridge refund address does not match sender')
-  if (adapter.swapData === '0x') {
-    validateDirectBridgeRecipient(bridge.receiver, bridgedToken, context)
-    return bridge.nativeFee
-  }
-
-  const destinationRouter = packedAddress(bridge.receiver, 'Butter destination router address is malformed')
-  assertRouterAllowed(destinationRouter, context.destinationChainId, context.routerRegistry)
-  let destinationSwapData: Hex
-  let callbackData: Hex
-  try {
-    ;[destinationSwapData, callbackData] = decodeAbiParameters(REMOTE_SWAP_AND_CALL, adapter.swapData)
-  } catch (cause) {
-    throw new ButterTransactionValidationError('Butter destination swap parameters are malformed', { cause })
-  }
-  if (callbackData !== '0x') {
-    throw new ButterTransactionValidationError('Butter destination callback data is not supported')
-  }
-  if (destinationSwapData === '0x') {
-    throw new ButterTransactionValidationError('Butter destination swap data is missing')
-  }
-  const destinationSwap = decodeSwapParam(destinationSwapData)
-  assertTokenEqual(destinationSwap.dstToken, context.destinationToken, 'Butter destination token does not match quote')
-  assertAddressEqual(destinationSwap.receiver, context.receiver, 'Butter destination receiver does not match requested recipient')
-  assertAddressEqual(destinationSwap.leftReceiver, context.receiver, 'Butter destination leftover receiver does not match requested recipient')
-  if (context.minimumAmountOut == null || destinationSwap.minAmount < context.minimumAmountOut) {
-    throw new ButterTransactionValidationError('Butter destination minimum output is below quoted minimum', {
-      expectedMinimum: context.minimumAmountOut?.toString(),
-      actual: destinationSwap.minAmount.toString()
-    })
-  }
   return bridge.nativeFee
-}
-
-function validateDirectBridgeRecipient (receiver: Hex, bridgedToken: string, context: SwapValidationContext): void {
-  assertPackedAddressEqual(receiver, context.receiver, 'Butter bridge receiver does not match requested recipient')
-  assertTokenEqual(bridgedToken, context.destinationToken, 'Butter bridged token does not match destination token')
 }
 
 function decodeSwapParam (encoded: Hex): {
@@ -369,18 +316,6 @@ function assertTokenEqual (actual: string, expected: string, message: string): v
   if (!bothNative && actualNormalized !== expectedNormalized) {
     throw new ButterTransactionValidationError(message, { expected, actual })
   }
-}
-
-function assertPackedAddressEqual (encoded: Hex, expected: string, message: string): void {
-  const actual = packedAddress(encoded, message)
-  assertAddressEqual(actual, expected, message)
-}
-
-function packedAddress (encoded: Hex, message: string): Address {
-  if (encoded.length !== 42 || !isAddress(encoded, { strict: false })) {
-    throw new ButterTransactionValidationError(message, { encoded })
-  }
-  return encoded
 }
 
 function isHexData (value: string): boolean {
