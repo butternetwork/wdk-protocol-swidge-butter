@@ -27,7 +27,7 @@ Use `node:test` with `node:assert/strict`. Place focused regression tests beside
 
 ## Security & Configuration
 
-Treat Butter API responses as untrusted transaction intent. Do not weaken Router allowlists, ABI/calldata checks, amount/value validation, fee caps, recipient checks, or approval ordering without security-focused tests. Keep API secrets server-side and out of logs, fixtures, and examples.
+Treat Butter API responses as partially trusted. By project policy the `/swap` calldata is validated at a middle tier: always keep the router allowlist, the top-level intent checks (initiator, source token, source amount, empty permit, `feeData` vs route `feeConfig`), the `tx.value` cap (`input + routerFee + bridgeFee`, which guards native-balance drain), the same-chain destination checks, and the route-level fee caps — do not weaken these without security-focused tests. Cross-chain destination routing (nested bridge payload: destination receiver, output token, minimum output) is intentionally trusted to Butter and not re-verified; the bridge is still checked to target the quoted destination chain, and source-token exposure stays bounded by the module's exact approval. Keep API secrets server-side and out of logs, fixtures, and examples.
 
 ## Commit & Pull Request Guidelines
 

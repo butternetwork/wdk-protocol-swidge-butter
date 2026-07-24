@@ -2158,18 +2158,44 @@ describe('helpers', () => {
     }
   })
 
-  it('rejects a cross-chain payload that changes the final recipient', () => {
+  it('trusts Butter for cross-chain destination routing but still enforces router, toChain, and value', () => {
     const context = {
       ...validationContext(),
       destinationChainId: '137',
       minimumAmountOut: 950n
     }
-    const data = crossChainSwapData(ERC20_TOKEN, 1000n, { destinationReceiver: VALID_SENDER })
+    // A different destination receiver is NOT rejected: cross-chain destination
+    // routing is trusted to Butter's /swap (policy: middle-tier validation).
+    assert.doesNotThrow(() => validateSwapTransaction({
+      to: ROUTER,
+      value: '0',
+      chainId: '56',
+      data: crossChainSwapData(ERC20_TOKEN, 1000n, { destinationReceiver: VALID_SENDER })
+    }, context))
 
-    assert.throws(
-      () => validateSwapTransaction({ to: ROUTER, value: '0x0', chainId: '56', data }, context),
-      ButterTransactionValidationError
-    )
+    // The non-allowlisted router target is still rejected.
+    assert.throws(() => validateSwapTransaction({
+      to: '0x00000000000000000000000000000000000000ff',
+      value: '0',
+      chainId: '56',
+      data: crossChainSwapData(ERC20_TOKEN, 1000n)
+    }, context), ButterTransactionValidationError)
+
+    // A bridge to the wrong destination chain is still rejected.
+    assert.throws(() => validateSwapTransaction({
+      to: ROUTER,
+      value: '0',
+      chainId: '56',
+      data: crossChainSwapData(ERC20_TOKEN, 1000n)
+    }, { ...context, destinationChainId: '42161' }), ButterTransactionValidationError)
+
+    // A tx.value that would drain native beyond the fees is still rejected.
+    assert.throws(() => validateSwapTransaction({
+      to: ROUTER,
+      value: '1000000',
+      chainId: '56',
+      data: crossChainSwapData(ERC20_TOKEN, 1000n, { nativeFee: 10n })
+    }, context), ButterTransactionValidationError)
   })
 
   it('accepts a tx value equal to input plus the distinct router and bridge native fees', () => {
