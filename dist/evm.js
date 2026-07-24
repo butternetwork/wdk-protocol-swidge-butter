@@ -84,7 +84,7 @@ async function waitForApproval(context, hash) {
         if (context.config.evm?.approvalTimeoutMs != null) {
             receiptArgs.timeout = context.config.evm.approvalTimeoutMs;
         }
-        await publicClient.waitForTransactionReceipt(receiptArgs);
+        assertReceiptSucceeded(await publicClient.waitForTransactionReceipt(receiptArgs), hash);
         return;
     }
     const getReceipt = context.account?.getTransactionReceipt?.bind(context.account);
@@ -93,11 +93,24 @@ async function waitForApproval(context, hash) {
     const timeoutMs = context.config.evm?.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-        if (await getReceipt(hash) != null)
+        const receipt = await getReceipt(hash);
+        if (receipt != null) {
+            assertReceiptSucceeded(receipt, hash);
             return;
+        }
         await sleep(Math.min(APPROVAL_POLL_INTERVAL_MS, Math.max(deadline - Date.now(), 0)));
     }
     throw new ButterConfigurationError('Timed out waiting for the ERC20 approval to confirm', { hash, timeoutMs });
+}
+/**
+ * Rejects a reverted approval so the swap is not sent against a failed approval
+ * (which would inevitably revert and waste a second transaction's gas).
+ */
+function assertReceiptSucceeded(receipt, hash) {
+    const status = receipt?.status;
+    if (status === 'reverted' || status === 0 || status === '0x0' || status === false) {
+        throw new ButterConfigurationError('ERC20 approval transaction reverted', { hash, status });
+    }
 }
 function sourceAmountForApproval(options) {
     if ('fromTokenAmount' in options && options.fromTokenAmount != null)

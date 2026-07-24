@@ -13,7 +13,25 @@
 // limitations under the License.
 
 import { ButterApiError } from './errors.js'
-import type { SwidgeStatusResult } from './types.js'
+import type { EvmTransactionReceipt, SwidgeStatusResult } from './types.js'
+
+/**
+ * Maps an on-chain receipt to a SwidgeStatus for same-chain swaps, which do not
+ * produce a Butter cross-chain record. A missing receipt means the tx is not
+ * yet mined (pending); a reverted receipt is a terminal failure.
+ */
+export function mapReceiptStatus (id: string, receipt: EvmTransactionReceipt | null | undefined, chain?: string | number): SwidgeStatusResult {
+  if (receipt == null) return { status: 'pending', transactions: [] }
+  const status = receipt.status
+  const swidgeStatus: SwidgeStatusResult['status'] =
+    status === 'reverted' || status === 0 || status === '0x0' || status === false
+      ? 'failed'
+      : 'completed'
+  return {
+    status: swidgeStatus,
+    transactions: [{ hash: id, chain, type: 'source' as const }]
+  }
+}
 
 export function mapStatusResponse (id: string, data: unknown, hints: { fromChain?: string | number, toChain?: string | number, byOrderId?: boolean } = {}): SwidgeStatusResult {
   // Tolerate either an object or a single-element array, and an optional `info`

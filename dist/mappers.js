@@ -62,9 +62,9 @@ export function tokenToSupportedToken(token, chainId) {
         token: token.address ?? token.token ?? '',
         chain: normalizeId(token.chainId ?? chainId),
         symbol: token.symbol ?? '',
-        // `decimals` is required by SwidgeSupportedToken, so it cannot be undefined;
-        // Butter's token API always reports it, and 18 is only a last-resort default.
-        decimals: Number(token.decimals ?? token.decimal ?? 18),
+        // Missing decimals yields NaN (not a silent 18); the discovery caller drops
+        // such entries so a placeholder value is never surfaced as if authoritative.
+        decimals: Number(token.decimals ?? token.decimal),
         address: token.address ?? token.token,
         name: token.name
     };

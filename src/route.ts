@@ -53,8 +53,8 @@ export class RouteManager {
     this.context = context
   }
 
-  async getRoute (options: SwidgeOptions, { forExecution = false }: { forExecution?: boolean } = {}): Promise<CachedRoute> {
-    const request = await this.buildRouteRequest(options)
+  async getRoute (options: SwidgeOptions, { forExecution = false, senderFallback }: { forExecution?: boolean, senderFallback?: string | undefined } = {}): Promise<CachedRoute> {
+    const request = await this.buildRouteRequest(options, senderFallback)
     const key = stableRouteKey(request, options)
     const cached = this.cache.get(key)
     if (forExecution) {
@@ -94,8 +94,8 @@ export class RouteManager {
    * request matches the current options; otherwise throws so the caller
    * re-quotes rather than silently executing a different or stale price.
    */
-  async consumeRouteByHash (hash: string, options: SwidgeOptions): Promise<CachedRoute> {
-    const request = await this.buildRouteRequest(options)
+  async consumeRouteByHash (hash: string, options: SwidgeOptions, senderFallback?: string): Promise<CachedRoute> {
+    const request = await this.buildRouteRequest(options, senderFallback)
     const key = stableRouteKey(request, options)
     const indexedKey = this.hashIndex.get(hash)
     const entry = indexedKey ? this.cache.get(indexedKey) : undefined
@@ -132,9 +132,14 @@ export class RouteManager {
     if (this.hashIndex.get(entry.route.hash) === key) this.hashIndex.delete(entry.route.hash)
   }
 
-  async buildRouteRequest (options: SwidgeOptions): Promise<Record<string, unknown>> {
+  async buildRouteRequest (options: SwidgeOptions, senderFallback?: string): Promise<Record<string, unknown>> {
     const toChainId = normalizeId(options.toChain ?? this.context.sourceChainId)
-    if (this.context.sourceChainId === SOLANA_CHAIN_ID && !options.recipient) {
+    const isSolanaSource = this.context.sourceChainId === SOLANA_CHAIN_ID
+    // Butter requires an explicit receiver for Solana source. Honor the WDK
+    // default (recipient defaults to the account/sender) using senderFallback
+    // when available, instead of rejecting a resolvable request.
+    const solanaReceiver = options.recipient ?? senderFallback
+    if (isSolanaSource && !solanaReceiver) {
       throw new ButterActionRequiredError('Butter requires receiver when source chain is Solana')
     }
     if (!('fromTokenAmount' in options) || options.fromTokenAmount == null) {
@@ -157,7 +162,9 @@ export class RouteManager {
       tokenOutAddress: options.toToken,
       type: 'exactIn',
       slippage,
-      receiver: options.recipient,
+      // Only Solana needs the sender-derived fallback; other chains keep the
+      // explicit recipient (possibly undefined) so the cache key stays stable.
+      receiver: isSolanaSource ? solanaReceiver : options.recipient,
       entrance: this.context.entrance
     }
   }

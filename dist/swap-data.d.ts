@@ -1,5 +1,5 @@
 import { routerDeploymentsForChain, type ButterRouterRegistry } from './router-registry.js';
-import type { ButterRoute, ButterSwapTx } from './types.js';
+import type { ButterFeeConfig, ButterRoute, ButterSwapTx } from './types.js';
 export interface SwapValidationContext {
     sourceChainId: string;
     destinationChainId: string;
@@ -13,7 +13,10 @@ export interface SwapValidationContext {
     sourceToken: string;
     destinationToken: string;
     requireRouterAllowlist: boolean;
-    quotedNativeFee?: bigint;
+    /** Router protocol native fee (route.swapFee.nativeFee), distinct from the bridge fee. */
+    routerNativeFee?: bigint;
+    /** Integrator fee config from `/route`; the calldata `feeData` must match it. */
+    feeConfig?: ButterFeeConfig;
 }
 export declare function validateSwapTransactions(swapData: unknown, context: SwapValidationContext): ButterSwapTx[];
 export declare function validateSwapTransaction(value: unknown, context: SwapValidationContext): ButterSwapTx;

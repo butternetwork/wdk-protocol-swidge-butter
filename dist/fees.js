@@ -31,7 +31,18 @@ export function resolveFeeLimits(defaults, overrides) {
 export function validateFeeLimits(config) {
     resolveFeeLimits(config, {});
 }
-/** Maps Butter fee metadata into WDK fee entries using denomination-specific decimals. */
+/**
+ * Maps Butter fee metadata into WDK fee entries using denomination-specific decimals.
+ *
+ * NOTE (upstream WDK contract): the base SwidgeProtocol's legacy `swap()` and
+ * `bridge()` sum `fees[].amount` across entries regardless of denomination.
+ * Butter fees can be denominated in different tokens (native, input token,
+ * bridge token), so the legacy aggregated `fee` / `bridgeFee` have no coherent
+ * unit when denominations differ. Consumers needing correct per-currency costs
+ * must read the itemised `fees[]` on the SwidgeQuote/SwidgeResult, not the
+ * legacy scalars. This cannot be fixed here without overriding legacy methods
+ * (which providers must not do); it needs a WDK PR #39 mapping-contract change.
+ */
 export function mapRouteFees(route, context) {
     const fees = [];
     const sourceToken = route.srcChain?.tokenIn;

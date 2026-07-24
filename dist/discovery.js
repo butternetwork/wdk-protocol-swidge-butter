@@ -53,10 +53,14 @@ export class DiscoveryService {
     /**
      * Resolves a token's decimals via Butter's `/findToken` router API.
      *
-     * Results, including confirmed misses (Butter does not know the token), are
-     * cached per chain and address so an unknown token is queried only once.
-     * Returns undefined on a genuine miss. Transport/auth failures are *not*
-     * swallowed — they rethrow so a network blip is not misreported as an
+     * `/findToken` matches by address and ignores the `chainId` parameter, so a
+     * token deployed at the same address on multiple chains returns several
+     * entries. We must filter by `token.chainId` and only trust the entry for the
+     * requested chain — never blindly the first result, whose decimals could be
+     * from another chain.
+     *
+     * Results, including confirmed misses, are cached per chain and address.
+     * Transport/auth failures rethrow so a network blip is not misreported as an
      * unknown token.
      */
     async findTokenDecimals(chainId, address) {
@@ -75,9 +79,10 @@ export class DiscoveryService {
             }
             throw error;
         }
-        const token = Array.isArray(data) ? data[0] : data;
+        const list = Array.isArray(data) ? data : data == null ? [] : [data];
+        const token = list.find((entry) => normalizeId(entry.chainId) === normalizeId(chainId));
         const decimals = Number(token?.decimals ?? token?.decimal);
-        if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
+        if (!token || !Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
             this.tokenDecimalsCache.set(key, null);
             return undefined;
         }
@@ -113,6 +118,10 @@ export class DiscoveryService {
                 break;
             let added = 0;
             for (const token of results.map((item) => tokenToSupportedToken(item, chainId))) {
+                // Fail closed per token: drop entries lacking a usable identifier or
+                // valid decimals rather than surfacing a placeholder ('' / 18).
+                if (!token.token || !Number.isInteger(token.decimals) || token.decimals < 0 || token.decimals > 255)
+                    continue;
                 const key = `${token.chain}:${token.token}`.toLowerCase();
                 if (seen.has(key))
                     continue;

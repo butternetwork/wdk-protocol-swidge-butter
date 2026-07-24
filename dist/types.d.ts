@@ -13,6 +13,8 @@ export interface ButterSwidgeExecutionOptions {
     /** Route hash from a prior {@link ButterSwidgeQuote} to pin the approved quote. */
     routeHash?: string;
 }
+/** WDK swidge options plus Butter's provider-specific execution fields. */
+export type ButterSwidgeOptions = SwidgeOptions & ButterSwidgeExecutionOptions;
 /**
  * Structural subset of a WDK wallet account used by the Butter provider.
  *
@@ -43,14 +45,20 @@ export type ButterFetch = (url: string, init?: {
     method?: string;
     headers?: Record<string, string>;
 }) => Promise<ButterFetchResponse>;
-/** Read-only EVM client capabilities needed for allowance checks. */
+/** Minimal EVM transaction receipt shape used for success/status checks. */
+export interface EvmTransactionReceipt {
+    status?: string | number | boolean;
+}
+/** Read-only EVM client capabilities needed for allowance and receipt checks. */
 export interface EvmPublicClient {
     readContract: (args: unknown) => Promise<bigint>;
     waitForTransactionReceipt?: (args: {
         hash: string;
         confirmations?: number;
         timeout?: number;
-    }) => Promise<unknown>;
+    }) => Promise<EvmTransactionReceipt>;
+    /** Fetches a receipt without waiting; used for same-chain status lookups. */
+    getTransactionReceipt?: (hash: string) => Promise<EvmTransactionReceipt | null>;
 }
 /** EVM wallet client capabilities needed for transaction submission. */
 export interface EvmWalletClient {
@@ -164,6 +172,8 @@ export interface ButterRoute {
         nativeSymbol?: string;
         tokenSymbol?: string;
     };
+    /** Integrator/affiliate fee config mirrored into the `/swap` calldata feeData. */
+    feeConfig?: ButterFeeConfig;
     minAmountOut?: {
         amount?: string;
         symbol?: string;
@@ -176,6 +186,12 @@ export interface ButterRoute {
     totalAmountOut?: string;
     totalAmountInUSD?: string;
     totalAmountOutUSD?: string;
+}
+/** Butter `/route` integrator fee configuration, encoded on-chain as `feeData`. */
+export interface ButterFeeConfig {
+    feeType?: number | string;
+    referrer?: string;
+    rateOrNativeFee?: string | number;
 }
 /** Common Butter fee fields. */
 export interface ButterFee {

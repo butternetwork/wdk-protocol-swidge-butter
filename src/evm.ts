@@ -16,7 +16,7 @@ import { encodeFunctionData, erc20Abi, maxUint256 } from 'viem'
 import { NATIVE_TOKEN_ADDRESSES } from './constants.js'
 import { parseIntegerAmount } from './amounts.js'
 import { ButterConfigurationError } from './errors.js'
-import type { ButterAccount, ButterRoute, ButterSwapTx, ButterSwidgeProtocolConfig, EvmTransactionRequest, SwidgeOptions } from './types.js'
+import type { ButterAccount, ButterRoute, ButterSwapTx, ButterSwidgeProtocolConfig, EvmTransactionReceipt, EvmTransactionRequest, SwidgeOptions } from './types.js'
 
 const DEFAULT_APPROVAL_TIMEOUT_MS = 60_000
 const APPROVAL_POLL_INTERVAL_MS = 2_000
@@ -111,7 +111,7 @@ async function waitForApproval (context: {
     if (context.config.evm?.approvalTimeoutMs != null) {
       receiptArgs.timeout = context.config.evm.approvalTimeoutMs
     }
-    await publicClient.waitForTransactionReceipt(receiptArgs)
+    assertReceiptSucceeded(await publicClient.waitForTransactionReceipt(receiptArgs), hash)
     return
   }
   const getReceipt = context.account?.getTransactionReceipt?.bind(context.account)
@@ -119,10 +119,25 @@ async function waitForApproval (context: {
   const timeoutMs = context.config.evm?.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    if (await getReceipt(hash) != null) return
+    const receipt = await getReceipt(hash)
+    if (receipt != null) {
+      assertReceiptSucceeded(receipt as EvmTransactionReceipt, hash)
+      return
+    }
     await sleep(Math.min(APPROVAL_POLL_INTERVAL_MS, Math.max(deadline - Date.now(), 0)))
   }
   throw new ButterConfigurationError('Timed out waiting for the ERC20 approval to confirm', { hash, timeoutMs })
+}
+
+/**
+ * Rejects a reverted approval so the swap is not sent against a failed approval
+ * (which would inevitably revert and waste a second transaction's gas).
+ */
+function assertReceiptSucceeded (receipt: EvmTransactionReceipt | null | undefined, hash: string): void {
+  const status = receipt?.status
+  if (status === 'reverted' || status === 0 || status === '0x0' || status === false) {
+    throw new ButterConfigurationError('ERC20 approval transaction reverted', { hash, status })
+  }
 }
 
 function sourceAmountForApproval (options: SwidgeOptions): bigint {

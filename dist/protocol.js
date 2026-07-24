@@ -20,7 +20,7 @@ import { routeToQuote } from './mappers.js';
 import { DiscoveryService } from './discovery.js';
 import { validateSwapTransactions } from './swap-data.js';
 import { executeEvmSwap, isNativeToken } from './evm.js';
-import { mapStatusResponse } from './status.js';
+import { mapReceiptStatus, mapStatusResponse } from './status.js';
 import { createRouterRegistry, routerDeploymentsForChain } from './router-registry.js';
 import { ButterApiError, ButterConfigurationError, ButterExactOutUnsupportedError, ButterReadOnlyAccountError, ButterUnsupportedError } from './errors.js';
 /** Butter Smart Router implementation of the WDK Swidge protocol. */
@@ -96,7 +96,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
      */
     async quoteSwidge(options) {
         this.assertQuoteOptions(options);
-        const cached = await this.routes.getRoute(options);
+        const cached = await this.routes.getRoute(options, { senderFallback: await this.resolveSenderOrUndefined() });
         this.routes.enforceMinAmountOut(options, cached.route);
         const quote = routeToQuote(cached.route, this.now, cached.expiresAt, this.feeContextFor(options.fromToken), options.fromTokenAmount);
         return { ...quote, routeHash: cached.route.hash };
@@ -110,10 +110,10 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
             throw new ButterUnsupportedError('Butter requires refundAddress to match the source sender');
         }
         const receiver = options.recipient ?? sender;
-        const pinnedHash = butterRouteHash(options);
+        const pinnedHash = normalizeRouteHash(options.routeHash);
         const cached = pinnedHash != null
-            ? await this.routes.consumeRouteByHash(pinnedHash, options)
-            : await this.routes.getRoute(options, { forExecution: true });
+            ? await this.routes.consumeRouteByHash(pinnedHash, options, sender)
+            : await this.routes.getRoute(options, { forExecution: true, senderFallback: sender });
         this.routes.enforceMinAmountOut(options, cached.route);
         const feeContext = this.feeContextFor(options.fromToken);
         enforceFeeLimits(cached.route, feeContext, resolveFeeLimits(this.config, config));
@@ -137,7 +137,8 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
             sourceToken: options.fromToken,
             destinationToken: options.toToken,
             requireRouterAllowlist: this.isBuiltInEvmExecution(),
-            quotedNativeFee: routeNativeFee(cached.route, feeContext)
+            routerNativeFee: routeNativeFee(cached.route, feeContext),
+            ...(cached.route.feeConfig ? { feeConfig: cached.route.feeConfig } : {})
         };
         if ('fromTokenAmount' in options && options.fromTokenAmount != null) {
             swapValidationContext.requestedAmountIn = BigInt(options.fromTokenAmount);
@@ -183,14 +184,32 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
             toTokenAmountMin: quote.toTokenAmountMin
         };
     }
-    /** Retrieves a Butter operation by source hash or, when requested, order ID. */
+    /**
+     * Retrieves a Butter operation by source hash or, when requested, order ID.
+     *
+     * Same-chain swaps produce no Butter cross-chain record, so when the caller
+     * indicates a same-chain operation (`fromChain === toChain`) the status is
+     * derived from the transaction receipt instead of the cross-chain APIs.
+     */
     async getSwidgeStatus(id, options = {}) {
         if (!id.trim())
             throw new ButterApiError('A non-empty swidge id is required');
+        if (options.fromChain != null && options.toChain != null && String(options.fromChain) === String(options.toChain)) {
+            return this.getSameChainStatus(id, options.fromChain);
+        }
         const data = options.byOrderId
             ? await this.http.app('/api/queryCrossInfoByOrderId', { orderId: id })
             : await this.http.app('/api/queryBridgeInfoBySourceHash', { hash: id });
         return mapStatusResponse(id, data, options);
+    }
+    async getSameChainStatus(id, chain) {
+        const getReceipt = this.config.evm?.publicClient?.getTransactionReceipt?.bind(this.config.evm.publicClient) ??
+            this.account?.getTransactionReceipt?.bind(this.account);
+        if (!getReceipt) {
+            throw new ButterConfigurationError('Same-chain swidge status requires evm.publicClient or an account with getTransactionReceipt');
+        }
+        const receipt = await getReceipt(id);
+        return mapReceiptStatus(id, receipt, chain);
     }
     /**
      * Lists chains currently advertised by Butter Router.
@@ -263,6 +282,12 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
     hasSenderAddress() {
         return Boolean(this.account?.getAddress || this.config.evm?.walletClient?.account?.address);
     }
+    /** Resolves a sender address without throwing (used to default Solana recipient at quote time). */
+    async resolveSenderOrUndefined() {
+        if (this.account?.getAddress)
+            return this.account.getAddress();
+        return this.config.evm?.walletClient?.account?.address;
+    }
     assertExecutionCapability() {
         if (this.isBuiltInEvmExecution()) {
             const canSend = Boolean(this.account?.sendTransaction ||
@@ -298,9 +323,8 @@ function hashOf(result) {
 function sameRecipient(left, right) {
     return left.toLowerCase() === right.toLowerCase();
 }
-/** Reads the optional Butter-specific `routeHash` pin from swidge options. */
-function butterRouteHash(options) {
-    const hash = options.routeHash;
+/** Normalizes the optional Butter `routeHash` pin, treating empty strings as absent. */
+function normalizeRouteHash(hash) {
     return typeof hash === 'string' && hash.length > 0 ? hash : undefined;
 }
 export default ButterSwidgeProtocol;
