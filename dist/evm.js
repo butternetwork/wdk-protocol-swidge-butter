@@ -14,7 +14,7 @@
 import { encodeFunctionData, erc20Abi, TransactionNotFoundError, TransactionReceiptNotFoundError } from 'viem';
 import { NATIVE_TOKEN_ADDRESSES } from './constants.js';
 import { parseIntegerAmount } from './amounts.js';
-import { ButterApiError, ButterConfigurationError } from './errors.js';
+import { ButterApiError, ButterConfigurationError, ButterPartialExecutionError } from './errors.js';
 import { classifyReceiptStatus } from './status.js';
 /**
  * Adapts a viem wallet client to the provider's {@link EvmWalletClient}. A raw
@@ -35,11 +35,29 @@ export function toEvmWalletClient(client) {
     };
 }
 /**
+ * True when `error` is viem's not-found error of the given class name.
+ *
+ * `instanceof` alone is not reliable here: the wrapped client is constructed by
+ * the host application with ITS copy of viem, which need not be the copy this
+ * package resolved (a different version range, or pnpm's isolated layout). Two
+ * copies mean two class identities, so a genuine not-found would fail the
+ * `instanceof` and be rethrown as if it were an infrastructure fault. viem sets
+ * `name` explicitly on each error class and `shortMessage` on its `BaseError`,
+ * and both survive the copy boundary — while still rejecting an unrelated error
+ * that merely happens to share a name.
+ */
+function isViemErrorNamed(error, name) {
+    if (!(error instanceof Error) || error.name !== name)
+        return false;
+    return typeof error.shortMessage === 'string';
+}
+/**
  * Adapts a viem public client to the provider's {@link EvmPublicClient}, covering
  * ERC-20 allowance reads, approval-receipt waiting, and the receipt/transaction
  * lookups used for same-chain status and its Router attribution. viem throws a
  * specific not-found error when the tx/receipt is unmined or unknown; this adapter
- * maps ONLY those to `null`. Any other failure (RPC timeout, auth, rate-limit,
+ * maps ONLY those to `null` (see {@link isViemErrorNamed} for why the check is not
+ * a bare `instanceof`). Any other failure (RPC timeout, auth, rate-limit,
  * malformed response) is rethrown so genuine infrastructure faults surface instead
  * of masquerading as "transaction does not exist".
  */
@@ -58,6 +76,8 @@ export function toEvmPublicClient(client) {
             catch (error) {
                 if (error instanceof TransactionReceiptNotFoundError)
                     return null;
+                if (isViemErrorNamed(error, 'TransactionReceiptNotFoundError'))
+                    return null;
                 throw error;
             }
         },
@@ -74,6 +94,8 @@ export function toEvmPublicClient(client) {
             catch (error) {
                 if (error instanceof TransactionNotFoundError)
                     return null;
+                if (isViemErrorNamed(error, 'TransactionNotFoundError'))
+                    return null;
                 throw error;
             }
         }
@@ -85,34 +107,59 @@ const APPROVAL_POLL_INTERVAL_MS = 2_000;
 export function isNativeToken(token) {
     return NATIVE_TOKEN_ADDRESSES.has(token.toLowerCase());
 }
-/** Executes a validated Butter swap transaction (plus ERC-20 approval when needed) on an EVM chain. */
+/**
+ * Executes a validated Butter swap transaction (plus ERC-20 approval when needed) on an EVM chain.
+ *
+ * Up to three transactions can be submitted (`approve(0)`, `approve(amount)`, the
+ * swap), so each send is recorded through {@link RecordSend} the instant it
+ * returns rather than collected at the end. If anything then fails — a later send,
+ * or an approval that cannot be confirmed — the already broadcast hashes travel out
+ * on a {@link ButterPartialExecutionError} instead of being discarded with the stack
+ * frame; a caller that blindly retried would otherwise re-approve or re-swap on top
+ * of transactions already on-chain.
+ */
 export async function executeEvmSwap(context) {
     const transactions = [];
     // One entry per submitted transaction; undefined means that send reported no
     // fee. The measured gas fee is only usable when EVERY send reported one — a
     // partial sum would understate the true cost.
     const feeParts = [];
-    if (!context.nativeSource) {
-        for (const approval of await maybeApprove(context)) {
-            transactions.push({ hash: approval.hash, chain: context.sourceChainId, type: 'approval' });
-            feeParts.push(approval.fee);
-        }
+    const record = (sent, type) => {
+        transactions.push({ hash: sent.hash, chain: context.sourceChainId, type });
+        feeParts.push(sent.fee);
+    };
+    let stage = 'approval';
+    try {
+        if (!context.nativeSource)
+            await approveIfNeeded(context, record);
+        stage = 'source';
+        record(await sendEvmTransaction(context, {
+            to: context.swapTx.to,
+            value: parseIntegerAmount(context.swapTx.value),
+            data: context.swapTx.data,
+            chainId: Number(context.sourceChainId)
+        }), 'source');
     }
-    const source = await sendEvmTransaction(context, {
-        to: context.swapTx.to,
-        value: parseIntegerAmount(context.swapTx.value),
-        data: context.swapTx.data,
-        chainId: Number(context.sourceChainId)
-    });
-    transactions.push({ hash: source.hash, chain: context.sourceChainId, type: 'source' });
-    feeParts.push(source.fee);
+    catch (cause) {
+        // Nothing broadcast yet (rejected in the wallet, RPC refused, allowance read
+        // failed) → not a partial execution; surface the original error unchanged.
+        if (transactions.length === 0)
+            throw cause;
+        throw new ButterPartialExecutionError(transactions, cause, stage);
+    }
     const allMeasured = feeParts.length > 0 && feeParts.every((fee) => fee != null);
     return {
         transactions,
         gasFee: allMeasured ? feeParts.reduce((total, fee) => total + fee, 0n) : undefined
     };
 }
-async function maybeApprove(context) {
+/**
+ * Brings the router's allowance to exactly the input amount, reporting each
+ * approval through `record` as soon as it is sent. Recording per-send (rather
+ * than returning the list) is what lets a failure of the second `approve` still
+ * surface the first one's hash.
+ */
+async function approveIfNeeded(context, record) {
     const publicClient = context.config.evm?.publicClient;
     const amount = sourceAmountForApproval(context.options);
     if (publicClient) {
@@ -125,20 +172,19 @@ async function maybeApprove(context) {
         // Exact allowance already in place → nothing to do. Any other value (larger
         // OR smaller) is set to exactly the input so exposure never exceeds it.
         if (allowance === amount)
-            return [];
+            return;
         assertApprovalConfirmable(context);
-        const approvals = [];
         // Reset a non-zero allowance to 0 first for tokens (e.g. USDT) that forbid
         // changing a non-zero allowance directly.
         if (allowance > 0n)
-            approvals.push(await approveExact(context, 0n));
-        approvals.push(await approveExact(context, amount));
-        return approvals;
+            await approveExact(context, 0n, record);
+        await approveExact(context, amount, record);
+        return;
     }
     // Without an allowance read we cannot detect the current value; a single exact
     // approval overwrites it to the input amount (bounded for standard ERC-20).
     assertApprovalConfirmable(context);
-    return [await approveExact(context, amount)];
+    await approveExact(context, amount, record);
 }
 /**
  * Fails closed when an approval would be submitted with no way to confirm it: a
@@ -154,7 +200,7 @@ function assertApprovalConfirmable(context) {
     }
 }
 /** Sends an exact `approve(router, value)` and waits for it to confirm. */
-async function approveExact(context, value) {
+async function approveExact(context, value, record) {
     const sent = await sendEvmTransaction(context, {
         to: context.options.fromToken,
         value: 0n,
@@ -165,16 +211,19 @@ async function approveExact(context, value) {
         }),
         chainId: Number(context.sourceChainId)
     });
+    // Record before confirming: the approval is already broadcast, so a revert or
+    // a confirmation timeout must still surface its hash to the caller.
+    record(sent, 'approval');
     await waitForApproval(context, sent.hash);
-    return sent;
 }
 /**
  * Waits for the approval transaction to confirm before submitting the swap.
  *
  * Prefers `publicClient.waitForTransactionReceipt`; falls back to polling the
- * account's `getTransactionReceipt`. When neither is available the swap is
- * submitted immediately: same-sender nonce ordering still guarantees the
- * approval mines first.
+ * account's `getTransactionReceipt`. One of the two always exists here:
+ * {@link assertApprovalConfirmable} runs before the approval is sent, so the
+ * final guard below is an unreachable backstop that throws rather than letting
+ * an unconfirmed approval through.
  *
  * Fail-closed: only an explicit success confirms; an explicit revert throws; an
  * unknown/uninterpretable status is treated as not-yet-final (keep polling until
@@ -198,8 +247,11 @@ async function waitForApproval(context, hash) {
         return;
     }
     const getReceipt = context.account?.getTransactionReceipt?.bind(context.account);
-    if (!getReceipt)
-        return;
+    // Unreachable: assertApprovalConfirmable already proved a receipt source
+    // exists. Kept as a fail-closed backstop — never silently skip confirmation.
+    if (!getReceipt) {
+        throw new ButterConfigurationError('ERC20 approval was sent with no receipt source to confirm it', { hash });
+    }
     const timeoutMs = context.config.evm?.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
@@ -236,7 +288,14 @@ async function sendEvmTransaction(context, tx) {
         return normalizeSend(await walletClient.sendTransaction(tx));
     throw new ButterConfigurationError('EVM execution requires evm.walletClient to carry the transaction calldata');
 }
-/** Normalizes a sender result to a hash plus the gas fee it reported, if any. */
+/**
+ * Normalizes a sender result to a hash plus the gas fee it reported, if any.
+ *
+ * Note: a sender that returns no hash (or a negative fee) has still broadcast the
+ * transaction — it just cannot be identified. That is why these throw rather than
+ * being tolerated, and why such a transaction cannot appear in a
+ * `ButterPartialExecutionError`'s list: there is no hash to report.
+ */
 function normalizeSend(result) {
     if (typeof result === 'string')
         return { hash: result };

@@ -96,8 +96,14 @@ collaborator it composes:
   when non-zero) so exposure never exceeds this swap. Also exports `toEvmWalletClient`/`toEvmPublicClient`
   adapters for viem clients. The `toEvmPublicClient` adapter maps **only** viem's `TransactionNotFoundError`/
   `TransactionReceiptNotFoundError` to `null` (genuine absence); every other fault (RPC timeout, auth,
-  rate-limit) **rethrows** rather than masquerading as "not found". Without a `publicClient`, an approval
+  rate-limit) **rethrows** rather than masquerading as "not found". That match is **copy-independent**
+  (`isViemErrorNamed`: viem's error `name` plus the `BaseError` `shortMessage` shape, with `instanceof`
+  kept as a same-copy fast path) because the host builds the wrapped client with *its* copy of viem —
+  `instanceof` alone would reject a genuine not-found, and a name-only check would let an RPC fault spoof
+  one. Without a `publicClient`, an approval
   is always sent (overwrites to exact) and confirmed via the account's `getTransactionReceipt`.
+  Every send is recorded the instant it returns (before the approval receipt wait), so a later failure
+  surfaces the already-broadcast hashes on a `ButterPartialExecutionError` instead of discarding them.
 - **`discovery.ts`** — chain/token listing (`/supportedChainInfo`, `queryChainList`,
   `queryTokenList`), plus `/findToken` decimals lookups (cached, incl. confirmed misses) used as a
   fallback when `config.tokenDecimals` doesn't cover a token. `/findToken` matches by address only
@@ -128,8 +134,9 @@ collaborator it composes:
   precision-losing conversions rather than silently rounding.
 - **`errors.ts`** — a typed error hierarchy (`ButterApiError`, `ButterConfigurationError`,
   `ButterActionRequiredError`, `ButterFeeLimitExceededError`, `ButterFeeValuationError`,
-  `ButterReadOnlyAccountError`, `ButterTransactionValidationError`, etc.) so callers can distinguish
-  "your config is wrong" from "the route can't be valued" from "the user must act."
+  `ButterPartialExecutionError`, `ButterReadOnlyAccountError`, `ButterTransactionValidationError`,
+  etc.) so callers can distinguish "your config is wrong" from "the route can't be valued" from
+  "the user must act" from "some of it already happened on-chain."
 
 ### Key invariants to preserve
 
@@ -161,6 +168,15 @@ collaborator it composes:
   resolveAdapterTypes`): illegal types, an unclassified multi-tx result, or anything other than exactly
   one `source` throws with nothing sent — don't reorder this back to send-then-validate (a retry could
   otherwise double-execute an already-sent leg).
+- **Partial execution is reported, not discarded**: a failure after one or more transactions are
+  already broadcast throws `ButterPartialExecutionError` (from `protocol.ts: partialExecution`,
+  fed by `evm.ts`'s per-send recording) carrying every broadcast hash and the original `cause`, and
+  registers a broadcast `source` via `rememberOperationKind` first so `getSwidgeStatus` still resolves
+  the in-flight swidge. This covers a later *send* failure **and** an approval that cannot be confirmed
+  (revert, unknown receipt status, timeout) — that approval is already on the wire, so the caller needs
+  its hash; the fail-closed guarantee is unchanged (the swap is still never sent). A failure before
+  anything is broadcast propagates **unwrapped** — keep that distinction so a wallet rejection is never
+  mislabelled as partially applied. Never swallow, auto-retry, or continue past a failed leg.
 
 ## Coding style
 

@@ -29,11 +29,25 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
   exactly one `source` now throws with nothing sent (previously each transaction was
   sent before the classification check, so a rejected result could leave a
   partially-broadcast operation a retry would double-execute).
+- Report partial execution instead of discarding it: when execution fails *after* one
+  or more transactions have already been broadcast — a later send (`approve(0)` /
+  `approve(amount)` / the swap, or several adapter legs) **or** an approval that
+  cannot be confirmed (revert, unknown receipt status, confirmation timeout) —
+  `swidge()` now throws a `ButterPartialExecutionError` carrying every broadcast hash
+  in submission order plus the original `cause`, and registers a broadcast `source`
+  transaction so `getSwidgeStatus` still resolves the in-flight swidge. Previously the
+  already-sent hashes were lost with the stack frame and a caller could not tell a
+  wallet rejection (nothing sent) from a partially applied operation. A failure before
+  anything is broadcast still propagates unwrapped.
 - Distinguish a genuine "not found" (viem `TransactionNotFoundError` /
   `TransactionReceiptNotFoundError`) from infrastructure faults in
   `evm.publicClient` lookups: RPC timeout / auth / rate-limit errors now propagate
   instead of being swallowed as absence (which masked a same-chain status as a
-  perpetual `pending` or silently fell back to the cross-chain API).
+  perpetual `pending` or silently fell back to the cross-chain API). The match is
+  copy-independent (viem error `name` + `BaseError` shape, with `instanceof` kept as
+  a fast path), so a genuine not-found is still recognized when the host application
+  resolves a different copy of `viem` than this package — while an unrelated error
+  that merely shares the name is still rethrown.
 - `getSwidgeStatus` attributes a same-chain id to an allowlisted Router
   (`swapAndCall`) before trusting its receipt; explicit hints no longer bypass
   attribution, so an unrelated transaction is never reported as a completed swidge.
@@ -57,6 +71,12 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
   the new `toEvmWalletClient` and a viem public client with `toEvmPublicClient`.
 - `EvmWalletClient.account` is now required (its address is validated against the
   WDK account so the signer, calldata initiator, and allowance owner cannot split).
+- A failure that occurs once an approval is on the wire — a reverted approval, an
+  uninterpretable receipt status, or a confirmation timeout — now surfaces as
+  `ButterPartialExecutionError` rather than the bare `ButterConfigurationError`. The
+  original error is preserved as `.cause`, so callers matching the underlying type
+  should read `error.cause` (the swap is still never sent against an unconfirmed
+  approval).
 - Multi-transaction non-EVM adapters must classify each transaction
   (`{ transaction, type }`) and resolve to **exactly one** `source` (the operation
   id); an ambiguous, unclassified, or illegally-typed result is now rejected before
@@ -64,6 +84,8 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
 - The `@tetherto/wdk-wallet` peer range is capped to `<2.0.0`.
 
 ### Types
+- Export `ButterPartialExecutionError` (extends `ButterActionRequiredError`) with a
+  `transactions: readonly SwidgeTransaction[]` list and the underlying `cause`.
 - Export `ButterAdapterResult` and `ViemPublicClientLike`, and simplify
   `ButterTransactionAdapter`'s return type — previously `unknown | ButterAdapterResult`,
   which collapsed to `unknown` — so the typed adapter form is discoverable. Return

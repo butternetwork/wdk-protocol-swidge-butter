@@ -60,7 +60,10 @@ export type ButterSwidgeOptions = SwidgeOptions & ButterSwidgeExecutionOptions
  * Mirrors `IWalletAccountReadOnly` / `IWalletAccount` from `@tetherto/wdk-wallet`:
  * read-only accounts expose {@link getAddress} and {@link getTransactionReceipt},
  * while full accounts additionally expose {@link sendTransaction}. Execution
- * requires a full account (or an explicit `evm.*` sender override).
+ * always requires a full account; the built-in EVM path additionally requires
+ * `evm.walletClient` to carry calldata, because the WDK `Transaction` type is
+ * only `{ to, value }`. The account is used for the sender address and approval
+ * receipts, never to submit swap/approval calldata.
  */
 export interface ButterAccount {
   /** Returns the account's address (present on every WDK account shape). */

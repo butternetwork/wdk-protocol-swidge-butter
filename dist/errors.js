@@ -69,6 +69,37 @@ export class ButterFeeLimitExceededError extends ButterActionRequiredError {
         this.name = 'ButterFeeLimitExceededError';
     }
 }
+/**
+ * Indicates that execution stopped after one or more transactions had already
+ * been broadcast, so the operation is partially applied on-chain.
+ *
+ * {@link transactions} lists every transaction this provider confirmed it sent
+ * before the failure. A caller MUST NOT blindly retry the operation — the listed
+ * transactions are already submitted and re-sending would double-execute them.
+ * Inspect them (and the source transaction's status) first.
+ *
+ * This covers a later send failing and an approval that cannot be confirmed
+ * (revert, unknown receipt status, timeout) — the approval is already on the
+ * wire either way. The underlying failure is preserved as {@link cause}.
+ *
+ * Only thrown when at least one transaction was broadcast; a failure before
+ * anything reaches the chain propagates unwrapped.
+ */
+export class ButterPartialExecutionError extends ButterActionRequiredError {
+    /** Transactions already broadcast, in submission order. */
+    transactions;
+    /** The underlying send failure. Declared explicitly so it is typed without `lib.es2022.error`. */
+    cause;
+    /** Role of the transaction whose send failed, when known. */
+    failedType;
+    constructor(transactions, cause, failedType) {
+        super(`Butter execution failed after broadcasting ${transactions.length} transaction(s); do not retry without inspecting them`, { transactions, failedType, cause });
+        this.name = 'ButterPartialExecutionError';
+        this.transactions = transactions;
+        this.cause = cause;
+        this.failedType = failedType;
+    }
+}
 /** Indicates that execution was attempted without a send-capable signer. */
 export class ButterReadOnlyAccountError extends ButterConfigurationError {
     constructor(message = 'Swidge execution requires an account or signer that can send transactions') {

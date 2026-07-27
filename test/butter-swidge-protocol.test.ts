@@ -18,6 +18,7 @@ import ButterSwidgeProtocol, {
   ButterConfigurationError,
   ButterExactOutUnsupportedError,
   ButterFeeLimitExceededError,
+  ButterPartialExecutionError,
   ButterReadOnlyAccountError,
   ButterTransactionValidationError,
   ButterUnsupportedError,
@@ -744,6 +745,146 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     assert.deepEqual(result.transactions?.map((tx) => tx.type), ['other', 'source'])
   })
 
+  /** Three-leg adapter output (approval → source → follow-up) on one chain. */
+  function threeTxAdapterFetch (bitcoinChain: string, toChainId: string) {
+    const sameChain = toChainId === bitcoinChain
+    const btc = { address: 'btc', decimals: 8, symbol: 'BTC' }
+    return makeFetch({
+      '/route': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [quoteRoute({
+          bridgeFee: undefined,
+          gasFee: undefined,
+          swapFee: undefined,
+          contract: undefined,
+          srcChain: {
+            chainId: bitcoinChain,
+            tokenIn: btc,
+            ...(sameChain ? { tokenOut: btc } : {}),
+            totalAmountIn: '1',
+            totalAmountOut: '1'
+          },
+          dstChain: sameChain ? undefined : { chainId: toChainId, tokenOut: btc, totalAmountOut: '1' },
+          minAmountOut: { amount: '0.99', symbol: 'BTC' }
+        })]
+      }),
+      '/swap': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [
+          { to: 'btc-approval', value: '0', chainId: bitcoinChain },
+          { to: 'btc-deposit', value: '0', chainId: bitcoinChain },
+          { to: 'btc-followup', value: '0', chainId: bitcoinChain }
+        ]
+      })
+    })
+  }
+
+  /** Classifies the three legs of {@link threeTxAdapterFetch} by destination. */
+  function threeTxAdapter (tx: { to: string }) {
+    if (tx.to === 'btc-approval') return { transaction: tx, type: 'approval' as const }
+    if (tx.to === 'btc-deposit') return { transaction: tx, type: 'source' as const }
+    return { transaction: tx, type: 'other' as const }
+  }
+
+  it('reports the already-broadcast transactions when an adapter send fails mid-sequence', async () => {
+    const bitcoinChain = '1360095883558913'
+    const attempted: string[] = []
+    const rejected = new Error('wallet rejected the deposit')
+    const protocol = new ButterSwidgeProtocol({
+      getAddress: async () => 'btc-sender',
+      async sendTransaction (tx) {
+        const to = (tx as { to: string }).to
+        attempted.push(to)
+        if (to === 'btc-deposit') throw rejected
+        return `hash-${to}`
+      }
+    }, {
+      sourceChainId: bitcoinChain,
+      entrance: 'wdk',
+      fetch: threeTxAdapterFetch(bitcoinChain, '137'),
+      transactionAdapters: { [bitcoinChain]: threeTxAdapter }
+    })
+
+    await assert.rejects(
+      protocol.swidge({ fromToken: 'btc', toToken: 'btc', toChain: 137, recipient: 'btc-recipient', fromTokenAmount: 100000000n }),
+      (error: unknown) => {
+        assert.ok(error instanceof ButterPartialExecutionError)
+        // The first leg is already on-chain; its hash must survive the failure so
+        // the caller can inspect it instead of retrying into a double execution.
+        assert.deepEqual(error.transactions, [{ hash: 'hash-btc-approval', chain: bitcoinChain, type: 'approval' }])
+        assert.equal(error.cause, rejected)
+        assert.equal(error.failedType, 'source')
+        return true
+      }
+    )
+    // Execution stops at the failure: the follow-up leg is never attempted.
+    assert.deepEqual(attempted, ['btc-approval', 'btc-deposit'])
+  })
+
+  it('propagates the original error unwrapped when the first adapter send fails', async () => {
+    const bitcoinChain = '1360095883558913'
+    const rejected = new ButterConfigurationError('wallet is locked')
+    const protocol = new ButterSwidgeProtocol({
+      getAddress: async () => 'btc-sender',
+      async sendTransaction () { throw rejected }
+    }, {
+      sourceChainId: bitcoinChain,
+      entrance: 'wdk',
+      fetch: threeTxAdapterFetch(bitcoinChain, '137'),
+      transactionAdapters: { [bitcoinChain]: threeTxAdapter }
+    })
+
+    await assert.rejects(
+      protocol.swidge({ fromToken: 'btc', toToken: 'btc', toChain: 137, recipient: 'btc-recipient', fromTokenAmount: 100000000n }),
+      (error: unknown) => {
+        // Nothing was broadcast, so this is an ordinary failure — wrapping it as
+        // partial execution would tell the caller to inspect a chain state that
+        // does not exist, and would break callers matching the underlying type.
+        assert.equal(error, rejected)
+        assert.ok(!(error instanceof ButterPartialExecutionError))
+        return true
+      }
+    )
+  })
+
+  it('still resolves swidge status for a source transaction broadcast before a partial failure', async () => {
+    const bitcoinChain = '1360095883558913'
+    // makeFetch throws on any unregistered path, so falling back to the
+    // cross-chain status API instead of the receipt would fail this test loudly.
+    const fetch = threeTxAdapterFetch(bitcoinChain, bitcoinChain)
+    const protocol = new ButterSwidgeProtocol({
+      getAddress: async () => 'btc-sender',
+      async sendTransaction (tx) {
+        const to = (tx as { to: string }).to
+        if (to === 'btc-followup') throw new Error('follow-up rejected')
+        return `hash-${to}`
+      },
+      async getTransactionReceipt (hash) {
+        assert.equal(hash, 'hash-btc-deposit')
+        return { status: 'success' }
+      }
+    }, {
+      sourceChainId: bitcoinChain,
+      entrance: 'wdk',
+      fetch,
+      transactionAdapters: { [bitcoinChain]: threeTxAdapter }
+    })
+
+    await assert.rejects(
+      protocol.swidge({ fromToken: 'btc', toToken: 'btc', toChain: bitcoinChain, recipient: 'btc-recipient', fromTokenAmount: 100000000n }),
+      ButterPartialExecutionError
+    )
+
+    // The swidge is in flight even though swidge() threw, so its kind must have
+    // been recorded before the throw for later status routing.
+    const callsBefore = fetch.calls.length
+    const status = await protocol.getSwidgeStatus('hash-btc-deposit')
+    assert.equal(status.status, 'completed')
+    assert.equal(fetch.calls.length, callsBefore)
+  })
+
   it('refreshes an expired confirmed quote before execution', async () => {
     let now = 1000
     let routeRequests = 0
@@ -1194,6 +1335,110 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     assert.deepEqual((result.transactions ?? []).map((tx) => tx.type), ['approval', 'approval', 'source'])
   })
 
+  /** Same-chain ERC20 swap fixture whose allowance forces approve(0)+approve(amount). */
+  function oversizedAllowanceFetch () {
+    return makeFetch({
+      '/route': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [quoteRoute({
+          gasFee: undefined,
+          bridgeFee: undefined,
+          swapFee: { nativeFee: '0', tokenFee: '0' },
+          srcChain: {
+            chainId: '56',
+            tokenIn: { address: ERC20_TOKEN, decimals: 18, symbol: 'FROM' },
+            tokenOut: { address: DEST_TOKEN, decimals: 6, symbol: 'USDT' },
+            totalAmountIn: '1.5',
+            totalAmountOut: '10.25'
+          },
+          dstChain: undefined
+        })]
+      }),
+      '/swap': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [{ to: ROUTER, value: '0', data: sameChainSwapDataFor(ERC20_TOKEN, 1500000000000000000n), chainId: '56', method: 'swapAndCall' }]
+      })
+    })
+  }
+
+  /** Builds a protocol whose Nth EVM send (1-based) rejects with `rejected`. */
+  function protocolFailingOnSend (account: unknown, failAt: number, rejected: Error) {
+    let sends = 0
+    return new ButterSwidgeProtocol(account as never, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch: oversizedAllowanceFetch(),
+      now: () => 1000,
+      tokenDecimals: ERC20_TOKEN_DECIMALS,
+      evm: {
+        publicClient: {
+          // Existing allowance (2e18) exceeds the input (1.5e18).
+          async readContract () { return 2000000000000000000n },
+          async waitForTransactionReceipt () { return { status: 'success' } }
+        },
+        walletClient: evmWallet(async () => {
+          sends++
+          if (sends === failAt) throw rejected
+          return `0xsend${sends}`
+        })
+      }
+    })
+  }
+
+  const sameChainErc20Options = {
+    fromToken: ERC20_TOKEN,
+    toToken: DEST_TOKEN,
+    toChain: 56,
+    recipient: VALID_RECIPIENT,
+    fromTokenAmount: 1500000000000000000n
+  }
+
+  it('reports both broadcast approvals when the EVM swap send fails after them', async () => {
+    const rejected = new Error('swap send rejected')
+    const protocol = protocolFailingOnSend(account, 3, rejected)
+
+    await assert.rejects(protocol.swidge(sameChainErc20Options), (error: unknown) => {
+      assert.ok(error instanceof ButterPartialExecutionError)
+      assert.deepEqual(error.transactions, [
+        { hash: '0xsend1', chain: '56', type: 'approval' },
+        { hash: '0xsend2', chain: '56', type: 'approval' }
+      ])
+      assert.equal(error.cause, rejected)
+      assert.equal(error.failedType, 'source')
+      return true
+    })
+  })
+
+  it('reports the broadcast approve(0) when the follow-up approve(amount) fails', async () => {
+    const rejected = new Error('second approval rejected')
+    const protocol = protocolFailingOnSend(account, 2, rejected)
+
+    await assert.rejects(protocol.swidge(sameChainErc20Options), (error: unknown) => {
+      assert.ok(error instanceof ButterPartialExecutionError)
+      // The allowance is now 0 on-chain: the caller must see that leg, or a
+      // retry would re-run approve(0) against state it does not know about.
+      assert.deepEqual(error.transactions, [{ hash: '0xsend1', chain: '56', type: 'approval' }])
+      assert.equal(error.cause, rejected)
+      // The failure was in the approval stage, not the swap — preserved end to end.
+      assert.equal(error.failedType, 'approval')
+      return true
+    })
+  })
+
+  it('propagates the original error unwrapped when the first EVM approval fails', async () => {
+    const rejected = new ButterConfigurationError('wallet is locked')
+    const protocol = protocolFailingOnSend(account, 1, rejected)
+
+    await assert.rejects(protocol.swidge(sameChainErc20Options), (error: unknown) => {
+      // Nothing reached the chain, so this stays an ordinary failure.
+      assert.equal(error, rejected)
+      assert.ok(!(error instanceof ButterPartialExecutionError))
+      return true
+    })
+  })
+
   it('refuses ERC20 execution when no receipt source can confirm the approval', async () => {
     const fetch = makeFetch({
       '/route': async () => ({
@@ -1609,7 +1854,16 @@ describe('ButterSwidgeProtocol formal behavior', () => {
       recipient: VALID_RECIPIENT,
       fromTokenAmount: 1500000000000000000n,
       slippage: 0.02
-    }), (error: unknown) => error instanceof ButterConfigurationError && error.message.includes('Timed out'))
+    }), (error: unknown) => {
+      // The approval is already broadcast and may still land, so the timeout is
+      // reported as a partial execution carrying its hash — not a bare timeout.
+      assert.ok(error instanceof ButterPartialExecutionError)
+      assert.deepEqual(error.transactions, [{ hash: '0xapproval', chain: '56', type: 'approval' }])
+      assert.equal(error.failedType, 'approval')
+      assert.ok(error.cause instanceof ButterConfigurationError)
+      assert.ok(error.cause.message.includes('Timed out'))
+      return true
+    })
   })
 
   it('does not send the swap when the approval receipt has an unknown status (fail-closed)', async () => {
@@ -1660,7 +1914,14 @@ describe('ButterSwidgeProtocol formal behavior', () => {
       recipient: VALID_RECIPIENT,
       fromTokenAmount: 1500000000000000000n,
       slippage: 0.02
-    }), (error: unknown) => error instanceof ButterConfigurationError && error.message.includes('Timed out'))
+    }), (error: unknown) => {
+      assert.ok(error instanceof ButterPartialExecutionError)
+      assert.deepEqual(error.transactions, [{ hash: '0xapproval', chain: '56', type: 'approval' }])
+      assert.equal(error.failedType, 'approval')
+      assert.ok(error.cause instanceof ButterConfigurationError)
+      assert.ok(error.cause.message.includes('Timed out'))
+      return true
+    })
     // Only the approval was submitted; the swap must not follow an unconfirmed approval.
     assert.equal(sent.length, 1)
   })
@@ -1885,7 +2146,16 @@ describe('ButterSwidgeProtocol formal behavior', () => {
 
     await assert.rejects(
       protocol.swidge({ fromToken: ERC20_TOKEN, toToken: DEST_TOKEN, toChain: 137, recipient: VALID_RECIPIENT, fromTokenAmount: 1500000000000000000n, slippage: 0.02 }),
-      (error: unknown) => error instanceof ButterConfigurationError && /approval.*revert/i.test(error.message)
+      (error: unknown) => {
+        // The reverted approval is a real on-chain transaction; report its hash
+        // rather than discarding it with the stack frame.
+        assert.ok(error instanceof ButterPartialExecutionError)
+        assert.deepEqual(error.transactions, [{ hash: '0xapproval', chain: '56', type: 'approval' }])
+        assert.equal(error.failedType, 'approval')
+        assert.ok(error.cause instanceof ButterConfigurationError)
+        assert.ok(/approval.*revert/i.test(error.cause.message))
+        return true
+      }
     )
     // Only the approval was sent; the swap must not follow a reverted approval.
     assert.equal(sent.length, 1)
@@ -3364,6 +3634,43 @@ describe('helpers', () => {
     })
     await assert.rejects(async () => { await client.getTransactionReceipt?.('0xhash') }, /rate limited/)
     await assert.rejects(async () => { await client.getTransaction?.('0xhash') }, /timed out/)
+  })
+
+  it('adapts a viem public client: a not-found from a different viem copy still maps to null', async () => {
+    // Stands in for a host that built its client with its OWN copy of viem: the
+    // error has the right class name and BaseError shape but a different class
+    // identity, so `instanceof` alone would misread it as an RPC fault.
+    class ForeignViemNotFound extends Error {
+      readonly shortMessage = 'Transaction could not be found.'
+      constructor (name: string) {
+        super(`${name}: Transaction could not be found.`)
+        this.name = name
+      }
+    }
+    assert.ok(!(new ForeignViemNotFound('TransactionNotFoundError') instanceof TransactionNotFoundError))
+
+    const client = toEvmPublicClient({
+      async readContract () { return 0n },
+      async waitForTransactionReceipt () { return { status: 'success' } },
+      async getTransactionReceipt () { throw new ForeignViemNotFound('TransactionReceiptNotFoundError') },
+      async getTransaction () { throw new ForeignViemNotFound('TransactionNotFoundError') }
+    })
+    assert.equal(await client.getTransactionReceipt?.('0xhash'), null)
+    assert.equal(await client.getTransaction?.('0xhash'), null)
+  })
+
+  it('adapts a viem public client: an error merely named like a not-found is still rethrown', async () => {
+    // Right name, no viem BaseError shape: an RPC fault must not be able to pass
+    // itself off as "does not exist" and force a false pending/cross-API result.
+    const named = (name: string) => Object.assign(new Error('HTTP 503 from the RPC provider'), { name })
+    const client = toEvmPublicClient({
+      async readContract () { return 0n },
+      async waitForTransactionReceipt () { return { status: 'success' } },
+      async getTransactionReceipt () { throw named('TransactionReceiptNotFoundError') },
+      async getTransaction () { throw named('TransactionNotFoundError') }
+    })
+    await assert.rejects(async () => { await client.getTransactionReceipt?.('0xhash') }, /503/)
+    await assert.rejects(async () => { await client.getTransaction?.('0xhash') }, /503/)
   })
 
   it('adapts a viem wallet client and requires a bound account', () => {
