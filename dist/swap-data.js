@@ -28,6 +28,13 @@ export function validateSwapTransactions(swapData, context) {
     if (transactions.length === 0) {
         throw new ButterApiError('Butter /swap returned no transaction data');
     }
+    // A single EVM Router execution is exactly one swapAndBridge/swapAndCall call.
+    // Executing multiple individually-valid Router txs would multiply native/ERC-20
+    // spend while only the first hash and one quote are returned, so reject them.
+    // (The adapter path may legitimately return multiple txs, e.g. BTC.)
+    if (context.requireRouterAllowlist && transactions.length > 1) {
+        throw new ButterTransactionValidationError('Butter /swap returned multiple transactions for a single EVM Router execution', { count: transactions.length });
+    }
     return transactions.map((tx) => validateSwapTransaction(tx, context));
 }
 export function validateSwapTransaction(value, context) {
@@ -134,16 +141,40 @@ function validateEvmRouterTransaction(tx, context) {
             bridgeNativeFee: bridgeNativeFee.toString()
         });
     }
+    // The bridge messaging fee comes from the (partially trusted) /swap calldata
+    // and is not bounded by the quote. Cap the total non-input native spend at the
+    // configured maxNativeFee, and fail closed cross-chain when no cap is set.
+    const nonInputNativeFee = routerNativeFee + bridgeNativeFee;
+    if (context.maxNativeFee != null) {
+        if (nonInputNativeFee > context.maxNativeFee) {
+            throw new ButterTransactionValidationError('Butter /swap native fee exceeds the configured maxNativeFee', {
+                nonInputNativeFee: nonInputNativeFee.toString(),
+                maxNativeFee: context.maxNativeFee.toString()
+            });
+        }
+    }
+    else if (bridgeNativeFee > 0n) {
+        throw new ButterConfigurationError('Butter cross-chain execution requires maxNativeFee to bound the bridge native fee returned by /swap');
+    }
 }
 /**
  * Validates that the calldata `feeData` matches the integrator fee config the
- * route declared. Empty feeData charges no integrator fee (harmless); a
- * non-empty feeData must match `route.feeConfig` exactly so `/swap` cannot
- * inject a different fee, referrer, or higher rate than was quoted.
+ * route declared. Empty feeData charges no integrator fee: allowed only when the
+ * route quoted no fee (zero `rateOrNativeFee`) — otherwise `/swap` would silently
+ * drop the quoted integrator fee. A non-empty feeData requires the route to have
+ * declared the FULL `(feeType, referrer, rateOrNativeFee)` tuple and must match it
+ * exactly. Butter's `/route` defines feeConfig as that one tuple, so an incomplete
+ * quoted config cannot be verified and fails closed — otherwise `/swap` could pick
+ * an unchecked `feeType` (e.g. flipping a fixed native fee to a proportional rate)
+ * or an unchecked `referrer` while only matching the rate.
  */
 function validateFeeData(feeData, context) {
-    if (feeData === '0x')
+    if (feeData === '0x') {
+        if (feeConfigChargesFee(context.feeConfig)) {
+            throw new ButterTransactionValidationError('Butter /swap dropped the quoted integrator fee: empty feeData for a non-zero feeConfig');
+        }
         return;
+    }
     let fee;
     try {
         ;
@@ -156,19 +187,40 @@ function validateFeeData(feeData, context) {
     if (!config) {
         throw new ButterTransactionValidationError('Butter /swap included fee data not declared by the route');
     }
-    if (config.feeType != null && Number(fee.feeType) !== Number(config.feeType)) {
+    // Non-empty feeData charges a fee, so the quoted tuple must be complete before it
+    // can be matched; a missing field is unverifiable and fails closed.
+    if (config.feeType == null) {
+        throw new ButterTransactionValidationError('Butter route feeConfig is missing feeType; cannot verify /swap fee data', { feeConfig: config });
+    }
+    if (!config.referrer) {
+        throw new ButterTransactionValidationError('Butter route feeConfig is missing referrer; cannot verify /swap fee data', { feeConfig: config });
+    }
+    if (config.rateOrNativeFee == null) {
+        throw new ButterTransactionValidationError('Butter route feeConfig is missing rateOrNativeFee; cannot verify /swap fee data', { feeConfig: config });
+    }
+    if (Number(fee.feeType) !== Number(config.feeType)) {
         throw new ButterTransactionValidationError('Butter Router fee type does not match the quoted feeConfig', {
             expected: config.feeType, actual: fee.feeType
         });
     }
-    if (config.referrer) {
-        assertAddressEqual(fee.referrer, config.referrer, 'Butter Router fee referrer does not match the quoted feeConfig');
-    }
-    const expectedRate = BigInt(config.rateOrNativeFee ?? 0);
+    assertAddressEqual(fee.referrer, config.referrer, 'Butter Router fee referrer does not match the quoted feeConfig');
+    const expectedRate = BigInt(config.rateOrNativeFee);
     if (fee.rateOrNativeFee !== expectedRate) {
         throw new ButterTransactionValidationError('Butter Router fee rate does not match the quoted feeConfig', {
             expected: expectedRate.toString(), actual: fee.rateOrNativeFee.toString()
         });
+    }
+}
+/** True when the route's integrator fee config charges a non-zero fee. */
+function feeConfigChargesFee(config) {
+    if (!config)
+        return false;
+    try {
+        return BigInt(config.rateOrNativeFee ?? 0) !== 0n;
+    }
+    catch {
+        // A non-numeric rate is unexpected; treat as charging a fee (fail closed).
+        return true;
     }
 }
 function validateSameChainSwapParam(encoded, context) {
@@ -222,6 +274,25 @@ function decodeSwapParam(encoded) {
     catch (cause) {
         throw new ButterTransactionValidationError('Butter Router swap parameters are malformed', { cause });
     }
+}
+/**
+ * Returns the Router V3 function a transaction's calldata calls, or undefined if
+ * it is not decodable / not a recognized Router function. Used to classify a
+ * swidge as same-chain (`swapAndCall`) or cross-chain (`swapAndBridge`).
+ */
+export function routerFunctionName(data) {
+    if (!data || !isHexData(data))
+        return undefined;
+    try {
+        const decoded = decodeFunctionData({ abi: ROUTER_V3_ABI, data: data });
+        if (decoded.functionName === 'swapAndCall' || decoded.functionName === 'swapAndBridge') {
+            return decoded.functionName;
+        }
+    }
+    catch {
+        return undefined;
+    }
+    return undefined;
 }
 export function assertRouterAllowed(address, chainId, registry) {
     const deployments = routerDeploymentsForChain(registry, chainId);

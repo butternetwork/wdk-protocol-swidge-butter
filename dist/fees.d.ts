@@ -4,6 +4,13 @@ export interface FeeContext {
     sourceChainId: string;
     sourceToken: string;
     nativeTokenDecimals?: Record<string, number>;
+    /**
+     * The caller's exact input in source-token base units. Used as the denominator
+     * for source-denominated fee caps so an inflated route-reported input cannot
+     * understate the ratio and bypass a bps limit. Required when a source-token
+     * fee cap is enforced.
+     */
+    requestedAmountIn?: bigint;
 }
 /** Effective WDK fee limits after constructor and per-call precedence. */
 export interface ResolvedFeeLimits {

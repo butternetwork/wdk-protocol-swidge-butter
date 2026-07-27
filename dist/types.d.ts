@@ -59,17 +59,66 @@ export interface EvmPublicClient {
     }) => Promise<EvmTransactionReceipt>;
     /** Fetches a receipt without waiting; used for same-chain status lookups. */
     getTransactionReceipt?: (hash: string) => Promise<EvmTransactionReceipt | null>;
+    /**
+     * Fetches a sent transaction (for its calldata `input`). Used to statelessly
+     * classify a swidge as same- or cross-chain when status hints are omitted.
+     */
+    getTransaction?: (hash: string) => Promise<{
+        input?: string;
+        to?: string;
+    } | null>;
 }
-/** EVM wallet client capabilities needed for transaction submission. */
+/**
+ * EVM wallet client capabilities needed for transaction submission. `account` is
+ * required — the sender address must be resolvable. A raw viem wallet client is
+ * not structurally assignable to this; wrap it with {@link toEvmWalletClient}.
+ */
 export interface EvmWalletClient {
-    account?: {
+    account: {
         address: string;
     };
     sendTransaction: (args: unknown) => Promise<string | {
         hash?: string;
+        fee?: bigint;
     }>;
 }
-/** Converts Butter transaction data for a non-viem execution environment. */
+/** Loose shape of a viem-style wallet client accepted by {@link toEvmWalletClient}. */
+export interface ViemWalletClientLike {
+    account?: {
+        address: string;
+    } | null;
+    sendTransaction: (args: any) => Promise<`0x${string}`>;
+}
+/** Loose shape of a viem-style public client accepted by `toEvmPublicClient`. */
+export interface ViemPublicClientLike {
+    readContract: (args: any) => Promise<unknown>;
+    waitForTransactionReceipt: (args: any) => Promise<EvmTransactionReceipt>;
+    getTransactionReceipt: (args: any) => Promise<EvmTransactionReceipt>;
+    getTransaction: (args: any) => Promise<{
+        input?: string;
+        to?: string | null;
+    }>;
+}
+/**
+ * An adapter's result: the transaction to send, plus its role. When an adapter
+ * may produce more than one transaction per operation it MUST return this shape
+ * (with `type`) so the primary `source` transaction is identifiable; a bare
+ * return is treated as a single, untyped `source` transaction.
+ */
+export interface ButterAdapterResult {
+    transaction: unknown;
+    type?: SwidgeTransaction['type'];
+}
+/**
+ * Converts Butter transaction data for a non-viem execution environment.
+ *
+ * Return a bare transaction (any shape the target chain's sender accepts) for the
+ * common single-transaction case, or a {@link ButterAdapterResult} to classify a
+ * transaction's role — required when an operation produces more than one, so the
+ * primary `source` transaction is identifiable. The return stays `unknown` because
+ * non-EVM transaction shapes are open-ended; use `ButterAdapterResult` for the
+ * typed, classifiable form.
+ */
 export type ButterTransactionAdapter = (swapTx: ButterSwapTx, context: {
     sender: string;
     receiver: string;
@@ -113,6 +162,17 @@ export interface ButterSwidgeProtocolConfig extends SwidgeProtocolConfig {
     /** Additional chain IDs requiring Butter's strict 300 bps slippage floor. */
     strictSlippageChainIds?: Array<string | number>;
     /**
+     * Absolute ceiling (source-chain native base units) on the non-input native
+     * value a `/swap` transaction may spend — the router protocol fee plus the
+     * cross-chain bridge messaging fee (`routerFee + bridgeFee`). When set, the cap
+     * is enforced on **any** chain (same-chain carries only the router fee, since
+     * its bridge fee is zero). The cross-chain bridge messaging fee comes from the
+     * (partially trusted) `/swap` calldata and is not otherwise bounded by the
+     * quote, so **cross-chain execution requires this cap and fails closed without
+     * it**; same-chain swaps do not require it.
+     */
+    maxNativeFee?: number | bigint;
+    /**
      * Per-chain adapters converting Butter `/swap` data for non-EVM execution.
      *
      * Trust boundary note: adapter execution bypasses the Router V3 calldata
@@ -127,13 +187,13 @@ export interface ButterSwidgeProtocolConfig extends SwidgeProtocolConfig {
          * provider skips the allowance read and always submits an approval.
          */
         publicClient?: EvmPublicClient;
-        /** Optional viem-style wallet client overriding account-based sending. */
+        /**
+         * EVM-capable sender that carries the swap/approval calldata. Required for
+         * built-in EVM execution. Its `account.address` is validated against the WDK
+         * account so the signer, calldata initiator, and allowance owner never split.
+         * Wrap a viem wallet client with {@link toEvmWalletClient}.
+         */
         walletClient?: EvmWalletClient;
-        /** Optional raw sender overriding both the wallet client and the account. */
-        sendTransaction?: (tx: EvmTransactionRequest) => Promise<string | {
-            hash?: string;
-        }>;
-        approvalAmount?: 'exact' | 'max';
         approvalConfirmations?: number;
         approvalTimeoutMs?: number;
     };
@@ -145,6 +205,11 @@ export interface ButterRouteToken {
     symbol?: string;
     name?: string;
 }
+/** A single DEX/bridge leg within a chain's route segment. */
+export interface ButterRouteLeg {
+    /** Per-leg price impact; Butter reports priceImpact here, not at the route top level. */
+    priceImpact?: string | number;
+}
 /** Per-chain route segment returned by Butter. */
 export interface ButterRouteChain {
     chainId?: string | number;
@@ -154,6 +219,8 @@ export interface ButterRouteChain {
     totalAmountOut?: string;
     totalAmountInUSD?: string;
     totalAmountOutUSD?: string;
+    /** Ordered legs for this segment; the final leg carries the segment's price impact. */
+    route?: ButterRouteLeg[];
 }
 /** Normalized shape of a Butter `/route` result. */
 export interface ButterRoute {

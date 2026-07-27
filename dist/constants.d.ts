@@ -5,6 +5,8 @@ export declare const ROUTE_TTL_SECONDS = 300;
 export declare const ROUTE_EXPIRY_MARGIN_SECONDS = 15;
 /** Maximum number of cached routes retained by a long-lived instance. */
 export declare const ROUTE_CACHE_MAX_ENTRIES = 256;
+/** Maximum number of executed operation kinds remembered for status routing. */
+export declare const OPERATION_KIND_MAX_ENTRIES = 1024;
 /** Butter router `errno` returned by `/findToken` when a token is unknown. */
 export declare const TOKEN_NOT_FOUND_ERRNO = 2002;
 export declare const DEFAULT_SLIPPAGE_BPS = 100;

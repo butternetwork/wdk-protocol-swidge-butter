@@ -49,7 +49,9 @@ function feeRoute (overrides: Partial<ButterRoute> = {}): ButterRoute {
 const context = {
   sourceChainId: '56',
   sourceToken: SOURCE_TOKEN,
-  nativeTokenDecimals: { 56: 18 }
+  nativeTokenDecimals: { 56: 18 },
+  // The caller's exact input (100 USDC, 6 decimals) — the source-fee denominator.
+  requestedAmountIn: 100000000n
 }
 
 describe('Butter fee handling', () => {
