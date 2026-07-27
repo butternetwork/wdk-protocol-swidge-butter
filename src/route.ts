@@ -199,6 +199,13 @@ export class RouteManager {
     if (normalizeId(route.srcChain?.chainId) !== normalizeId(request.fromChainId as string | number)) {
       throw new ButterApiError('Butter route source chain does not match request', { route, request })
     }
+    // For a cross-chain request, dstChain must be present and match the target.
+    // A missing dstChain denotes a same-chain path in Butter's `/route` shape, so
+    // accepting it for a cross-chain request would quote the wrong (source) leg.
+    const crossChain = normalizeId(request.fromChainId as string | number) !== normalizeId(request.toChainId as string | number)
+    if (crossChain && !route.dstChain) {
+      throw new ButterApiError('Butter cross-chain route is missing dstChain', { route, request })
+    }
     if (route.dstChain && normalizeId(route.dstChain.chainId) !== normalizeId(request.toChainId as string | number)) {
       throw new ButterApiError('Butter route destination chain does not match request', { route, request })
     }

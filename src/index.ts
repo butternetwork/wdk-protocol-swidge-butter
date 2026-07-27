@@ -27,6 +27,7 @@ export {
 } from './errors.js'
 export { parseTokenAmount, formatTokenAmount } from './amounts.js'
 export { toButterSlippage } from './slippage.js'
+export { toEvmWalletClient, toEvmPublicClient } from './evm.js'
 export type {
   ButterSwidgeProtocolConfig,
   ButterSwidgeQuote,
@@ -35,11 +36,14 @@ export type {
   ButterRouterDeployment,
   ButterRouterVersion,
   ButterTransactionAdapter,
+  ButterAdapterResult,
   ButterChainExecution,
   ButterSupportedChain,
   ButterRoute,
   ButterSwapTx,
   ButterAccount,
   EvmPublicClient,
-  EvmWalletClient
+  EvmWalletClient,
+  ViemWalletClientLike,
+  ViemPublicClientLike
 } from './types.js'

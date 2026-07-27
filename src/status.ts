@@ -18,19 +18,32 @@ import type { EvmTransactionReceipt, SwidgeStatusResult } from './types.js'
 /**
  * Maps an on-chain receipt to a SwidgeStatus for same-chain swaps, which do not
  * produce a Butter cross-chain record. A missing receipt means the tx is not
- * yet mined (pending); a reverted receipt is a terminal failure.
+ * yet mined (pending). Mapping is **fail-closed**: only an explicit success maps
+ * to `completed` and only an explicit revert to `failed`; any unknown or missing
+ * status maps to `pending` rather than falsely reporting completion.
  */
 export function mapReceiptStatus (id: string, receipt: EvmTransactionReceipt | null | undefined, chain?: string | number): SwidgeStatusResult {
   if (receipt == null) return { status: 'pending', transactions: [] }
-  const status = receipt.status
+  const kind = classifyReceiptStatus(receipt)
   const swidgeStatus: SwidgeStatusResult['status'] =
-    status === 'reverted' || status === 0 || status === '0x0' || status === false
-      ? 'failed'
-      : 'completed'
+    kind === 'success' ? 'completed' : kind === 'reverted' ? 'failed' : 'pending'
   return {
     status: swidgeStatus,
     transactions: [{ hash: id, chain, type: 'source' as const }]
   }
+}
+
+/**
+ * Classifies an EVM receipt's status as an explicit `success`, an explicit
+ * `reverted`, or `unknown` (missing/unrecognized). Shared by same-chain status
+ * mapping and approval-receipt confirmation so both fail closed on `unknown`
+ * rather than treating an uninterpretable receipt as success.
+ */
+export function classifyReceiptStatus (receipt: EvmTransactionReceipt | null | undefined): 'success' | 'reverted' | 'unknown' {
+  const status = receipt?.status
+  if (status === 'success' || status === 1 || status === '0x1' || status === true) return 'success'
+  if (status === 'reverted' || status === 0 || status === '0x0' || status === false) return 'reverted'
+  return 'unknown'
 }
 
 export function mapStatusResponse (id: string, data: unknown, hints: { fromChain?: string | number, toChain?: string | number, byOrderId?: boolean } = {}): SwidgeStatusResult {

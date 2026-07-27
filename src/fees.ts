@@ -36,6 +36,13 @@ export interface FeeContext {
   sourceChainId: string
   sourceToken: string
   nativeTokenDecimals?: Record<string, number>
+  /**
+   * The caller's exact input in source-token base units. Used as the denominator
+   * for source-denominated fee caps so an inflated route-reported input cannot
+   * understate the ratio and bypass a bps limit. Required when a source-token
+   * fee cap is enforced.
+   */
+  requestedAmountIn?: bigint
 }
 
 /** Effective WDK fee limits after constructor and per-call precedence. */
@@ -169,7 +176,7 @@ function networkFeeRatios (route: ButterRoute, context: FeeContext): Ratio[] {
   const nativeDecimals = nativeDecimalsForChain(context.sourceChainId, context.nativeTokenDecimals)
   const gasAmount = parseTokenAmount(route.gasFee?.amount, nativeDecimals)
   if (isNativeSource(context.sourceToken)) {
-    return [{ numerator: gasAmount, denominator: sourceAmount(route) }]
+    return [{ numerator: gasAmount, denominator: sourceDenominator(context) }]
   }
   return [usdRatio(route.gasFee?.inUSD, route.totalAmountInUSD, 'network fee')]
 }
@@ -183,13 +190,13 @@ function protocolFeeRatios (route: ButterRoute, context: FeeContext): Ratio[] {
   if (isNonZero(route.swapFee?.tokenFee)) {
     ratios.push({
       numerator: parseTokenAmount(route.swapFee?.tokenFee, sourceDecimals),
-      denominator: sourceAmount(route)
+      denominator: sourceDenominator(context)
     })
   }
   if (isNonZero(route.swapFee?.nativeFee)) {
     const nativeFee = parseTokenAmount(route.swapFee?.nativeFee, nativeDecimals)
     if (isNativeSource(context.sourceToken)) {
-      ratios.push({ numerator: nativeFee, denominator: sourceAmount(route) })
+      ratios.push({ numerator: nativeFee, denominator: sourceDenominator(context) })
     } else {
       const gasAmount = parseTokenAmount(route.gasFee?.amount, nativeDecimals)
       const gasUsd = parseUsd(route.gasFee?.inUSD, 'native protocol fee')
@@ -247,11 +254,16 @@ function parseUsd (value: string | undefined, label: string): bigint {
   return parseTokenAmount(value, USD_DECIMALS)
 }
 
-function sourceAmount (route: ButterRoute): bigint {
-  return parseTokenAmount(
-    route.srcChain?.totalAmountIn ?? route.totalAmountIn,
-    requiredDecimals(route.srcChain?.tokenIn, 'source token')
-  )
+/**
+ * Denominator for source-denominated fee caps: the caller's exact input, NOT the
+ * route-reported `srcChain.totalAmountIn` (which is untrusted and, if inflated,
+ * would understate the ratio and let an over-cap fee pass).
+ */
+function sourceDenominator (context: FeeContext): bigint {
+  if (context.requestedAmountIn == null) {
+    throw new ButterFeeValuationError('Cannot value a source-denominated Butter fee without the requested input amount')
+  }
+  return context.requestedAmountIn
 }
 
 function bridgeFeeToken (route: ButterRoute): ButterRouteToken | undefined {

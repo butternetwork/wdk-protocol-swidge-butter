@@ -47,34 +47,57 @@ collaborator it composes:
 
 - **`route.ts`** (`RouteManager`) — builds `/route` requests, caches quotes keyed by request+amount
   (bounded/evicting cache), and re-validates that a cached/fresh route still matches the requested
-  chains/tokens before use. Also indexes routes by hash so `swidge` can pin an approved quote via
-  `options.routeHash` (`consumeRouteByHash`), and supports a Solana `senderFallback` for the
-  receiver. Route TTL and re-fetch margin come from `constants.ts`.
+  chains/tokens before use. A **cross-chain** request (`fromChainId !== toChainId`) requires the route
+  to include `dstChain` matching the target chain/token — a missing `dstChain` is a same-chain path and
+  is rejected (otherwise `mappers.ts` would quote the wrong source leg). Also indexes routes by hash so
+  `swidge` can pin an approved quote via `options.routeHash` (`consumeRouteByHash`), and supports a
+  Solana `senderFallback` for the receiver. Route TTL and re-fetch margin come from `constants.ts`.
 - **`fees.ts`** — maps Butter's `bridgeFee`/`gasFee`/`swapFee` into WDK's `SwidgeFee[]`, and
   enforces `maxNetworkFeeBps`/`maxProtocolFeeBps` using exact rational (numerator/denominator
-  bigint) comparisons — never floating point — against route or USD-denominated amounts. Enforcement
-  runs **only in `swidge`** (execution); `quoteSwidge` never throws on a cap so a quote stays a fully
-  inspectable estimate. Note `mapRouteFees` documents an upstream WDK caveat: the base class's legacy
+  bigint) comparisons — never floating point. **Source-denominated** fee ratios use the caller's
+  `requestedAmountIn` (base units) as the denominator via `sourceDenominator(context)` — NOT the
+  untrusted `route.srcChain.totalAmountIn`, which an inflated `/route` could use to understate the
+  ratio and slip past a bps cap. Cross-denomination bridge/USD fees still use route-stage amounts
+  (documented USD-metadata trust). Enforcement runs **only in `swidge`** (execution); `quoteSwidge`
+  never throws on a cap so a quote stays a fully inspectable estimate. Note `mapRouteFees` documents an upstream WDK caveat: the base class's legacy
   `swap()`/`bridge()` sum `fees[].amount` across different denominations, so those scalar totals are
   only meaningful when all fees share a currency — consumers should read the itemised `fees[]`.
 - **`swap-data.ts`** — validates the `/swap` Router V3 calldata at a deliberate **middle tier** (see
-  `AGENTS.md` / README "Safety Defaults"). Always enforced: router target is allowlisted (and matches
-  the route `contract`); top-level intent (initiator, source token, source amount, empty permit);
-  `feeData` matches the route's `feeConfig`; and `tx.value == input(if native) + routerFee + bridgeFee`
-  (guards native-balance drain). Same-chain `swapAndCall` additionally checks destination token,
-  receiver, leftover receiver, and minimum output. **Cross-chain destination routing** (the nested
-  bridge payload: destination receiver, output token, minimum output) is intentionally **trusted to
-  Butter** and not re-verified — only that the bridge targets the quoted destination chain. Source
-  exposure stays bounded because `evm.ts` approves only the exact input amount to the router.
+  `AGENTS.md` / README "Safety Defaults"). The built-in EVM path requires **exactly one** Router
+  transaction (rejects multi-tx arrays that could multiply spend). Always enforced: router target is
+  allowlisted (and matches the route `contract`); top-level intent (initiator, source token, source
+  amount, empty permit); `feeData` matches the route's `feeConfig` as a full `(feeType, referrer,
+  rateOrNativeFee)` tuple (a non-empty `feeData` requires the quoted tuple to be **complete** — fail
+  closed on any missing field — and to match exactly; an **empty** `feeData` is rejected when the route
+  quoted a non-zero integrator fee — so a quoted fee cannot be silently dropped nor an unchecked
+  `feeType`/`referrer` injected by under-specifying the quote); and `tx.value == input(if native) + routerFee + bridgeFee`. The bridge messaging fee inside `tx.value` is trusted from `/swap`, so the
+  actual native-drain guard is the **`maxNativeFee`** absolute cap on `routerFee + bridgeFee`
+  (`context.maxNativeFee`); cross-chain execution **fails closed** when it is unset. Same-chain
+  `swapAndCall` additionally checks destination token, receiver, leftover receiver, and minimum output.
+  **Cross-chain destination routing** (the nested bridge payload: destination receiver, output token,
+  minimum output) is intentionally **trusted to Butter** and not re-verified — only that the bridge
+  targets the quoted destination chain. Source exposure stays bounded because `evm.ts` approves only
+  the exact input amount to the router.
 - **`router-registry.ts`** — a pinned allowlist of known Router V3 contract addresses per chain
   (`constants.ts: DEFAULT_ROUTER_CONTRACTS`), overridable via `config.routerContracts`. `/swap`
   responses are only trusted if their target is in this registry — the API response alone can never
   authorize a new transaction target.
-- **`evm.ts`** — executes validated transactions. Sending is account-first: the WDK account's own
-  `sendTransaction` is used by default; `config.evm.sendTransaction`/`evm.walletClient` are explicit
-  overrides. ERC20 approvals are skipped only if `config.evm.publicClient` is given and allowance is
-  sufficient; without a `publicClient`, an approval is always sent and confirmed via the account's
-  `getTransactionReceipt` (polled) instead of a viem public client.
+- **`evm.ts`** — executes validated transactions. EVM execution requires **both** a full WDK account
+  (WDK `swidge()` contract; enforced in `assertExecutionCapability`) **and** `evm.walletClient` (its
+  `account.address` validated against the WDK account) to carry the swap/approval calldata; the WDK
+  account's generic `sendTransaction` is NOT used here (its `Transaction` type is only `{ to, value }`,
+  so `data` could be dropped). The account is still used for the sender address and approval receipts.
+  Approval confirmation is **fail-closed** via the shared `status.ts: classifyReceiptStatus` (unknown
+  status keeps polling until timeout); an approval with no receipt source is **refused** before sending.
+  When **every** send returns `{ hash, fee }`, the measured gas is summed and folded into the result's
+  `network` fee (`protocol.ts: withMeasuredNetworkFee`); if any send omits a fee (or a fee is negative →
+  rejected), the route estimate stands. Approval is skipped only when the existing allowance **exactly
+  equals** the input; any other value is set to exactly the input (`approve(0)` then `approve(amount)`
+  when non-zero) so exposure never exceeds this swap. Also exports `toEvmWalletClient`/`toEvmPublicClient`
+  adapters for viem clients. The `toEvmPublicClient` adapter maps **only** viem's `TransactionNotFoundError`/
+  `TransactionReceiptNotFoundError` to `null` (genuine absence); every other fault (RPC timeout, auth,
+  rate-limit) **rethrows** rather than masquerading as "not found". Without a `publicClient`, an approval
+  is always sent (overwrites to exact) and confirmed via the account's `getTransactionReceipt`.
 - **`discovery.ts`** — chain/token listing (`/supportedChainInfo`, `queryChainList`,
   `queryTokenList`), plus `/findToken` decimals lookups (cached, incl. confirmed misses) used as a
   fallback when `config.tokenDecimals` doesn't cover a token. `/findToken` matches by address only
@@ -84,9 +107,21 @@ collaborator it composes:
   `queryCrossInfoByOrderId`) to WDK's `SwidgeStatus`: authoritative codes are `0` crossing→`pending`,
   `1`→`completed`, `6` refund→`refunded` (there is no numeric `failed`). Unrecognized/intermediate
   codes map conservatively to `pending` (never a false terminal), since this is a polling method; a
-  response with no info/state still throws (invalid id). Same-chain swaps (`getSwidgeStatus` called
-  with `fromChain === toChain`) have no Butter cross record, so status is derived from the tx receipt
-  via `evm.publicClient.getTransactionReceipt` or `account.getTransactionReceipt`.
+  response with no info/state still throws (invalid id). Receipt mapping (`mapReceiptStatus`) is
+  **fail-closed**: only an explicit success is `completed`, only an explicit revert is `failed`, and an
+  unknown/missing status is `pending`. Same-chain swaps have no Butter cross record, so status is
+  derived from the tx receipt via `evm.publicClient.getTransactionReceipt` or
+  `account.getTransactionReceipt`. Same-chain status is only derived from the
+  receipt after the source tx is **attributed to a Butter Router**: recorded ids (this instance
+  executed them) are trusted; otherwise `attributeSourceTransaction` fetches the tx via
+  `evm.publicClient.getTransaction` and requires an **allowlisted Router target AND** a Router function
+  (`swap-data.ts: routerFunctionName` — `swapAndCall`=same, `swapAndBridge`=cross). Explicit
+  `fromChain/toChain` hints do NOT bypass attribution (an unrelated tx is never reported completed; an
+  unverifiable same-chain id throws). Unresolved attribution defaults to the cross-chain API (never a
+  false completion). A genuine not-found tx resolves to unattributable (→ cross API), but an
+  **infrastructure error** from `getTransaction` (RPC timeout, auth, rate-limit) **propagates** rather
+  than being swallowed as unattributable, so a node fault surfaces instead of a silent fallback. Works
+  across restarts/new instances.
 - **`http.ts`** — thin fetch wrapper for Butter's three API surfaces (router/token/app base URLs),
   each with its own success-envelope shape (`errno === 0` vs `code === 200`).
 - **`amounts.ts`** — bigint-only decimal<->base-unit conversion; rejects unsafe JS numbers and
@@ -99,15 +134,19 @@ collaborator it composes:
 ### Key invariants to preserve
 
 - **Middle-tier trust boundary** (the definitive statement is in `AGENTS.md`): Butter responses are
-  partially trusted. Always keep the router allowlist, top-level intent checks, the `feeData`↔
-  `feeConfig` check, the `tx.value` cap (native-drain guard), same-chain destination checks, and the
-  route-level fee caps — don't weaken these without security-focused tests. Cross-chain destination
-  routing is intentionally trusted to Butter and not re-verified; don't silently re-tighten OR
-  further loosen it without updating `AGENTS.md`, README, and tests together.
-- **Account-first execution**: `evm.walletClient`/`evm.sendTransaction` are overrides, not
-  requirements — a bare WDK account (`getAddress` + `sendTransaction` + optional
-  `getTransactionReceipt`) must be able to execute end-to-end with zero viem configuration. A raw
-  `evm.sendTransaction` with no address source is rejected up front (it can't determine the sender).
+  partially trusted. Always keep the router allowlist, the single-transaction EVM rule, top-level
+  intent checks, the `feeData`↔`feeConfig` check, the `tx.value` check, the `maxNativeFee` cap
+  (the real native-drain guard; cross-chain fails closed without it), same-chain destination checks,
+  and the route-level fee caps — don't weaken these without security-focused tests. Cross-chain
+  destination routing is intentionally trusted to Butter and not re-verified; don't silently
+  re-tighten OR further loosen it without updating `AGENTS.md`, README, and tests together.
+- **Full account + walletClient for calldata**: EVM Router execution requires BOTH a full
+  (send-capable) WDK account (WDK `swidge()` contract — undefined/read-only accounts are rejected) AND
+  `evm.walletClient` to carry the swap/approval calldata. A WDK account cannot submit calldata — the WDK
+  `Transaction` type is only `{ to, value }` — so it is used only for the sender address and (optional)
+  approval receipts. The `walletClient.account.address` is validated against the WDK account (no signer/
+  initiator/allowance-owner split). There is no raw `evm.sendTransaction` and no `approvalAmount: 'max'`.
+  The dual requirement merges only if WDK extends `Transaction` with `data`.
 - **Exact-in only**: exact-out (`toTokenAmount`) is rejected before any network request
   (`ButterExactOutUnsupportedError`); this also governs the WDK base-class `swap()` delegation path.
 - **Fail closed on unvaluable fees**: if a configured fee cap can't be evaluated (missing USD
@@ -117,7 +156,11 @@ collaborator it composes:
 - **Adapter path has a different trust boundary**: `transactionAdapters` (non-EVM / Tron / BTC /
   Solana / TON execution) bypasses the Router V3 calldata validation used on the built-in EVM path —
   only chain ID and required fields are checked. Keep this asymmetry documented, don't silently
-  extend it or pretend it's equivalent to the EVM path's guarantees.
+  extend it or pretend it's equivalent to the EVM path's guarantees. **But** adapter output is still
+  fully normalized and classified **before any transaction is broadcast** (`protocol.ts:
+  resolveAdapterTypes`): illegal types, an unclassified multi-tx result, or anything other than exactly
+  one `source` throws with nothing sent — don't reorder this back to send-then-validate (a retry could
+  otherwise double-execute an already-sent leg).
 
 ## Coding style
 

@@ -1,6 +1,6 @@
 import ButterSwidgeProtocol, {
-  type EvmPublicClient,
-  type EvmWalletClient
+  toEvmPublicClient,
+  toEvmWalletClient
 } from '@butternetwork/wdk-protocol-swidge-butter'
 import {
   createPublicClient,
@@ -61,13 +61,22 @@ runExample(async () => {
   const tokenDecimals = fromToken.toLowerCase() === NATIVE_TOKEN || configuredDecimals == null
     ? {}
     : { [fromToken]: integerFromEnv('EXECUTION_FROM_TOKEN_DECIMALS') }
-  const protocol = new ButterSwidgeProtocol(undefined, {
+  // Execution requires a full WDK account. Build one from the viem account and
+  // clients: getAddress + getTransactionReceipt are used by the provider; its
+  // sendTransaction is not used for EVM calldata (the walletClient carries that)
+  // but satisfies the full-account requirement.
+  const wdkAccount = {
+    getAddress: async () => account.address,
+    sendTransaction: async (tx: unknown) => walletClient.sendTransaction(tx as never),
+    getTransactionReceipt: async (hash: string) => publicClient.getTransactionReceipt({ hash: hash as `0x${string}` })
+  }
+  const protocol = new ButterSwidgeProtocol(wdkAccount, {
     sourceChainId: chainId,
     ...butterIntegrationFromEnv(),
     tokenDecimals,
     evm: {
-      publicClient: publicClientAdapter(publicClient),
-      walletClient: walletClientAdapter(walletClient)
+      publicClient: toEvmPublicClient(publicClient),
+      walletClient: toEvmWalletClient(walletClient)
     }
   })
 
@@ -95,26 +104,4 @@ function integerFromEnv (name: string, fallback?: number): number {
   const value = numberFromEnv(name, process.env, fallback)
   if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${name} must be a non-negative safe integer`)
   return value
-}
-
-function publicClientAdapter (client: ReturnType<typeof createPublicClient>): EvmPublicClient {
-  return {
-    async readContract (args) {
-      return await client.readContract(args as never) as bigint
-    },
-    async waitForTransactionReceipt (args) {
-      return client.waitForTransactionReceipt(args as never)
-    }
-  }
-}
-
-function walletClientAdapter (client: ReturnType<typeof createWalletClient>): EvmWalletClient {
-  const address = client.account?.address
-  if (!address) throw new Error('The viem wallet client has no account')
-  return {
-    account: { address },
-    async sendTransaction (args) {
-      return client.sendTransaction(args as never)
-    }
-  }
 }

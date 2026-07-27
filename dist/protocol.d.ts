@@ -11,6 +11,8 @@ export declare class ButterSwidgeProtocol extends SwidgeProtocol {
     private readonly sourceChainId;
     private readonly routerRegistry;
     private readonly feeContext;
+    private readonly maxNativeFee;
+    private readonly operationKinds;
     /** Creates a protocol instance bound to one source chain. */
     constructor(account: ButterAccount | undefined, config: ButterSwidgeProtocolConfig);
     /**
@@ -38,6 +40,23 @@ export declare class ButterSwidgeProtocol extends SwidgeProtocol {
         fromChain?: string | number;
         toChain?: string | number;
     }): Promise<SwidgeStatusResult>;
+    /** Records an executed operation's chain kind for later status routing, bounding memory. */
+    private rememberOperationKind;
+    /**
+     * Attributes a source transaction to a Butter Router by fetching its calldata
+     * (`evm.publicClient.getTransaction`) and requiring BOTH an allowlisted Router
+     * target AND a recognized Router function: `swapAndCall` → same-chain,
+     * `swapAndBridge` → cross-chain. Returns undefined when it cannot attribute (no
+     * `getTransaction`, the transaction is not found, a non-allowlisted target, or an
+     * unrecognized function), so an unrelated transaction is never taken for a Butter
+     * swidge. Infrastructure errors from `getTransaction` (RPC timeout, auth,
+     * rate-limit) propagate rather than being swallowed as "unattributable", so a
+     * genuine node fault surfaces to the caller instead of forcing a silent cross-API
+     * fallback. Stateless: works across process restarts and new instances.
+     */
+    private attributeSourceTransaction;
+    /** True when the address is an allowlisted Router deployment on the source chain. */
+    private isAllowlistedRouter;
     private getSameChainStatus;
     /**
      * Lists chains currently advertised by Butter Router.
@@ -57,8 +76,6 @@ export declare class ButterSwidgeProtocol extends SwidgeProtocol {
     private assertQuoteOptions;
     private isBuiltInEvmExecution;
     private getSender;
-    /** Returns true when a sender address can be derived from the configuration. */
-    private hasSenderAddress;
     /** Resolves a sender address without throwing (used to default Solana recipient at quote time). */
     private resolveSenderOrUndefined;
     private assertExecutionCapability;

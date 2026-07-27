@@ -14,22 +14,45 @@ npm install @butternetwork/wdk-protocol-swidge-butter @tetherto/wdk-wallet
 ## Usage
 
 ```ts
-import ButterSwidgeProtocol from '@butternetwork/wdk-protocol-swidge-butter'
+import ButterSwidgeProtocol, {
+  toEvmWalletClient,
+  toEvmPublicClient
+} from '@butternetwork/wdk-protocol-swidge-butter'
 
-// A full WDK wallet account is all that is needed for EVM execution.
+// EVM execution needs BOTH a full WDK account and an EVM-capable sender.
 const protocol = new ButterSwidgeProtocol(account, {
   sourceChainId: 56,
   entrance: 'wdk',
   apiKeyId: process.env.BUTTER_API_KEY_ID,
-  apiSecret: process.env.BUTTER_API_SECRET
+  apiSecret: process.env.BUTTER_API_SECRET,
+  maxNativeFee: 20000000000000000n, // required for cross-chain (see Safety Defaults)
+  evm: {
+    walletClient: toEvmWalletClient(viemWalletClient),
+    publicClient: toEvmPublicClient(viemPublicClient) // enables allowance checks + status
+  }
 })
 ```
 
-Execution is account-first: the WDK account's own `sendTransaction` submits
-transactions by default. Optional `evm.walletClient` or `evm.sendTransaction`
-override the account sender, and an optional `evm.publicClient` enables ERC20
-allowance checks (without one, an approval is always submitted and confirmed
-through the account's `getTransactionReceipt`).
+EVM execution requires **both**:
+
+1. a **full (send-capable) WDK account** — the WDK `swidge()` contract throws
+   without one, so a read-only or absent account is rejected; and
+2. an **EVM-capable sender** — `evm.walletClient` — to carry the swap/approval
+   calldata (`data`/`chainId`). The WDK account alone cannot, because the WDK
+   `Transaction` type only guarantees `{ to, value }`, so calldata could be
+   silently dropped. The wallet client carries a bound `account.address` that is
+   validated against the WDK account, so the signer, calldata initiator, and
+   allowance owner can never split. (This dual requirement collapses to one if WDK
+   extends `Transaction` with `data`.)
+
+The account resolves the sender address and (optionally) confirms approval
+receipts via `getTransactionReceipt`; it is never used to submit EVM calldata.
+Wrap a viem wallet client with the exported `toEvmWalletClient` adapter (a raw
+viem client is not structurally assignable). An optional `evm.publicClient`
+enables ERC20 allowance checks (without one, an approval is always submitted and
+confirmed through a receipt lookup). When **every** send reports the gas fee it
+paid, the executed `SwidgeResult` reports that measured source gas; otherwise it
+keeps the route estimate.
 
 Only exact-in quotes are supported. Pass `fromTokenAmount` as a positive
 `bigint` in base units. This module deliberately rejects exact-out
@@ -62,11 +85,25 @@ anonymous requests.
   Without `routeHash`, execution auto-re-quotes as before.
 - `getSwidgeStatus(id)` calls
   `/api/queryBridgeInfoBySourceHash`; `{ byOrderId: true }` calls
-  `/api/queryCrossInfoByOrderId`. For same-chain swaps (pass
-  `{ fromChain, toChain }` equal), Butter produces no cross-chain record, so
-  status is derived from the transaction receipt instead — this requires an
-  `evm.publicClient` with `getTransactionReceipt` or an account that exposes
-  `getTransactionReceipt`.
+  `/api/queryCrossInfoByOrderId`. Same-chain swaps produce no cross-chain record,
+  so their status is derived from the transaction receipt — but only after the
+  source transaction is **attributed to a Butter Router**. If this instance
+  executed the id (recorded at `swidge` time) it is trusted; otherwise the source
+  tx is fetched via `evm.publicClient.getTransaction` and must target an
+  allowlisted Router **and** be `swapAndCall` (`swapAndBridge` ⇒ cross-chain).
+  This attribution holds even with explicit `{ fromChain, toChain }` hints — hints
+  never bypass it — so an unrelated transaction is never reported as a completed
+  swidge (an unverifiable same-chain id throws). It also works across process
+  restarts / new instances. Without a resolvable attribution it defaults to the
+  cross-chain API (which never falsely reports completion). Transaction and
+  receipt lookups treat only viem's `TransactionNotFoundError` /
+  `TransactionReceiptNotFoundError` as absence; infrastructure faults (RPC
+  timeout, auth, rate-limit) propagate to the caller rather than being masked as
+  "not found" (which would force a false `pending` or a silent cross-API
+  fallback). Receipt-derived status
+  requires an `evm.publicClient` with `getTransactionReceipt` or an account that
+  exposes `getTransactionReceipt`, and is fail-closed (only an explicit success is
+  `completed`; an unknown receipt status stays `pending`).
 - `getSwidgeStatus` maps Butter cross states `0 → pending` (crossing),
   `1 → completed`, and `6 → refunded`. There is no numeric `failed` state.
   Any undocumented or intermediate code (e.g. a relaying state) maps
@@ -85,6 +122,33 @@ anonymous requests.
   through Butter's `/findToken` API (cached per token). Configure
   `tokenDecimals` only for tokens Butter cannot resolve.
 
+## Status & fee mapping
+
+`getSwidgeStatus` maps Butter's state to WDK's `SwidgeStatus`:
+
+| Source | Value | `SwidgeStatus` |
+| --- | --- | --- |
+| Cross-chain `state` | `0` crossing | `pending` |
+| Cross-chain `state` | `1` completed | `completed` |
+| Cross-chain `state` | `6` refund | `refunded` |
+| Cross-chain `state` | any other / intermediate | `pending` (never a false terminal) |
+| Same-chain receipt | explicit success | `completed` |
+| Same-chain receipt | explicit revert | `failed` |
+| Same-chain receipt | missing / unknown | `pending` |
+
+`quoteSwidge`/`swidge` map Butter route fees into WDK `SwidgeFee[]`:
+
+| Butter field | `SwidgeFee.type` | Notes |
+| --- | --- | --- |
+| `bridgeFee` | `protocol` | cross-chain bridge fee |
+| `bridgeFee.affiliate` | `affiliate` | integrator/affiliate share |
+| `gasFee` | `network` | source-chain gas; estimate, replaced by measured gas when the sender reports every send's fee |
+| `swapFee.nativeFee` | `protocol` | native-denominated swap fee |
+| `swapFee.tokenFee` | `protocol` | input-token-denominated swap fee |
+
+Fees can span different tokens; read the itemised `fees[]` (see the legacy-scalar
+caveat in Safety Defaults) rather than summing amounts.
+
 ## Safety Defaults
 
 - `sourceChainId` and `entrance` are required.
@@ -98,21 +162,42 @@ anonymous requests.
 - Quotes accept `refundAddress`. Execution requires it to match the source
   sender because Butter's Router API does not expose an independent refund
   recipient.
+- The built-in EVM path executes **exactly one** Router transaction. A `/swap`
+  response with more than one transaction is rejected, so repeated
+  individually-valid Router calls cannot multiply native/ERC20 spend.
 - EVM Router V3 calldata is validated at a deliberate middle tier. Always
   enforced: the target must be an allowlisted router (and match the route's
   `contract`); the top-level intent — initiator, source token, source amount,
   and empty permit data — must match the request; the integrator `feeData` must
-  match the route's `feeConfig`; and the transaction value must equal
-  `input (if native) + routerFee + bridgeFee` (guarding against native-balance
-  drain). Same-chain `swapAndCall` additionally verifies the destination token,
-  recipient, leftover receiver, and minimum output.
-- Cross-chain destination routing (destination receiver, output token, and
-  minimum output encoded in the nested bridge payload) is trusted to Butter's
-  `/swap` response and is NOT independently re-verified. The bridge is still
-  checked to target the quoted destination chain. Source-token exposure remains
-  bounded because the module approves only the exact input amount to the router.
+  match the route's quoted `feeConfig` as a full `(feeType, referrer,
+  rateOrNativeFee)` tuple — empty `feeData` is rejected when the route quoted a
+  non-zero fee, and a non-empty `feeData` requires the quoted tuple to be
+  complete (fail closed on any missing field) and to match exactly, so `/swap`
+  cannot inject an unchecked `feeType`/`referrer` by under-specifying the quote;
+  and the transaction value must equal
+  `input (if native) + routerFee + bridgeFee`. Same-chain `swapAndCall`
+  additionally verifies the destination token, recipient, leftover receiver, and
+  minimum output.
+- Native-spend bound: the `tx.value` check bounds the transaction value to
+  `input + quoted routerFee + the bridge messaging fee Butter declares in the
+  calldata`. That Butter-declared bridge fee is **trusted** and not otherwise
+  bounded by the quote, so cross-chain execution additionally requires
+  `maxNativeFee` (an absolute cap on `routerFee + bridgeFee`, in native base
+  units). When set, the cap is enforced on any chain (same-chain carries only the
+  router fee); cross-chain execution additionally **fails closed** if it is not
+  configured, while same-chain swaps do not require it.
+- Cross-chain destination routing — the destination **recipient, output token,
+  and minimum output** encoded in the nested bridge payload — is **trusted to
+  Butter's `/swap` response and is NOT verified**. This is an accepted
+  middle-tier trust boundary, not full calldata intent validation: a compromised
+  or buggy `/swap` could route the destination output elsewhere. Only the bridge
+  target (destination chain) is checked. Source-token exposure remains bounded
+  because the module approves only the exact input amount to the router. Set
+  `minAmountOut` for a locally-enforced destination minimum.
 - ERC20 approval only occurs after calldata validation and only targets a
-  configured Butter router for the source chain.
+  configured Butter router for the source chain. The approval is **always for the
+  exact input amount** — there is no unbounded/`max` approval option — so a
+  compromised router can never move more than this swap's input.
 - `maxNetworkFeeBps` and `maxProtocolFeeBps` are enforced only in `swidge`,
   before `/swap`, approvals, or transaction submission. `quoteSwidge` never
   throws on a cap — a quote is a non-binding estimate and always returns the
@@ -127,9 +212,32 @@ anonymous requests.
   treated as viem-compatible EVM execution. Adapter execution bypasses the
   Router V3 calldata validation performed on the built-in EVM path — only chain
   ID and required transaction fields are checked, so adapters carry their own
-  trust responsibility for the provider-supplied transaction data.
-- EVM transaction submission uses the account's `sendTransaction` by default;
-  `evm.sendTransaction` and `evm.walletClient` act as explicit overrides.
+  trust responsibility for the provider-supplied transaction data. Adapter
+  output is still fully classified **before anything is broadcast**: each
+  declared `type` must be a legal `SwidgeTransaction` role, a multi-transaction
+  result must classify every entry (`{ transaction, type }`), and the set must
+  resolve to exactly one `source` — any violation throws with nothing sent, so a
+  failed classification cannot leave a partially-broadcast operation a retry
+  could double-execute.
+- EVM transaction submission requires **both** a full (send-capable) WDK account
+  (per the WDK `swidge()` contract) **and** `evm.walletClient` (which carries the
+  swap calldata, with a bound `account.address` validated against the WDK account);
+  the WDK account cannot submit EVM calldata because its `Transaction` type is only
+  `{ to, value }`. The account is used for the sender address and approval
+  receipts. ERC20 approval is always the exact input amount — an oversized existing
+  allowance is reduced (`approve(0)` then `approve(amount)`), and an approval that
+  cannot be confirmed (no receipt source) is refused rather than sent
+  fire-and-forget. `SwidgeResult.fees` reports the measured source gas only when
+  **every** send returns a fee, otherwise the route estimate; bridge/protocol fees
+  remain route-derived
+  estimates.
+- Legacy `swap()`/`quoteSwap()`/`bridge()`/`quoteBridge()` from the WDK base
+  class sum `fees[].amount` **across denominations** (ignoring `fee.token`), so
+  their scalar `fee`/`bridgeFee` are only meaningful when every fee shares one
+  currency. Butter fees can span native, input, and bridge tokens — read the
+  itemised `fees[]` on the `SwidgeQuote`/`SwidgeResult` for correct per-currency
+  costs. This is a WDK base-class contract issue a provider cannot fix without
+  overriding legacy methods (which is disallowed); a WDK-side change is needed.
 
 Example fee policy:
 
@@ -148,7 +256,10 @@ await protocol.swidge(options, { maxNetworkFeeBps: 50 })
 
 The package includes a versioned registry of known Router V3 deployments.
 Addresses are pinned because `/route` and `/swap` are remote, untrusted inputs;
-an API response cannot authorize a new transaction target by itself.
+an API response cannot authorize a new transaction target by itself. The
+built-in set is a curated subset of Butter's deployments; a chain without a
+pinned entry is quote-only for built-in EVM execution until its Router is
+supplied via `routerContracts` (verify the address independently first).
 
 Per-chain configuration replaces the built-in entries for that chain:
 

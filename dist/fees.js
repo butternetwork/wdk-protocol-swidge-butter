@@ -120,7 +120,7 @@ function networkFeeRatios(route, context) {
     const nativeDecimals = nativeDecimalsForChain(context.sourceChainId, context.nativeTokenDecimals);
     const gasAmount = parseTokenAmount(route.gasFee?.amount, nativeDecimals);
     if (isNativeSource(context.sourceToken)) {
-        return [{ numerator: gasAmount, denominator: sourceAmount(route) }];
+        return [{ numerator: gasAmount, denominator: sourceDenominator(context) }];
     }
     return [usdRatio(route.gasFee?.inUSD, route.totalAmountInUSD, 'network fee')];
 }
@@ -132,13 +132,13 @@ function protocolFeeRatios(route, context) {
     if (isNonZero(route.swapFee?.tokenFee)) {
         ratios.push({
             numerator: parseTokenAmount(route.swapFee?.tokenFee, sourceDecimals),
-            denominator: sourceAmount(route)
+            denominator: sourceDenominator(context)
         });
     }
     if (isNonZero(route.swapFee?.nativeFee)) {
         const nativeFee = parseTokenAmount(route.swapFee?.nativeFee, nativeDecimals);
         if (isNativeSource(context.sourceToken)) {
-            ratios.push({ numerator: nativeFee, denominator: sourceAmount(route) });
+            ratios.push({ numerator: nativeFee, denominator: sourceDenominator(context) });
         }
         else {
             const gasAmount = parseTokenAmount(route.gasFee?.amount, nativeDecimals);
@@ -195,8 +195,16 @@ function parseUsd(value, label) {
         throw new ButterFeeValuationError(`Cannot value Butter ${label} without USD metadata`);
     return parseTokenAmount(value, USD_DECIMALS);
 }
-function sourceAmount(route) {
-    return parseTokenAmount(route.srcChain?.totalAmountIn ?? route.totalAmountIn, requiredDecimals(route.srcChain?.tokenIn, 'source token'));
+/**
+ * Denominator for source-denominated fee caps: the caller's exact input, NOT the
+ * route-reported `srcChain.totalAmountIn` (which is untrusted and, if inflated,
+ * would understate the ratio and let an over-cap fee pass).
+ */
+function sourceDenominator(context) {
+    if (context.requestedAmountIn == null) {
+        throw new ButterFeeValuationError('Cannot value a source-denominated Butter fee without the requested input amount');
+    }
+    return context.requestedAmountIn;
 }
 function bridgeFeeToken(route) {
     const fee = route.bridgeFee;

@@ -46,8 +46,12 @@ export function routeToQuote (route: ButterRoute, now: () => number, expiry: num
     fees: mapRouteFees(route, feeContext),
     estimatedDuration: finiteOrUndefined(route.timeEstimated ?? route.estimatedTime),
     expiry: expiry ?? now() + 300,
-    // Passed through as reported by Butter; the unit (decimal vs percent) is not
-    // formally documented, so we only guard against non-numeric values here.
+    // Butter only reports priceImpact per route leg (dstChain/srcChain `route[]`),
+    // with no documented unit or whole-operation aggregation. Picking one leg would
+    // misrepresent a multi-leg (e.g. both-ends swap) operation, so we only surface a
+    // value when Butter provides an authoritative top-level one; otherwise undefined.
+    // WDK expects a decimal price impact — confirm Butter's unit/aggregation before
+    // deriving one from the per-leg values.
     priceImpact: finiteOrUndefined(route.priceImpact)
   }
 }
