@@ -231,6 +231,25 @@ caveat in Safety Defaults) rather than summing amounts.
   **every** send returns a fee, otherwise the route estimate; bridge/protocol fees
   remain route-derived
   estimates.
+- **Partial execution is reported, never silently discarded.** Execution can
+  broadcast more than one transaction (`approve(0)`, `approve(amount)`, the swap;
+  or several adapter legs). If execution fails *after* at least one transaction has
+  already gone out, `swidge()` throws a `ButterPartialExecutionError` whose
+  `transactions` lists every broadcast hash in submission order and whose `cause`
+  is the original failure. **Do not blindly retry** — those transactions are
+  already on-chain and re-sending would double-execute them; inspect them first.
+  This includes an approval that cannot be confirmed (reverted, unknown receipt
+  status, or a confirmation timeout): the approval is already on the wire, so you
+  get its hash and the underlying error as `cause` — the swap itself is still never
+  sent against an unconfirmed approval. A failure before anything is broadcast
+  propagates unwrapped. When the broadcast set includes the `source` transaction,
+  it is registered before the throw, so `getSwidgeStatus(hash)` still resolves the
+  in-flight swidge.
+- Transaction/receipt lookups through `toEvmPublicClient` treat only a genuine
+  viem not-found as absent; every other fault (RPC timeout, auth, rate-limit)
+  propagates. The check is **copy-independent** — it matches viem's error `name`
+  plus its `BaseError` shape rather than relying on `instanceof`, which fails when
+  the host application resolves a different copy of viem than this package.
 - Legacy `swap()`/`quoteSwap()`/`bridge()`/`quoteBridge()` from the WDK base
   class sum `fees[].amount` **across denominations** (ignoring `fee.token`), so
   their scalar `fee`/`bridgeFee` are only meaningful when every fee shares one

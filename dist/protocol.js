@@ -22,7 +22,7 @@ import { routerFunctionName, validateSwapTransactions } from './swap-data.js';
 import { executeEvmSwap, isNativeToken } from './evm.js';
 import { mapReceiptStatus, mapStatusResponse } from './status.js';
 import { createRouterRegistry, routerDeploymentsForChain } from './router-registry.js';
-import { ButterApiError, ButterConfigurationError, ButterExactOutUnsupportedError, ButterReadOnlyAccountError, ButterUnsupportedError } from './errors.js';
+import { ButterApiError, ButterConfigurationError, ButterExactOutUnsupportedError, ButterPartialExecutionError, ButterReadOnlyAccountError, ButterUnsupportedError } from './errors.js';
 /** Butter Smart Router implementation of the WDK Swidge protocol. */
 export class ButterSwidgeProtocol extends SwidgeProtocol {
     account;
@@ -159,22 +159,34 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
         // One entry per execution unit; undefined means that unit's gas was not
         // measured. Only fold in a measured fee when EVERY unit reported one.
         const feeParts = [];
+        const toChain = String(options.toChain ?? this.sourceChainId);
         if (this.isBuiltInEvmExecution()) {
             // The built-in EVM path is exactly one Router transaction (enforced by
             // validateSwapTransactions); executeEvmSwap adds any approval + the source.
             for (const swapTx of swapTransactions) {
-                const executed = await executeEvmSwap({
-                    account: this.account,
-                    config: this.config,
-                    sender,
-                    route: cached.route,
-                    swapTx,
-                    options,
-                    sourceChainId: this.sourceChainId,
-                    nativeSource
-                });
-                transactions.push(...executed.transactions);
-                feeParts.push(executed.gasFee);
+                try {
+                    const executed = await executeEvmSwap({
+                        account: this.account,
+                        config: this.config,
+                        sender,
+                        route: cached.route,
+                        swapTx,
+                        options,
+                        sourceChainId: this.sourceChainId,
+                        nativeSource
+                    });
+                    transactions.push(...executed.transactions);
+                    feeParts.push(executed.gasFee);
+                }
+                catch (cause) {
+                    // executeEvmSwap reports its own broadcast transactions; merge them
+                    // with anything already sent so the caller sees the full picture.
+                    if (cause instanceof ButterPartialExecutionError) {
+                        transactions.push(...cause.transactions);
+                        throw this.partialExecution(transactions, cause.cause, toChain, cause.failedType ?? 'source');
+                    }
+                    throw this.partialExecution(transactions, cause, toChain, 'source');
+                }
             }
         }
         else {
@@ -191,9 +203,16 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
             const adapted = swapTransactions.map((swapTx) => normalizeAdapterResult(adapter(swapTx, { sender, receiver, route: cached.route, options })));
             const classified = resolveAdapterTypes(adapted);
             for (const entry of classified) {
-                const result = await sendTransaction(entry.transaction);
-                transactions.push({ hash: hashOf(result), chain: this.sourceChainId, type: entry.type });
-                feeParts.push(feeOf(result));
+                // The whole body is guarded, not just the await: hashOf/feeOf can also
+                // throw AFTER the transaction has gone out.
+                try {
+                    const result = await sendTransaction(entry.transaction);
+                    transactions.push({ hash: hashOf(result), chain: this.sourceChainId, type: entry.type });
+                    feeParts.push(feeOf(result));
+                }
+                catch (cause) {
+                    throw this.partialExecution(transactions, cause, toChain, entry.type);
+                }
             }
         }
         const sourceTx = transactions.find((tx) => tx.type === 'source');
@@ -202,7 +221,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
             // this indicates a bug rather than a recoverable condition.
             throw new ButterApiError('Butter execution produced no source transaction', { transactions });
         }
-        this.rememberOperationKind(sourceTx.hash, String(options.toChain ?? this.sourceChainId));
+        this.rememberOperationKind(sourceTx.hash, toChain);
         const actualNetworkFee = feeParts.length > 0 && feeParts.every((fee) => fee != null)
             ? feeParts.reduce((total, fee) => total + fee, 0n)
             : undefined;
@@ -253,6 +272,27 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
             ? await this.http.app('/api/queryCrossInfoByOrderId', { orderId: id })
             : await this.http.app('/api/queryBridgeInfoBySourceHash', { hash: id });
         return mapStatusResponse(id, data, options);
+    }
+    /**
+     * Builds the error to throw when a send fails part-way through execution.
+     *
+     * Returns the original `cause` untouched when nothing was broadcast (rejected
+     * in the wallet, RPC refused): that is an ordinary failure, not a partially
+     * applied operation, and callers still match on the underlying error type.
+     * Once at least one transaction is on-chain the failure is wrapped in a
+     * {@link ButterPartialExecutionError} carrying every broadcast hash, so a
+     * caller cannot mistake it for "nothing happened" and retry into a double
+     * execution. A broadcast `source` transaction is also registered for status
+     * routing before throwing — the swidge is in flight even though this call
+     * failed, and `getSwidgeStatus` must still resolve it.
+     */
+    partialExecution(transactions, cause, toChain, failedType) {
+        if (transactions.length === 0)
+            return cause;
+        const sourceTx = transactions.find((tx) => tx.type === 'source');
+        if (sourceTx)
+            this.rememberOperationKind(sourceTx.hash, toChain);
+        return new ButterPartialExecutionError(transactions, cause, failedType);
     }
     /** Records an executed operation's chain kind for later status routing, bounding memory. */
     rememberOperationKind(sourceHash, toChain) {

@@ -21,6 +21,7 @@ export {
   ButterActionRequiredError,
   ButterFeeLimitExceededError,
   ButterFeeValuationError,
+  ButterPartialExecutionError,
   ButterReadOnlyAccountError,
   ButterExactOutUnsupportedError,
   ButterTransactionValidationError

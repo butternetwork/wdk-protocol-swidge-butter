@@ -11,14 +11,25 @@ export declare function toEvmWalletClient(client: ViemWalletClientLike): EvmWall
  * ERC-20 allowance reads, approval-receipt waiting, and the receipt/transaction
  * lookups used for same-chain status and its Router attribution. viem throws a
  * specific not-found error when the tx/receipt is unmined or unknown; this adapter
- * maps ONLY those to `null`. Any other failure (RPC timeout, auth, rate-limit,
+ * maps ONLY those to `null` (see {@link isViemErrorNamed} for why the check is not
+ * a bare `instanceof`). Any other failure (RPC timeout, auth, rate-limit,
  * malformed response) is rethrown so genuine infrastructure faults surface instead
  * of masquerading as "transaction does not exist".
  */
 export declare function toEvmPublicClient(client: ViemPublicClientLike): EvmPublicClient;
 /** Returns true when the token identifier denotes a chain's native asset. */
 export declare function isNativeToken(token: string): boolean;
-/** Executes a validated Butter swap transaction (plus ERC-20 approval when needed) on an EVM chain. */
+/**
+ * Executes a validated Butter swap transaction (plus ERC-20 approval when needed) on an EVM chain.
+ *
+ * Up to three transactions can be submitted (`approve(0)`, `approve(amount)`, the
+ * swap), so each send is recorded through {@link RecordSend} the instant it
+ * returns rather than collected at the end. If anything then fails — a later send,
+ * or an approval that cannot be confirmed — the already broadcast hashes travel out
+ * on a {@link ButterPartialExecutionError} instead of being discarded with the stack
+ * frame; a caller that blindly retried would otherwise re-approve or re-swap on top
+ * of transactions already on-chain.
+ */
 export declare function executeEvmSwap(context: {
     account: ButterAccount | undefined;
     config: ButterSwidgeProtocolConfig;

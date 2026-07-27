@@ -40,6 +40,20 @@ export declare class ButterSwidgeProtocol extends SwidgeProtocol {
         fromChain?: string | number;
         toChain?: string | number;
     }): Promise<SwidgeStatusResult>;
+    /**
+     * Builds the error to throw when a send fails part-way through execution.
+     *
+     * Returns the original `cause` untouched when nothing was broadcast (rejected
+     * in the wallet, RPC refused): that is an ordinary failure, not a partially
+     * applied operation, and callers still match on the underlying error type.
+     * Once at least one transaction is on-chain the failure is wrapped in a
+     * {@link ButterPartialExecutionError} carrying every broadcast hash, so a
+     * caller cannot mistake it for "nothing happened" and retry into a double
+     * execution. A broadcast `source` transaction is also registered for status
+     * routing before throwing — the swidge is in flight even though this call
+     * failed, and `getSwidgeStatus` must still resolve it.
+     */
+    private partialExecution;
     /** Records an executed operation's chain kind for later status routing, bounding memory. */
     private rememberOperationKind;
     /**
