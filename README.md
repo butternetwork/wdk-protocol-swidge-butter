@@ -241,9 +241,17 @@ caveat in Safety Defaults) rather than summing amounts.
   This includes an approval that cannot be confirmed (reverted, unknown receipt
   status, or a confirmation timeout): the approval is already on the wire, so you
   get its hash and the underlying error as `cause` — the swap itself is still never
-  sent against an unconfirmed approval. A failure before anything is broadcast
-  propagates unwrapped. When the broadcast set includes the `source` transaction,
-  it is registered before the throw, so `getSwidgeStatus(hash)` still resolves the
+  sent against an unconfirmed approval. It also includes a send that succeeded but
+  reported an unusable gas fee: a transaction is recorded the moment its send
+  returns, *before* the fee is validated, so a malformed fee never erases the hash.
+  Fees are checked at runtime as non-negative bigints and hashes as non-empty
+  strings on both the built-in EVM path and the adapter path, because a
+  host-supplied sender makes the declared types hints rather than guarantees. The
+  hash is the one value checked *before* recording — it *is* the record, so a send
+  that returns no usable hash is unidentifiable and throws unwrapped rather than
+  being reported. A failure before anything is broadcast propagates
+  unwrapped. When the broadcast set includes the `source` transaction, it is
+  registered before the throw, so `getSwidgeStatus(hash)` still resolves the
   in-flight swidge.
 - Transaction/receipt lookups through `toEvmPublicClient` treat only a genuine
   viem not-found as absent; every other fault (RPC timeout, auth, rate-limit)

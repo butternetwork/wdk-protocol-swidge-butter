@@ -174,9 +174,20 @@ collaborator it composes:
   registers a broadcast `source` via `rememberOperationKind` first so `getSwidgeStatus` still resolves
   the in-flight swidge. This covers a later *send* failure **and** an approval that cannot be confirmed
   (revert, unknown receipt status, timeout) — that approval is already on the wire, so the caller needs
-  its hash; the fail-closed guarantee is unchanged (the swap is still never sent). A failure before
-  anything is broadcast propagates **unwrapped** — keep that distinction so a wallet rejection is never
-  mislabelled as partially applied. Never swallow, auto-retry, or continue past a failed leg.
+  its hash; the fail-closed guarantee is unchanged (the swap is still never sent). **Ordering is the
+  invariant**: record a transaction the instant its send returns, *then* validate the gas fee it
+  reported (`evm.ts: assertGasFee`, reused by `protocol.ts: feeOf`), and keep the fee total and result
+  assembly inside the guarded region — validate-then-record would drop a send that succeeded on-chain
+  with a bad fee. Fees are runtime-checked as non-negative bigints and hashes as non-empty strings
+  (`evm.ts: assertTransactionHash`) because host-supplied senders make the declared types hints (a
+  `number` fee passes `< 0n`, then throws a raw `TypeError` from the sum; a `number` hash throws from
+  `rememberOperationKind`'s `toLowerCase()`). The **hash** is the one value validated *before*
+  recording — the hash *is* the record, so an unidentifiable send has nothing to report and throws
+  unwrapped. `partialExecution` treats status registration as best-effort and never lets it throw:
+  it is the last-resort reporter, and the caller's hashes outrank it.
+  A failure before anything is broadcast propagates **unwrapped** — keep that distinction so a wallet
+  rejection is never mislabelled as partially applied. Never swallow, auto-retry, or continue past a
+  failed leg.
 
 ## Coding style
 

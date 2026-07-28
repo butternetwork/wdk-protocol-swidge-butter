@@ -19,7 +19,7 @@ import { enforceFeeLimits, resolveFeeLimits, routeNativeFee, validateFeeLimits }
 import { routeToQuote } from './mappers.js';
 import { DiscoveryService } from './discovery.js';
 import { routerFunctionName, validateSwapTransactions } from './swap-data.js';
-import { executeEvmSwap, isNativeToken } from './evm.js';
+import { assertGasFee, assertTransactionHash, executeEvmSwap, isNativeToken } from './evm.js';
 import { mapReceiptStatus, mapStatusResponse } from './status.js';
 import { createRouterRegistry, routerDeploymentsForChain } from './router-registry.js';
 import { ButterApiError, ButterConfigurationError, ButterExactOutUnsupportedError, ButterPartialExecutionError, ButterReadOnlyAccountError, ButterUnsupportedError } from './errors.js';
@@ -215,25 +215,33 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
                 }
             }
         }
-        const sourceTx = transactions.find((tx) => tx.type === 'source');
-        if (!sourceTx) {
-            // Every validated swap transaction produces a source entry; reaching
-            // this indicates a bug rather than a recoverable condition.
-            throw new ButterApiError('Butter execution produced no source transaction', { transactions });
+        // Everything below runs with the transactions already on the wire, so any
+        // failure here — totalling the fees, assembling the result — must still
+        // report what was broadcast rather than propagating bare.
+        try {
+            const sourceTx = transactions.find((tx) => tx.type === 'source');
+            if (!sourceTx) {
+                // Every validated swap transaction produces a source entry; reaching
+                // this indicates a bug rather than a recoverable condition.
+                throw new ButterApiError('Butter execution produced no source transaction', { transactions });
+            }
+            this.rememberOperationKind(sourceTx.hash, toChain);
+            const actualNetworkFee = feeParts.length > 0 && feeParts.every((fee) => fee != null)
+                ? feeParts.reduce((total, fee) => total + (fee ?? 0n), 0n)
+                : undefined;
+            return {
+                id: sourceTx.hash,
+                hash: sourceTx.hash,
+                fees: actualNetworkFee != null ? withMeasuredNetworkFee(quote.fees, actualNetworkFee, cached.route) : quote.fees,
+                transactions,
+                fromTokenAmount: quote.fromTokenAmount,
+                toTokenAmount: quote.toTokenAmount,
+                toTokenAmountMin: quote.toTokenAmountMin
+            };
         }
-        this.rememberOperationKind(sourceTx.hash, toChain);
-        const actualNetworkFee = feeParts.length > 0 && feeParts.every((fee) => fee != null)
-            ? feeParts.reduce((total, fee) => total + fee, 0n)
-            : undefined;
-        return {
-            id: sourceTx.hash,
-            hash: sourceTx.hash,
-            fees: actualNetworkFee != null ? withMeasuredNetworkFee(quote.fees, actualNetworkFee, cached.route) : quote.fees,
-            transactions,
-            fromTokenAmount: quote.fromTokenAmount,
-            toTokenAmount: quote.toTokenAmount,
-            toTokenAmountMin: quote.toTokenAmountMin
-        };
+        catch (cause) {
+            throw this.partialExecution(transactions, cause, toChain, 'source');
+        }
     }
     /**
      * Retrieves a Butter operation by source hash or, when requested, order ID.
@@ -290,8 +298,18 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
         if (transactions.length === 0)
             return cause;
         const sourceTx = transactions.find((tx) => tx.type === 'source');
-        if (sourceTx)
-            this.rememberOperationKind(sourceTx.hash, toChain);
+        if (sourceTx) {
+            try {
+                this.rememberOperationKind(sourceTx.hash, toChain);
+            }
+            catch {
+                // Unreachable: hashes are validated at the sender boundary, so the key
+                // is always a string. Kept as a backstop because this is the last-resort
+                // reporter — registering for status routing is best-effort, but handing
+                // the caller its broadcast hashes is not, and must not be lost to a
+                // failure raised while reporting.
+            }
+        }
         return new ButterPartialExecutionError(transactions, cause, failedType);
     }
     /** Records an executed operation's chain kind for later status routing, bounding memory. */
@@ -449,12 +467,13 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
         return { ...this.feeContext, sourceToken };
     }
 }
+/**
+ * Extracts the transaction hash from an adapter send, under the same
+ * runtime rule as the built-in EVM path — an adapter is host-supplied too, so
+ * the declared `string` is not a runtime guarantee.
+ */
 function hashOf(result) {
-    if (typeof result === 'string')
-        return result;
-    if (result.hash)
-        return result.hash;
-    throw new ButterConfigurationError('Transaction sender did not return a hash');
+    return assertTransactionHash(typeof result === 'string' ? result : result.hash);
 }
 /**
  * Normalizes a transaction adapter's return into `{ transaction, type }`. An
@@ -498,14 +517,13 @@ function resolveAdapterTypes(adapted) {
     }
     return resolved;
 }
-/** Extracts a gas fee reported by a transaction sender, rejecting negative values. */
+/** Extracts a gas fee reported by a transaction sender, rejecting anything but a non-negative bigint. */
 function feeOf(result) {
     if (typeof result === 'string')
         return undefined;
-    if (result.fee != null && result.fee < 0n) {
-        throw new ButterApiError('Transaction sender reported a negative fee', { fee: result.fee.toString() });
-    }
-    return result.fee;
+    // Same non-negative-bigint rule as the built-in EVM path; an adapter is
+    // host-supplied too, so the declared `bigint` is not a runtime guarantee.
+    return assertGasFee(result.fee);
 }
 /**
  * Replaces the estimated network fee with the measured source gas fee, so the

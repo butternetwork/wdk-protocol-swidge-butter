@@ -47,4 +47,29 @@ export declare function executeEvmSwap(context: {
     }>;
     gasFee: bigint | undefined;
 }>;
+/**
+ * Validates a transaction hash reported by a host-supplied sender.
+ *
+ * Same reasoning as {@link assertGasFee}: the wallet client and transaction
+ * adapters are implemented by the host application, which may be plain
+ * JavaScript, so the declared `string` is not a runtime guarantee. An unvalidated
+ * hash propagates far — into the recorded transaction list, the operation id, the
+ * status-routing key (`toLowerCase()`), and approval receipt lookups — where a
+ * number surfaces as a raw `TypeError` and an empty string silently produces an
+ * unusable `id: ''`.
+ */
+export declare function assertTransactionHash(value: unknown): string;
+/**
+ * Validates a gas fee reported by a host-supplied sender.
+ *
+ * The declared `bigint` is not a runtime guarantee — the wallet client is
+ * implemented by the host application, which may be plain JavaScript. A `number`
+ * would slip past a bare `< 0n` test (JS allows mixed relational operands, so
+ * `1 < 0n` is simply false) and then poison the bigint total with a raw
+ * `TypeError`, so anything that is not a non-negative bigint is rejected here.
+ *
+ * Call this only once the transaction has been recorded: it is broadcast either
+ * way, and its hash matters more than its fee.
+ */
+export declare function assertGasFee(fee: unknown): bigint | undefined;
 //# sourceMappingURL=evm.d.ts.map
