@@ -39,6 +39,26 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
   already-sent hashes were lost with the stack frame and a caller could not tell a
   wallet rejection (nothing sent) from a partially applied operation. A failure before
   anything is broadcast still propagates unwrapped.
+- Record a transaction the moment its send returns, *before* validating the gas fee
+  it reported, and keep the fee total and result assembly inside the guarded region.
+  Previously a send that succeeded on-chain but reported a bad fee threw before it
+  was ever recorded, so the hash was lost — the exact gap the partial-execution
+  report was added to close.
+- Validate sender-reported gas fees as non-negative **bigints** at runtime on both
+  the built-in EVM path and the adapter path. The wallet client and transaction
+  adapters are host-supplied, so the declared `bigint` is not a runtime guarantee: a
+  `number` slipped past the old `fee < 0n` test (JS allows mixed relational operands)
+  and surfaced later as a raw `TypeError` from the bigint sum, carrying no
+  transactions at all.
+- Validate sender-reported transaction **hashes** at runtime under the same rule,
+  on both paths: a hash must be a non-empty string. Previously the string form was
+  taken verbatim and the object form only tested truthiness, so an empty hash
+  resolved successfully with an unusable `id: ''` (after burning the full approval
+  timeout polling a blank hash on the ERC-20 path), and a numeric hash was recorded
+  and then threw a raw `TypeError` from `rememberOperationKind`'s `toLowerCase()` —
+  which the partial-execution reporter also calls, so the report itself threw and
+  the broadcast hashes were lost anyway. The reporter no longer lets a failure in
+  best-effort status registration cost the caller its transaction list.
 - Distinguish a genuine "not found" (viem `TransactionNotFoundError` /
   `TransactionReceiptNotFoundError`) from infrastructure faults in
   `evm.publicClient` lookups: RPC timeout / auth / rate-limit errors now propagate
@@ -72,7 +92,8 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
 - `EvmWalletClient.account` is now required (its address is validated against the
   WDK account so the signer, calldata initiator, and allowance owner cannot split).
 - A failure that occurs once an approval is on the wire — a reverted approval, an
-  uninterpretable receipt status, or a confirmation timeout — now surfaces as
+  uninterpretable receipt status, a confirmation timeout, or an unusable gas fee
+  reported by the sender — now surfaces as
   `ButterPartialExecutionError` rather than the bare `ButterConfigurationError`. The
   original error is preserved as `.cause`, so callers matching the underlying type
   should read `error.cause` (the swap is still never sent against an unconfirmed

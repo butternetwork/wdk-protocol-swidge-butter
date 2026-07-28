@@ -125,8 +125,12 @@ export async function executeEvmSwap(context) {
     // partial sum would understate the true cost.
     const feeParts = [];
     const record = (sent, type) => {
+        // Push before validating the fee: the send returned, so the transaction is
+        // already on the wire and must appear in any partial-execution report even
+        // when the fee it reported is unusable. A throw below leaves feeParts one
+        // entry short, which is harmless — the failure path never reads it.
         transactions.push({ hash: sent.hash, chain: context.sourceChainId, type });
-        feeParts.push(sent.fee);
+        feeParts.push(assertGasFee(sent.fee));
     };
     let stage = 'approval';
     try {
@@ -139,6 +143,13 @@ export async function executeEvmSwap(context) {
             data: context.swapTx.data,
             chainId: Number(context.sourceChainId)
         }), 'source');
+        // Totalled inside the try on purpose: from the first successful send onward
+        // every failure is a partial execution, including one raised while summing.
+        const allMeasured = feeParts.length > 0 && feeParts.every((fee) => fee != null);
+        return {
+            transactions,
+            gasFee: allMeasured ? feeParts.reduce((total, fee) => total + (fee ?? 0n), 0n) : undefined
+        };
     }
     catch (cause) {
         // Nothing broadcast yet (rejected in the wallet, RPC refused, allowance read
@@ -147,11 +158,6 @@ export async function executeEvmSwap(context) {
             throw cause;
         throw new ButterPartialExecutionError(transactions, cause, stage);
     }
-    const allMeasured = feeParts.length > 0 && feeParts.every((fee) => fee != null);
-    return {
-        transactions,
-        gasFee: allMeasured ? feeParts.reduce((total, fee) => total + fee, 0n) : undefined
-    };
 }
 /**
  * Brings the router's allowance to exactly the input amount, reporting each
@@ -289,22 +295,66 @@ async function sendEvmTransaction(context, tx) {
     throw new ButterConfigurationError('EVM execution requires evm.walletClient to carry the transaction calldata');
 }
 /**
- * Normalizes a sender result to a hash plus the gas fee it reported, if any.
+ * Normalizes a sender result to a hash plus whatever fee it reported.
  *
- * Note: a sender that returns no hash (or a negative fee) has still broadcast the
- * transaction — it just cannot be identified. That is why these throw rather than
- * being tolerated, and why such a transaction cannot appear in a
- * `ButterPartialExecutionError`'s list: there is no hash to report.
+ * Only the hash is validated here. The fee is checked separately, by
+ * {@link assertGasFee}, *after* the caller has recorded the transaction — a send
+ * that returned has already broadcast, so a bad fee must not erase the hash from
+ * a partial-execution report.
+ *
+ * The hash is the one value that must be validated *before* recording, because
+ * the hash IS the record: a sender that returns no usable hash has still
+ * broadcast the transaction, but it cannot be identified, so there is nothing to
+ * report and this throws.
  */
 function normalizeSend(result) {
     if (typeof result === 'string')
-        return { hash: result };
-    if (!result.hash)
-        throw new ButterConfigurationError('Transaction sender did not return a hash');
-    if (result.fee != null && result.fee < 0n) {
-        throw new ButterApiError('Transaction sender reported a negative fee', { fee: result.fee.toString() });
+        return { hash: assertTransactionHash(result) };
+    const hash = assertTransactionHash(result.hash);
+    return result.fee != null ? { hash, fee: result.fee } : { hash };
+}
+/**
+ * Validates a transaction hash reported by a host-supplied sender.
+ *
+ * Same reasoning as {@link assertGasFee}: the wallet client and transaction
+ * adapters are implemented by the host application, which may be plain
+ * JavaScript, so the declared `string` is not a runtime guarantee. An unvalidated
+ * hash propagates far — into the recorded transaction list, the operation id, the
+ * status-routing key (`toLowerCase()`), and approval receipt lookups — where a
+ * number surfaces as a raw `TypeError` and an empty string silently produces an
+ * unusable `id: ''`.
+ */
+export function assertTransactionHash(value) {
+    if (typeof value !== 'string') {
+        throw new ButterConfigurationError('Transaction sender did not return a hash', { hash: String(value), type: typeof value });
     }
-    return result.fee != null ? { hash: result.hash, fee: result.fee } : { hash: result.hash };
+    if (value.trim() === '') {
+        throw new ButterConfigurationError('Transaction sender returned an empty transaction hash');
+    }
+    return value;
+}
+/**
+ * Validates a gas fee reported by a host-supplied sender.
+ *
+ * The declared `bigint` is not a runtime guarantee — the wallet client is
+ * implemented by the host application, which may be plain JavaScript. A `number`
+ * would slip past a bare `< 0n` test (JS allows mixed relational operands, so
+ * `1 < 0n` is simply false) and then poison the bigint total with a raw
+ * `TypeError`, so anything that is not a non-negative bigint is rejected here.
+ *
+ * Call this only once the transaction has been recorded: it is broadcast either
+ * way, and its hash matters more than its fee.
+ */
+export function assertGasFee(fee) {
+    if (fee == null)
+        return undefined;
+    if (typeof fee !== 'bigint') {
+        throw new ButterApiError('Transaction sender reported a non-bigint fee', { fee: String(fee), type: typeof fee });
+    }
+    if (fee < 0n) {
+        throw new ButterApiError('Transaction sender reported a negative fee', { fee: fee.toString() });
+    }
+    return fee;
 }
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));

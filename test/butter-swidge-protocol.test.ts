@@ -745,6 +745,71 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     assert.deepEqual(result.transactions?.map((tx) => tx.type), ['other', 'source'])
   })
 
+  it('reports the broadcast adapter transaction when it reports an unusable fee', async () => {
+    const bitcoinChain = '1360095883558913'
+    let n = 0
+    const protocol = new ButterSwidgeProtocol({
+      getAddress: async () => 'btc-sender',
+      // A number fee passes `< 0n` and would poison the bigint total with a raw
+      // TypeError raised outside the loop, discarding every broadcast hash.
+      sendTransaction: async () => ({ hash: `btc-hash-${++n}`, fee: 1 as unknown as bigint })
+    }, {
+      sourceChainId: bitcoinChain,
+      entrance: 'wdk',
+      fetch: multiTxAdapterFetch(bitcoinChain),
+      transactionAdapters: {
+        [bitcoinChain]: (tx) => tx.to === 'btc-deposit'
+          ? { transaction: tx, type: 'source' as const }
+          : { transaction: tx, type: 'other' as const }
+      }
+    })
+
+    await assert.rejects(
+      protocol.swidge({ fromToken: 'btc', toToken: 'btc', toChain: 137, recipient: 'btc-recipient', fromTokenAmount: 100000000n }),
+      (error: unknown) => {
+        assert.ok(error instanceof ButterPartialExecutionError)
+        assert.deepEqual(error.transactions, [{ hash: 'btc-hash-1', chain: bitcoinChain, type: 'other' }])
+        assert.ok(error.cause instanceof ButterApiError)
+        assert.match(error.cause.message, /non-bigint fee/)
+        return true
+      }
+    )
+    // The second leg must not go out after the first one failed validation.
+    assert.equal(n, 1)
+  })
+
+  it('reports the first adapter leg when a later one returns an illegal hash', async () => {
+    const bitcoinChain = '1360095883558913'
+    let n = 0
+    const protocol = new ButterSwidgeProtocol({
+      getAddress: async () => 'btc-sender',
+      // An adapter is host-supplied too, so the declared string hash is not a
+      // runtime guarantee; the already-broadcast first leg must survive it.
+      sendTransaction: async () => ++n === 1 ? 'btc-hash-1' : { hash: 123 as unknown as string }
+    }, {
+      sourceChainId: bitcoinChain,
+      entrance: 'wdk',
+      fetch: multiTxAdapterFetch(bitcoinChain),
+      transactionAdapters: {
+        [bitcoinChain]: (tx) => tx.to === 'btc-deposit'
+          ? { transaction: tx, type: 'source' as const }
+          : { transaction: tx, type: 'other' as const }
+      }
+    })
+
+    await assert.rejects(
+      protocol.swidge({ fromToken: 'btc', toToken: 'btc', toChain: 137, recipient: 'btc-recipient', fromTokenAmount: 100000000n }),
+      (error: unknown) => {
+        assert.ok(error instanceof ButterPartialExecutionError)
+        assert.deepEqual(error.transactions, [{ hash: 'btc-hash-1', chain: bitcoinChain, type: 'other' }])
+        assert.ok(error.cause instanceof ButterConfigurationError)
+        assert.ok(!(error.cause instanceof TypeError))
+        return true
+      }
+    )
+    assert.equal(n, 2)
+  })
+
   /** Three-leg adapter output (approval → source → follow-up) on one chain. */
   function threeTxAdapterFetch (bitcoinChain: string, toChainId: string) {
     const sameChain = toChainId === bitcoinChain
@@ -1779,30 +1844,129 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     assert.equal(network?.amount, 100000000000000n)
   })
 
-  it('rejects a negative gas fee reported by the sender', async () => {
-    const localAccount = {
+  /** Same-chain ERC20 protocol driven by `send`; approvals self-confirm. */
+  function erc20FeeProtocol (send: (tx: unknown) => Promise<string | { hash?: string, fee?: bigint }>) {
+    return new ButterSwidgeProtocol({
       async getAddress () { return VALID_SENDER },
       async sendTransaction () { throw new Error('account.sendTransaction must not carry EVM calldata') },
       async getTransactionReceipt () { return { status: 'success' } }
-    }
-    const protocol = new ButterSwidgeProtocol(localAccount, {
+    }, {
       sourceChainId: 56,
       entrance: 'wdk',
       fetch: sameChainErc20Fetch(),
       tokenDecimals: ERC20_TOKEN_DECIMALS,
-      evm: { walletClient: evmWallet(async () => ({ hash: '0xapproval', fee: -1n })) }
+      evm: { walletClient: evmWallet(send) }
+    })
+  }
+
+  it('reports the broadcast approval when the sender returns a negative gas fee', async () => {
+    const protocol = erc20FeeProtocol(async () => ({ hash: '0xapproval', fee: -1n }))
+
+    await assert.rejects(protocol.swidge(sameChainErc20Options), (error: unknown) => {
+      // The fee is unusable but the approval is already on-chain: the hash is
+      // what the caller needs, so it must not be lost to the fee check.
+      assert.ok(error instanceof ButterPartialExecutionError)
+      assert.deepEqual(error.transactions, [{ hash: '0xapproval', chain: '56', type: 'approval' }])
+      assert.equal(error.failedType, 'approval')
+      assert.ok(error.cause instanceof ButterApiError)
+      assert.match(error.cause.message, /negative fee/)
+      return true
+    })
+  })
+
+  it('reports the broadcast approval when the sender returns a non-bigint gas fee', async () => {
+    // A host wallet client is plain JS at runtime, so `fee` can be a number; it
+    // slips past a bare `< 0n` test and would otherwise surface as a TypeError
+    // from the bigint sum, with no transactions attached.
+    const protocol = erc20FeeProtocol(async () => ({ hash: '0xapproval', fee: 1 as unknown as bigint }))
+
+    await assert.rejects(protocol.swidge(sameChainErc20Options), (error: unknown) => {
+      assert.ok(error instanceof ButterPartialExecutionError)
+      assert.deepEqual(error.transactions, [{ hash: '0xapproval', chain: '56', type: 'approval' }])
+      assert.ok(error.cause instanceof ButterApiError)
+      assert.match(error.cause.message, /non-bigint fee/)
+      assert.ok(!(error.cause instanceof TypeError))
+      return true
+    })
+  })
+
+  it('reports both legs when the source send reports an unusable fee', async () => {
+    let sends = 0
+    const protocol = erc20FeeProtocol(async () => {
+      sends++
+      return sends === 1 ? { hash: '0xapproval', fee: 21000n } : { hash: '0xsource', fee: -1n }
     })
 
-    await assert.rejects(
-      protocol.swidge({
-        fromToken: ERC20_TOKEN,
-        toToken: DEST_TOKEN,
-        toChain: 56,
-        recipient: VALID_RECIPIENT,
-        fromTokenAmount: 1500000000000000000n
-      }),
-      ButterApiError
-    )
+    await assert.rejects(protocol.swidge(sameChainErc20Options), (error: unknown) => {
+      assert.ok(error instanceof ButterPartialExecutionError)
+      assert.deepEqual(error.transactions, [
+        { hash: '0xapproval', chain: '56', type: 'approval' },
+        { hash: '0xsource', chain: '56', type: 'source' }
+      ])
+      assert.equal(error.failedType, 'source')
+      return true
+    })
+  })
+
+  it('propagates unwrapped when the sender returns no hash at all', async () => {
+    // Broadcast, but unidentifiable — there is no hash to report, so this stays
+    // an ordinary configuration failure rather than a partial execution.
+    const protocol = erc20FeeProtocol(async () => ({ fee: 21000n }))
+
+    await assert.rejects(protocol.swidge(sameChainErc20Options), (error: unknown) => {
+      assert.ok(error instanceof ButterConfigurationError)
+      assert.ok(!(error instanceof ButterPartialExecutionError))
+      assert.match(error.message, /did not return a hash/)
+      return true
+    })
+  })
+
+  it('rejects an empty transaction hash instead of executing with an empty id', async () => {
+    // An empty string is truthy-adjacent enough to slip through a bare `!hash`
+    // test, and `''.toLowerCase()` never throws — so this used to resolve
+    // successfully with an unusable `id: ''`.
+    const protocol = erc20FeeProtocol(async () => '')
+
+    await assert.rejects(protocol.swidge(sameChainErc20Options), (error: unknown) => {
+      assert.ok(error instanceof ButterConfigurationError)
+      assert.ok(!(error instanceof ButterPartialExecutionError))
+      assert.match(error.message, /empty transaction hash/)
+      return true
+    })
+  })
+
+  it('rejects a non-string transaction hash rather than failing later on toLowerCase', async () => {
+    // A host wallet client is plain JS at runtime, so `hash` can be a number. It
+    // used to be recorded as-is and then blow up in rememberOperationKind — and
+    // because the partial-execution reporter calls that too, the report itself
+    // threw and the caller got a bare TypeError.
+    const protocol = erc20FeeProtocol(async () => ({ hash: 123 as unknown as string, fee: 1n }))
+
+    await assert.rejects(protocol.swidge(sameChainErc20Options), (error: unknown) => {
+      assert.ok(error instanceof ButterConfigurationError)
+      assert.ok(!(error instanceof TypeError))
+      assert.match(error.message, /did not return a hash/)
+      return true
+    })
+  })
+
+  it('reports the broadcast approval when the source send returns an illegal hash', async () => {
+    let sends = 0
+    const protocol = erc20FeeProtocol(async () => {
+      sends++
+      return sends === 1 ? { hash: '0xapproval', fee: 21000n } : { hash: 123 as unknown as string }
+    })
+
+    await assert.rejects(protocol.swidge(sameChainErc20Options), (error: unknown) => {
+      // The approval is on-chain and identifiable; only the source hash is
+      // unusable, so the caller still gets what was broadcast.
+      assert.ok(error instanceof ButterPartialExecutionError)
+      assert.deepEqual(error.transactions, [{ hash: '0xapproval', chain: '56', type: 'approval' }])
+      assert.equal(error.failedType, 'source')
+      assert.ok(error.cause instanceof ButterConfigurationError)
+      assert.match(error.cause.message, /did not return a hash/)
+      return true
+    })
   })
 
   it('times out when an account-confirmed approval never lands', async () => {
