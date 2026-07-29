@@ -68,7 +68,11 @@ export function chainToSupportedChain (chain: ButterChainInfo, execution: Butter
   return {
     id: normalizeId(chain.chainId ?? chain.id),
     name: chain.name ?? normalizeId(chain.chainId ?? chain.id),
-    type: String(chain.chainType ?? chain.type ?? 'unknown').toLowerCase(),
+    // WDK requires both `type` and `nativeToken`, so a missing value becomes an
+    // empty string rather than a plausible-looking placeholder ('unknown' reads
+    // as a real chain type): the discovery caller drops such entries, exactly as
+    // it does for a token whose decimals are missing.
+    type: String(chain.chainType ?? chain.type ?? '').toLowerCase(),
     nativeToken: nativeToken?.symbol ?? '',
     execution
   }

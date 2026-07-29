@@ -149,11 +149,19 @@ export function mapRouteFees (route: ButterRoute, context: FeeContext): SwidgeFe
   return fees
 }
 
-/** Returns the route's additional native protocol fee in source-chain base units. */
+/**
+ * Returns the route's additional native protocol fee in source-chain base units.
+ *
+ * Rounds up: this value is the quoted side of an upper bound on `tx.value`
+ * (`swap-data.ts`), so rounding down would turn a sub-wei formatting artifact in
+ * Butter's decimal string into a rejected transaction. Rounding up can only widen
+ * the bound by one wei, and the absolute `maxNativeFee` cap is unaffected.
+ */
 export function routeNativeFee (route: ButterRoute, context: FeeContext): bigint {
   return parseTokenAmount(
     route.swapFee?.nativeFee ?? '0',
-    nativeDecimalsForChain(context.sourceChainId, context.nativeTokenDecimals)
+    nativeDecimalsForChain(context.sourceChainId, context.nativeTokenDecimals),
+    { rounding: 'ceil' }
   )
 }
 

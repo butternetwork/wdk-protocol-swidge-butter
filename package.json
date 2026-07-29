@@ -28,6 +28,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.examples.json",
     "test": "node --import tsx --test test/*.test.ts",
     "lint": "npm run typecheck",
+    "example:decode-swap-data": "npm run build --silent && node --env-file-if-exists=examples/.env --import tsx examples/decode-swap-data.ts",
     "example:discover": "npm run build --silent && node --env-file-if-exists=examples/.env --import tsx examples/discover.ts",
     "example:quote": "npm run build --silent && node --env-file-if-exists=examples/.env --import tsx examples/quote.ts",
     "example:status": "npm run build --silent && node --env-file-if-exists=examples/.env --import tsx examples/status.ts",

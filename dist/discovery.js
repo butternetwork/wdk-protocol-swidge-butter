@@ -42,13 +42,21 @@ export class DiscoveryService {
         for (const chain of tokenChains.chains ?? []) {
             this.chainDetails.set(normalizeId(chain.chainId ?? chain.id), chain);
         }
-        return routerChains.map((chain) => {
+        return routerChains
+            .map((chain) => {
             const id = normalizeId(chain.chainId ?? chain.id);
             const detail = this.chainDetails?.get(id) ?? chain;
+            // Detect strict-slippage chains *before* the filter below: dropping a
+            // chain from the listing must never relax its slippage floor, which is
+            // consulted by chain id whether or not the chain was listed.
             if (isStrictSlippageChain({ ...chain, ...detail }))
                 this.strictSlippageChainIds.add(id);
             return chainToSupportedChain({ ...chain, ...detail }, executionFor(id, this.config, this.routerRegistry));
-        });
+        })
+            // Fail closed per chain, as getSupportedTokens does per token: `type` and
+            // `nativeToken` are required by WDK, so a chain missing either is dropped
+            // rather than surfaced with an empty value as if it were authoritative.
+            .filter((chain) => chain.id !== '' && chain.type !== '' && chain.nativeToken !== '');
     }
     /**
      * Resolves a token's decimals via Butter's `/findToken` router API.

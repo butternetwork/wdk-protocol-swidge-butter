@@ -49,6 +49,20 @@ export type ButterSwidgeQuote = SwidgeQuote & { routeHash: string }
 export interface ButterSwidgeExecutionOptions {
   /** Route hash from a prior {@link ButterSwidgeQuote} to pin the approved quote. */
   routeHash?: string
+  /**
+   * Overrides the configured `maxNativeFee` for this call only.
+   *
+   * The absolute cap on `routerFee + bridgeFee` is the guard that actually bounds
+   * native spend (the bridge messaging fee inside `tx.value` is trusted from
+   * `/swap`), and a single construction-time value cannot fit both a 10 USD and a
+   * 100k USD transfer — too low and small routes are unusable, too high and the
+   * cap is nominal. The caller knows the size at call time, so it can size the cap.
+   *
+   * `0n` is a meaningful value (allow no native fee at all) and takes precedence
+   * over a configured cap; omit the field to inherit the configured one. Setting
+   * it here satisfies the cross-chain fail-closed requirement.
+   */
+  maxNativeFee?: number | bigint
 }
 
 /** WDK swidge options plus Butter's provider-specific execution fields. */
@@ -194,6 +208,32 @@ export interface ButterSwidgeProtocolConfig extends SwidgeProtocolConfig {
   nativeTokenDecimals?: Record<string, number>
   /** Additional chain IDs requiring Butter's strict 300 bps slippage floor. */
   strictSlippageChainIds?: Array<string | number>
+  /**
+   * Butter affiliate collecting the integrator's share, formatted
+   * `<nickname>` or `<nickname>:<rate>`. Validated at construction.
+   *
+   * **Leaving this unset does not make the swap cheaper.** Butter substitutes its
+   * own default affiliate wallet when the parameter is absent, so the fee is
+   * charged to the user either way — omitting it only forgoes the integrator's
+   * share. Changing it participates in the route cache key, so a route quoted
+   * under a previous affiliate is never reused.
+   */
+  affiliate?: string
+  /**
+   * Butter referrer. **Mandatory for Solana same-chain routes** (a Solana
+   * same-chain request without it throws `ButterConfigurationError`); optional on
+   * EVM. Also participates in the route cache key.
+   */
+  referrer?: string
+  /**
+   * Seconds of remaining route lifetime required before a quote may be
+   * **executed** (default 45). Execution still has to complete a `/swap`
+   * round-trip, an optional ERC-20 approval, and the swap send, so a route that
+   * is merely un-expired is not good enough. Set this above
+   * `evm.approvalTimeoutMs / 1000` when approvals are expected. A pinned
+   * `routeHash` inside the margin is rejected rather than silently re-quoted.
+   */
+  routeExecutionMarginSeconds?: number
   /**
    * Absolute ceiling (source-chain native base units) on the non-input native
    * value a `/swap` transaction may spend — the router protocol fee plus the

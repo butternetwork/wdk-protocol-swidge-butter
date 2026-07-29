@@ -14,8 +14,25 @@
 
 import { ButterApiError } from './errors.js'
 
+/**
+ * What to do when a decimal amount carries more precision than the token's
+ * `decimals` can represent. `reject` (the default) refuses the value rather than
+ * silently losing precision; `floor`/`ceil` are for values where a deliberate
+ * rounding direction is safe — pick the direction that cannot favour the
+ * counterparty (e.g. `ceil` for an amount that will be compared as an upper bound).
+ */
+export type TokenAmountRounding = 'reject' | 'floor' | 'ceil'
+
+export interface ParseTokenAmountOptions {
+  rounding?: TokenAmountRounding
+}
+
 /** Converts a non-negative decimal token amount into integer base units. */
-export function parseTokenAmount (amount: string | number | bigint | undefined | null, decimals = 18): bigint {
+export function parseTokenAmount (
+  amount: string | number | bigint | undefined | null,
+  decimals = 18,
+  options: ParseTokenAmountOptions = {}
+): bigint {
   assertDecimals(decimals)
   if (amount == null) return 0n
   if (typeof amount === 'bigint') {
@@ -30,12 +47,14 @@ export function parseTokenAmount (amount: string | number | bigint | undefined |
     throw new ButterApiError(`Invalid token amount: ${raw}`)
   }
   const [whole = '0', fraction = ''] = raw.split('.')
-  const discardedFraction = fraction.slice(decimals)
-  if (/[1-9]/.test(discardedFraction)) {
+  const rounding = options.rounding ?? 'reject'
+  const losesPrecision = /[1-9]/.test(fraction.slice(decimals))
+  if (losesPrecision && rounding === 'reject') {
     throw new ButterApiError(`Token amount exceeds ${decimals} decimal places: ${raw}`)
   }
   const normalizedFraction = fraction.slice(0, decimals).padEnd(decimals, '0')
-  return BigInt(whole) * 10n ** BigInt(decimals) + BigInt(normalizedFraction || '0')
+  const truncated = BigInt(whole) * 10n ** BigInt(decimals) + BigInt(normalizedFraction || '0')
+  return losesPrecision && rounding === 'ceil' ? truncated + 1n : truncated
 }
 
 /** Formats integer base units as a decimal token amount without floating point conversion. */

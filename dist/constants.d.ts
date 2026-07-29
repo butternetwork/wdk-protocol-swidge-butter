@@ -2,13 +2,36 @@ export declare const DEFAULT_ROUTER_BASE_URL = "https://bs-router-v3.chainservic
 export declare const DEFAULT_TOKEN_BASE_URL = "https://bs-tokens-api.chainservice.io";
 export declare const DEFAULT_APP_BASE_URL = "https://bs-app-api.chainservice.io";
 export declare const ROUTE_TTL_SECONDS = 300;
+/**
+ * Freshness margin required to reuse a cached route on the **quote** path.
+ * A quote is non-binding and the caller can re-ask at any time, so this only
+ * avoids handing back a route that is about to expire.
+ */
 export declare const ROUTE_EXPIRY_MARGIN_SECONDS = 15;
+/**
+ * Freshness margin required to use a route on the **execution** path.
+ *
+ * Execution still has to complete a `/swap` round-trip, an optional ERC-20
+ * approval (whose receipt wait defaults to 60s), and the swap send before the
+ * quote has to still be good on-chain — so it needs a far larger margin than a
+ * quote does. Configurable via `routeExecutionMarginSeconds`, which should
+ * exceed `evm.approvalTimeoutMs / 1000` when approvals are expected.
+ */
+export declare const ROUTE_EXECUTION_MARGIN_SECONDS = 45;
 /** Maximum number of cached routes retained by a long-lived instance. */
 export declare const ROUTE_CACHE_MAX_ENTRIES = 256;
 /** Maximum number of executed operation kinds remembered for status routing. */
 export declare const OPERATION_KIND_MAX_ENTRIES = 1024;
 /** Butter router `errno` returned by `/findToken` when a token is unknown. */
 export declare const TOKEN_NOT_FOUND_ERRNO = 2002;
+/**
+ * Upward drift tolerated between the native fee `/route` quotes and the one
+ * `/swap` encodes in `tx.value`. The two are formatted independently (decimal
+ * string vs hex integer), so exact equality would fail on a 1 wei round-trip.
+ * This is a sanity check, not a security boundary — `maxNativeFee` is the cap
+ * that actually bounds native spend.
+ */
+export declare const NATIVE_FEE_DRIFT_BPS = 50;
 export declare const DEFAULT_SLIPPAGE_BPS = 100;
 export declare const CROSS_CHAIN_MIN_SLIPPAGE_BPS = 150;
 export declare const STRICT_CHAIN_MIN_SLIPPAGE_BPS = 300;
@@ -16,6 +39,22 @@ export declare const BTC_CHAIN_ID = "1360095883558913";
 export declare const SOLANA_CHAIN_ID = "1360108768460801";
 export declare const TRON_CHAIN_ID = "728126428";
 export declare const TON_CHAIN_ID = "1360104473493505";
+/**
+ * Address family per non-EVM chain, used to decide whether the source sender is
+ * a usable default recipient on the destination chain.
+ *
+ * Deliberately keyed off the chain-id constants above rather than
+ * `SwidgeSupportedChain.type`: reading that would require a discovery round-trip
+ * inside `swidge`, and Butter does not always report a chain type.
+ *
+ * This is a **best-effort** table, not a complete taxonomy — it only has to be
+ * right about the chains this package can route to. When Butter adds a non-EVM
+ * chain, add it here too; an unlisted chain is assumed EVM, which is the
+ * permissive direction (the recipient default applies as it does today).
+ */
+export declare const NON_EVM_CHAIN_FAMILIES: ReadonlyMap<string, string>;
+/** Resolves a chain's address family, defaulting to `'evm'` for unlisted chains. */
+export declare function addressFamilyForChain(chainId: string): string;
 export declare const NATIVE_TOKEN_ADDRESSES: Set<string>;
 export declare const DEFAULT_ROUTER_CONTRACTS: {
     readonly '1': readonly [{

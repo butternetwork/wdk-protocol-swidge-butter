@@ -67,6 +67,34 @@ requests are subject to Butter's unauthenticated rate limits. Set
 `authMode: 'required'` for production integrations that must never fall back to
 anonymous requests.
 
+### Affiliate and referrer
+
+Two optional construction-time settings are forwarded to Butter `/route`:
+
+| Config | Format | Notes |
+| --- | --- | --- |
+| `affiliate` | `<nickname>` or `<nickname>:<rate>` | The affiliate collecting the integrator's share. Validated at construction. |
+| `referrer` | free-form string | **Mandatory for Solana same-chain routes**; optional on EVM. |
+
+**Leaving `affiliate` unset does not make the swap cheaper.** Butter substitutes
+its own default affiliate wallet whenever the parameter is absent, so the share
+is charged to the user either way — omitting it only forgoes *your* cut of a fee
+the user already pays. Set it to collect that share, and know that it is being
+collected regardless.
+
+It is validated at construction rather than on the first request for the same
+reason: because Butter silently falls back to its own wallet, a malformed value
+would otherwise produce a perfectly successful swap with the share quietly going
+elsewhere, and nothing to notice.
+
+A Solana **same-chain** route without `referrer` throws `ButterConfigurationError`
+before any request is sent — Butter documents the parameter as mandatory there, so
+the request could never be valid.
+
+Both participate in the route cache key, so a route quoted under one affiliate is
+never reused after it changes. When unset, neither appears in the outgoing query
+nor in the cache key.
+
 ## Behavior
 
 - `quoteSwidge(options)` calls Butter `/route`, stores a non-binding quote as an
@@ -75,12 +103,24 @@ anonymous requests.
   matching fresh cached route or obtains a new one, enforces fee limits, calls
   `/swap`, validates the returned transaction intent, performs EVM approval when
   required, then sends the source transaction.
+- Route freshness is stricter on execution than on quoting. A cached route is
+  reused for a **quote** while ≥15s of its 5-minute lifetime remain, but
+  **execution** requires ≥`routeExecutionMarginSeconds` (default **45s**): it
+  still has to complete the `/swap` round-trip, an optional ERC20 approval, and
+  the swap send before the quoted price has to hold on-chain. Inside the margin,
+  unpinned execution transparently re-quotes. The default deliberately does not
+  assume an approval — when approvals are expected, raise
+  `routeExecutionMarginSeconds` above `evm.approvalTimeoutMs / 1000` (which
+  defaults to 60s, i.e. set at least `60`). These two values are coupled; the
+  margin is configurable rather than hardcoded so the coupling stays explicit.
 - Pinning a quote: pass `options.routeHash` (from a prior `quoteSwidge` result)
   to `swidge` to execute that exact quoted route. `swidge` accepts
   `ButterSwidgeOptions` (`SwidgeOptions & { routeHash? }`), so the field is part
-  of the public typed API. If the route has expired or no longer matches the
-  options, `swidge` throws `ButterActionRequiredError` instead of silently
-  re-quoting at a different price. Pins are held in the instance's in-memory
+  of the public typed API. If the route has expired, expires within the execution
+  margin, or no longer matches the options, `swidge` throws
+  `ButterActionRequiredError` instead of silently re-quoting at a different
+  price — a pin is the price you approved, so it is never re-fetched the way an
+  unpinned execution is. Pins are held in the instance's in-memory
   route cache, so quote and execution must use the same protocol instance.
   Without `routeHash`, execution auto-re-quotes as before.
 - `getSwidgeStatus(id)` calls
@@ -113,7 +153,14 @@ anonymous requests.
 - `getSupportedChains()` merges Router-supported chains with token API
   metadata. Each entry carries an extra `execution` field describing how this
   instance would execute on that chain: `native` (built-in EVM), `adapter`
-  (configured `transactionAdapters`), or `quote-only`.
+  (configured `transactionAdapters`), or `quote-only`. A chain whose merged
+  metadata is missing an `id`, `type`, or `nativeToken` symbol is **dropped**
+  rather than listed with a placeholder — the same fail-closed rule
+  `getSupportedTokens` applies to a token with unusable decimals. Quoting and
+  execution are unaffected: they take chain ids from the caller, not from this
+  listing, and a dropped chain keeps any strict slippage floor it qualifies
+  for. Run `npm run example:discover` to see which chains this costs you on
+  live data (the output reports the dropped ids and their missing fields).
 - `getSupportedTokens(options)` resolves the chain `key` from
   `/api/queryChainList` and paginates `/api/queryTokenList`. Chain selection
   uses `fromChain`, then `toChain`, then the instance's source chain;
@@ -159,9 +206,16 @@ caveat in Safety Defaults) rather than summing amounts.
   bps floor; additional IDs can be configured with `strictSlippageChainIds`.
 - `minAmountOut` is enforced locally because Butter's documented `/route` API
   does not expose a separate request parameter for it.
-- Quotes accept `refundAddress`. Execution requires it to match the source
-  sender because Butter's Router API does not expose an independent refund
-  recipient.
+- `refundAddress` is optional, and when you name one it is **verified rather
+  than assumed**. Omit it to accept Butter's own default refund destination,
+  trusted like the rest of the destination routing. Naming one asks for a
+  guarantee, so it is checked against the address the calldata actually encodes:
+  the nested bridge payload's `refundAddress` cross-chain, or `swapAndCall`'s
+  leftover receiver same-chain. If that payload cannot be decoded, the guarantee
+  cannot be checked, so execution is rejected instead of proceeding as if it
+  held — drop `refundAddress` to continue with Butter's default. It no longer has
+  to equal the source sender: on a cross-VM route the source address is not even
+  spendable on the destination chain.
 - The built-in EVM path executes **exactly one** Router transaction. A `/swap`
   response with more than one transaction is rejected, so repeated
   individually-valid Router calls cannot multiply native/ERC20 spend.
@@ -174,18 +228,49 @@ caveat in Safety Defaults) rather than summing amounts.
   non-zero fee, and a non-empty `feeData` requires the quoted tuple to be
   complete (fail closed on any missing field) and to match exactly, so `/swap`
   cannot inject an unchecked `feeType`/`referrer` by under-specifying the quote;
-  and the transaction value must equal
-  `input (if native) + routerFee + bridgeFee`. Same-chain `swapAndCall`
-  additionally verifies the destination token, recipient, leftover receiver, and
-  minimum output.
-- Native-spend bound: the `tx.value` check bounds the transaction value to
-  `input + quoted routerFee + the bridge messaging fee Butter declares in the
-  calldata`. That Butter-declared bridge fee is **trusted** and not otherwise
-  bounded by the quote, so cross-chain execution additionally requires
-  `maxNativeFee` (an absolute cap on `routerFee + bridgeFee`, in native base
-  units). When set, the cap is enforced on any chain (same-chain carries only the
-  router fee); cross-chain execution additionally **fails closed** if it is not
-  configured, while same-chain swaps do not require it.
+  and the transaction value must satisfy the native-spend bounds below.
+  Same-chain `swapAndCall` additionally verifies the destination token,
+  recipient, leftover receiver, and minimum output.
+- Native-spend bounds: `tx.value` is checked as two *one-sided* bounds rather
+  than an exact `input + routerFee + bridgeFee` equality. `/route` formats the
+  router fee as a decimal string while `/swap` returns `tx.value` as a hex
+  integer, so exact equality would reject a perfectly good transaction over a
+  sub-wei artifact in that round-trip.
+  - The native **input** half is a hard **lower** bound: a value below the
+    quoted native input is rejected as under-funded.
+  - The remaining **fee** half is bounded only from **above**. Paying less than
+    quoted cannot harm you — the router reverts if the fee is genuinely
+    insufficient — so there is no lower bound and no two-sided tolerance.
+  - The fee half's upper bounds are `maxNativeFee` (the security boundary) and
+    the quoted `routerFee + bridgeFee` plus a 0.5 % formatting-drift tolerance
+    (a consistency sanity check that catches a `/swap` charging materially more
+    native than `/route` advertised).
+  The bridge messaging fee inside `tx.value` comes from the `/swap` calldata and
+  is **trusted** — it is not bounded by the quote — so `maxNativeFee` (an
+  absolute cap on the whole fee half, in native base units) is the actual
+  native-drain guard. When set, it is enforced on any chain (same-chain carries
+  only the router fee). **Cross-chain execution fails closed without it**
+  whenever the destination chain differs from the source chain — including when
+  the calldata reports a zero bridge fee, so a route cannot opt out of the cap
+  by under-reporting what `tx.value` spends. Same-chain swaps do not require it.
+
+  `maxNativeFee` can also be passed **per call** on `swidge(options)`, where it
+  takes precedence over the configured value (in both directions — a per-call cap
+  may loosen or tighten it, and `0n` means "no native fee at all"). Prefer the
+  per-call form when one long-lived instance serves a wide range of trade sizes:
+  a single absolute cap is either too tight for small routes or nominal for large
+  ones, and the caller knows the size at call time. Setting it per call also
+  satisfies the cross-chain fail-closed requirement.
+- Cross-VM destinations require an **explicit `recipient`** on `swidge`. WDK
+  defaults the recipient to the account address, which is only meaningful while
+  the destination chain uses the same address format; bridging EVM→Solana/BTC/TON
+  without one would otherwise forward a `0x` address as the destination receiver.
+  Address families are resolved from a best-effort table of Butter's non-EVM chain
+  ids (`constants.ts: NON_EVM_CHAIN_FAMILIES`) — unlisted chains are treated as
+  EVM, so **the table must be extended when Butter adds a non-EVM chain**. The
+  requirement applies only to `swidge`: `quoteSwidge` still prices a cross-VM route
+  without a recipient, since asking a price before choosing a destination address
+  is the normal flow.
 - Cross-chain destination routing — the destination **recipient, output token,
   and minimum output** encoded in the nested bridge payload — is **trusted to
   Butter's `/swap` response and is NOT verified**. This is an accepted
@@ -327,13 +412,17 @@ npm pack --dry-run
 
 ## Examples
 
-Runnable Node.js examples for discovery, exact-in quotes, status lookup, and a
-confirmation-gated same-chain EVM swap are available in
-[`examples/`](./examples/README.md).
+Runnable Node.js examples for discovery, exact-in quotes, read-only Router
+calldata inspection, status lookup, and a confirmation-gated same-chain EVM swap
+are available in [`examples/`](./examples/README.md).
 
 ```sh
 npm run example:discover
 npm run example:quote
+npm run example:decode-swap-data
 npm run example:status
 npm run example:swap
 ```
+
+Only `example:swap` sends a transaction, and it refuses to run without an
+explicit confirmation value.

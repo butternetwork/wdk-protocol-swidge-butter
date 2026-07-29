@@ -11,9 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-import { NATIVE_TOKEN_ADDRESSES, ROUTE_CACHE_MAX_ENTRIES, ROUTE_EXPIRY_MARGIN_SECONDS, ROUTE_TTL_SECONDS, SOLANA_CHAIN_ID, STRICT_CHAIN_MIN_SLIPPAGE_BPS } from './constants.js';
+import { NATIVE_TOKEN_ADDRESSES, ROUTE_CACHE_MAX_ENTRIES, ROUTE_EXECUTION_MARGIN_SECONDS, ROUTE_EXPIRY_MARGIN_SECONDS, ROUTE_TTL_SECONDS, SOLANA_CHAIN_ID, STRICT_CHAIN_MIN_SLIPPAGE_BPS } from './constants.js';
 import { nativeDecimalsForChain } from './fees.js';
-import { ButterActionRequiredError, ButterApiError, ButterExactOutUnsupportedError } from './errors.js';
+import { ButterActionRequiredError, ButterApiError, ButterConfigurationError, ButterExactOutUnsupportedError } from './errors.js';
 import { formatTokenAmount, parseTokenAmount } from './amounts.js';
 import { toButterSlippage } from './slippage.js';
 export class RouteManager {
@@ -25,19 +25,24 @@ export class RouteManager {
     constructor(context) {
         this.context = context;
     }
+    executionMargin() {
+        return this.context.executionMarginSeconds ?? ROUTE_EXECUTION_MARGIN_SECONDS;
+    }
     async getRoute(options, { forExecution = false, senderFallback } = {}) {
         const request = await this.buildRouteRequest(options, senderFallback);
         const key = stableRouteKey(request, options);
         const cached = this.cache.get(key);
-        if (forExecution) {
-            if (cached) {
+        // Execution needs a far larger margin than a quote: a route that is merely
+        // "not expired yet" still has to survive the /swap round-trip and the
+        // approval wait before it lands on-chain.
+        const margin = forExecution ? this.executionMargin() : ROUTE_EXPIRY_MARGIN_SECONDS;
+        if (cached) {
+            // The execution path consumes a cached route whether or not it is fresh
+            // enough to use, so a stale entry is never left behind for a later call.
+            if (forExecution)
                 this.evict(key, cached);
-                if (cached.expiresAt > this.context.now())
-                    return cached;
-            }
-        }
-        if (!forExecution && cached && cached.expiresAt - ROUTE_EXPIRY_MARGIN_SECONDS > this.context.now()) {
-            return cached;
+            if (cached.expiresAt - margin > this.context.now())
+                return cached;
         }
         const response = await this.context.requestRoute(request);
         const route = Array.isArray(response) ? response[0] : response;
@@ -61,20 +66,25 @@ export class RouteManager {
     /**
      * Consumes a previously quoted route pinned by its Butter hash.
      *
-     * Returns the cached route (removing it) only when it is still fresh and its
-     * request matches the current options; otherwise throws so the caller
-     * re-quotes rather than silently executing a different or stale price.
+     * Returns the cached route (removing it) only when it is still fresh enough to
+     * execute and its request matches the current options; otherwise throws so the
+     * caller re-quotes rather than silently executing a different or stale price.
+     *
+     * A pin is the caller's approved price, so a route inside the execution margin
+     * cannot be silently re-fetched the way {@link getRoute} does — that would
+     * execute a price the caller never saw. It is rejected instead.
      */
     async consumeRouteByHash(hash, options, senderFallback) {
         const request = await this.buildRouteRequest(options, senderFallback);
         const key = stableRouteKey(request, options);
         const indexedKey = this.hashIndex.get(hash);
         const entry = indexedKey ? this.cache.get(indexedKey) : undefined;
-        if (!entry || entry.key !== key || entry.route.hash !== hash || entry.expiresAt <= this.context.now()) {
+        const usableUntil = this.context.now() + this.executionMargin();
+        if (!entry || entry.key !== key || entry.route.hash !== hash || entry.expiresAt <= usableUntil) {
             if (indexedKey)
                 this.cache.delete(indexedKey);
             this.hashIndex.delete(hash);
-            throw new ButterActionRequiredError('Pinned Butter quote is expired or does not match the request; request a new quote', { hash });
+            throw new ButterActionRequiredError('Pinned Butter quote expires too soon to execute or does not match the request; request a new quote', { hash });
         }
         this.cache.delete(entry.key);
         this.hashIndex.delete(hash);
@@ -116,6 +126,12 @@ export class RouteManager {
         if (isSolanaSource && !solanaReceiver) {
             throw new ButterActionRequiredError('Butter requires receiver when source chain is Solana');
         }
+        // Butter documents `referrer` as mandatory for Solana same-chain routes.
+        // Without it the request can never be valid, so fail with a configuration
+        // error rather than forwarding a request Butter is bound to reject.
+        if (isSolanaSource && toChainId === SOLANA_CHAIN_ID && !this.context.referrer) {
+            throw new ButterConfigurationError('Butter requires a referrer for Solana same-chain routes; set config.referrer');
+        }
         if (!('fromTokenAmount' in options) || options.fromTokenAmount == null) {
             throw new ButterExactOutUnsupportedError();
         }
@@ -138,7 +154,13 @@ export class RouteManager {
             // Only Solana needs the sender-derived fallback; other chains keep the
             // explicit recipient (possibly undefined) so the cache key stays stable.
             receiver: isSolanaSource ? solanaReceiver : options.recipient,
-            entrance: this.context.entrance
+            entrance: this.context.entrance,
+            // Spread conditionally so an unconfigured integrator's cache key (and the
+            // outgoing query) stay exactly as they were before these were added.
+            // Both participate in `stableRouteKey`, so changing the affiliate cannot
+            // hit a route cached under the previous one.
+            ...(this.context.affiliate ? { affiliate: this.context.affiliate } : {}),
+            ...(this.context.referrer ? { referrer: this.context.referrer } : {})
         };
     }
     enforceMinAmountOut(options, route) {
