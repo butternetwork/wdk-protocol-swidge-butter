@@ -13,7 +13,7 @@
 // limitations under the License.
 import { ButterApiError } from './errors.js';
 /** Converts a non-negative decimal token amount into integer base units. */
-export function parseTokenAmount(amount, decimals = 18) {
+export function parseTokenAmount(amount, decimals = 18, options = {}) {
     assertDecimals(decimals);
     if (amount == null)
         return 0n;
@@ -30,12 +30,14 @@ export function parseTokenAmount(amount, decimals = 18) {
         throw new ButterApiError(`Invalid token amount: ${raw}`);
     }
     const [whole = '0', fraction = ''] = raw.split('.');
-    const discardedFraction = fraction.slice(decimals);
-    if (/[1-9]/.test(discardedFraction)) {
+    const rounding = options.rounding ?? 'reject';
+    const losesPrecision = /[1-9]/.test(fraction.slice(decimals));
+    if (losesPrecision && rounding === 'reject') {
         throw new ButterApiError(`Token amount exceeds ${decimals} decimal places: ${raw}`);
     }
     const normalizedFraction = fraction.slice(0, decimals).padEnd(decimals, '0');
-    return BigInt(whole) * 10n ** BigInt(decimals) + BigInt(normalizedFraction || '0');
+    const truncated = BigInt(whole) * 10n ** BigInt(decimals) + BigInt(normalizedFraction || '0');
+    return losesPrecision && rounding === 'ceil' ? truncated + 1n : truncated;
 }
 /** Formats integer base units as a decimal token amount without floating point conversion. */
 export function formatTokenAmount(amount, decimals = 18) {

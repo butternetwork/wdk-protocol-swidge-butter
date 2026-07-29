@@ -42,8 +42,12 @@ regenerated `dist/` output (it is published and must stay in sync with `src/`).
 `protocol.ts` (`ButterSwidgeProtocol`) is the WDK entry point and orchestrates the other modules.
 `quoteSwidge` returns a `ButterSwidgeQuote` (a `SwidgeQuote` plus `routeHash`); passing that
 `routeHash` back via `swidge`'s `ButterSwidgeOptions` pins the approved route (else expired/mismatched
-pins throw `ButterActionRequiredError` instead of silently re-quoting). Everything else is a focused
-collaborator it composes:
+pins throw `ButterActionRequiredError` instead of silently re-quoting). `swidge` also requires an
+explicit `options.recipient` whenever the destination chain's **address family** differs from the
+source's (`constants.ts: addressFamilyForChain`) — WDK's "recipient defaults to the account address"
+only holds within one family, and the default is first *used* at the `/swap` stage as the destination
+receiver. That requirement is execution-only; `quoteSwidge` must stay usable without a recipient.
+Everything else is a focused collaborator it composes:
 
 - **`route.ts`** (`RouteManager`) — builds `/route` requests, caches quotes keyed by request+amount
   (bounded/evicting cache), and re-validates that a cached/fresh route still matches the requested
@@ -51,7 +55,19 @@ collaborator it composes:
   to include `dstChain` matching the target chain/token — a missing `dstChain` is a same-chain path and
   is rejected (otherwise `mappers.ts` would quote the wrong source leg). Also indexes routes by hash so
   `swidge` can pin an approved quote via `options.routeHash` (`consumeRouteByHash`), and supports a
-  Solana `senderFallback` for the receiver. Route TTL and re-fetch margin come from `constants.ts`.
+  Solana `senderFallback` for the receiver. Forwards `config.affiliate`/`config.referrer` when set —
+  spread **conditionally**, so an unconfigured integrator's request (and cache key) is byte-identical
+  to what it was before; both enter the key through `stableRouteKey`'s spread of the whole request, so
+  a changed affiliate can never hit a route cached under the previous one. A Solana **same-chain**
+  route without `referrer` throws `ButterConfigurationError` (Butter documents it as mandatory there).
+  Route TTL and both freshness margins come from
+  `constants.ts`. The **execution** margin (`ROUTE_EXECUTION_MARGIN_SECONDS`, 45s, overridable via
+  `config.routeExecutionMarginSeconds`) is deliberately much larger than the **quote** margin
+  (`ROUTE_EXPIRY_MARGIN_SECONDS`, 15s): execution still owes a `/swap` round-trip, an optional
+  approval (60s receipt wait by default), and the swap send, whereas a quote is non-binding. Don't
+  re-invert these. Inside the margin `getRoute` re-quotes, but `consumeRouteByHash` **throws**
+  (`ButterActionRequiredError`) — a pin is a price the caller approved, so it is never silently
+  re-fetched at a different price.
 - **`fees.ts`** — maps Butter's `bridgeFee`/`gasFee`/`swapFee` into WDK's `SwidgeFee[]`, and
   enforces `maxNetworkFeeBps`/`maxProtocolFeeBps` using exact rational (numerator/denominator
   bigint) comparisons — never floating point. **Source-denominated** fee ratios use the caller's
@@ -70,14 +86,36 @@ collaborator it composes:
   rateOrNativeFee)` tuple (a non-empty `feeData` requires the quoted tuple to be **complete** — fail
   closed on any missing field — and to match exactly; an **empty** `feeData` is rejected when the route
   quoted a non-zero integrator fee — so a quoted fee cannot be silently dropped nor an unchecked
-  `feeType`/`referrer` injected by under-specifying the quote); and `tx.value == input(if native) + routerFee + bridgeFee`. The bridge messaging fee inside `tx.value` is trusted from `/swap`, so the
-  actual native-drain guard is the **`maxNativeFee`** absolute cap on `routerFee + bridgeFee`
-  (`context.maxNativeFee`); cross-chain execution **fails closed** when it is unset. Same-chain
+  `feeType`/`referrer` injected by under-specifying the quote); and the `tx.value` bounds — the
+  native **input** half is a hard *lower* bound, while the remaining **fee** half is bounded only
+  from *above* (by `maxNativeFee` and by the quoted `routerFee + bridgeFee` plus
+  `NATIVE_FEE_DRIFT_BPS`). It is deliberately **not** an exact equality: `/route` formats the router
+  fee as a decimal string and `/swap` returns `tx.value` as a hex integer, so a sub-wei round-trip
+  artifact would otherwise reject a good transaction; paying *less* than the quoted fee is harmless
+  (the router reverts if it is genuinely insufficient). The bridge messaging fee inside `tx.value` is
+  trusted from `/swap`, so the actual native-drain guard is the **`maxNativeFee`** absolute cap on
+  the fee half (`context.maxNativeFee`); cross-chain execution **fails closed** when it is unset —
+  keyed on *destination chain ≠ source chain*, never on the calldata reporting a non-zero bridge fee
+  (a route that under-reports it must not opt out of the cap). The cap is resolvable **per call**
+  (`ButterSwidgeExecutionOptions.maxNativeFee`, which wins over the configured one in either
+  direction and satisfies the cross-chain requirement itself) — a single construction-time absolute
+  cannot fit both a small and a large trade. Same-chain
   `swapAndCall` additionally checks destination token, receiver, leftover receiver, and minimum output.
   **Cross-chain destination routing** (the nested bridge payload: destination receiver, output token,
   minimum output) is intentionally **trusted to Butter** and not re-verified — only that the bridge
   targets the quoted destination chain. Source exposure stays bounded because `evm.ts` approves only
-  the exact input amount to the router.
+  the exact input amount to the router. The **one exception** is an explicitly requested
+  `options.refundAddress`: naming a refund destination asks for a guarantee, so
+  `validateBridgeRefundAddress` decodes `BRIDGE_DATA_PARAM` — Butter's documented
+  `(gasLimit, refundAddress, swapData)` — and compares it (raw 20 bytes for an EVM address, UTF-8
+  text otherwise), **failing closed** with `ButterUnsupportedError` on an empty or
+  differently-shaped payload rather than letting an unverifiable guarantee pass as held. Omitting
+  `refundAddress` is the documented way back to Butter's default, and it must keep the nested payload
+  **undecoded** — that asymmetry is what leaves the default path's trust boundary unchanged.
+  Same-chain has no bridge payload, so `swapAndCall`'s `leftReceiver` plays that role and is compared
+  against `refundAddress ?? sender`. `refundAddress` is deliberately **not** required to equal the
+  sender (the old `protocol.ts` gate asserted that without ever checking the calldata, and it is
+  meaningless across address families).
 - **`router-registry.ts`** — a pinned allowlist of known Router V3 contract addresses per chain
   (`constants.ts: DEFAULT_ROUTER_CONTRACTS`), overridable via `config.routerContracts`. `/swap`
   responses are only trusted if their target is in this registry — the API response alone can never
@@ -105,7 +143,13 @@ collaborator it composes:
   Every send is recorded the instant it returns (before the approval receipt wait), so a later failure
   surfaces the already-broadcast hashes on a `ButterPartialExecutionError` instead of discarding them.
 - **`discovery.ts`** — chain/token listing (`/supportedChainInfo`, `queryChainList`,
-  `queryTokenList`), plus `/findToken` decimals lookups (cached, incl. confirmed misses) used as a
+  `queryTokenList`), plus `/findToken` decimals lookups. Both listings are **fail-closed on
+  missing required metadata**: a token without usable decimals and a chain without an `id`,
+  `type`, or `nativeToken` symbol are dropped rather than surfaced with a placeholder
+  (`mappers.ts` emits `''`, never `'unknown'`, so the caller decides). Strict-slippage chain
+  detection runs **before** the chain filter — dropping a chain from the listing must never
+  relax its slippage floor, which is looked up by chain id whether or not the chain was listed.
+  `/findToken` results are cached (incl. confirmed misses) and used as a
   fallback when `config.tokenDecimals` doesn't cover a token. `/findToken` matches by address only
   and ignores the `chainId` param, so results are filtered by `token.chainId` — never trust
   `data[0]`. Transport failures rethrow (not treated as "unknown token").
@@ -142,8 +186,9 @@ collaborator it composes:
 
 - **Middle-tier trust boundary** (the definitive statement is in `AGENTS.md`): Butter responses are
   partially trusted. Always keep the router allowlist, the single-transaction EVM rule, top-level
-  intent checks, the `feeData`↔`feeConfig` check, the `tx.value` check, the `maxNativeFee` cap
-  (the real native-drain guard; cross-chain fails closed without it), same-chain destination checks,
+  intent checks, the `feeData`↔`feeConfig` check, the `tx.value` bounds, the `maxNativeFee` cap
+  (the real native-drain guard; cross-chain fails closed without it, keyed on the destination chain
+  rather than on a Butter-reported bridge fee), same-chain destination checks,
   and the route-level fee caps — don't weaken these without security-focused tests. Cross-chain
   destination routing is intentionally trusted to Butter and not re-verified; don't silently
   re-tighten OR further loosen it without updating `AGENTS.md`, README, and tests together.

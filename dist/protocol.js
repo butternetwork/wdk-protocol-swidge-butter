@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 import { SwidgeProtocol } from '@tetherto/wdk-wallet/protocols';
-import { DEFAULT_APP_BASE_URL, DEFAULT_ROUTER_BASE_URL, DEFAULT_TOKEN_BASE_URL, OPERATION_KIND_MAX_ENTRIES, SOLANA_CHAIN_ID, TRON_CHAIN_ID } from './constants.js';
+import { addressFamilyForChain, DEFAULT_APP_BASE_URL, DEFAULT_ROUTER_BASE_URL, DEFAULT_TOKEN_BASE_URL, OPERATION_KIND_MAX_ENTRIES, ROUTE_TTL_SECONDS, SOLANA_CHAIN_ID, TRON_CHAIN_ID } from './constants.js';
 import { ButterHttpClient } from './http.js';
 import { RouteManager } from './route.js';
 import { enforceFeeLimits, resolveFeeLimits, routeNativeFee, validateFeeLimits } from './fees.js';
@@ -22,7 +22,7 @@ import { routerFunctionName, validateSwapTransactions } from './swap-data.js';
 import { assertGasFee, assertTransactionHash, executeEvmSwap, isNativeToken } from './evm.js';
 import { mapReceiptStatus, mapStatusResponse } from './status.js';
 import { createRouterRegistry, routerDeploymentsForChain } from './router-registry.js';
-import { ButterApiError, ButterConfigurationError, ButterExactOutUnsupportedError, ButterPartialExecutionError, ButterReadOnlyAccountError, ButterUnsupportedError } from './errors.js';
+import { ButterActionRequiredError, ButterApiError, ButterConfigurationError, ButterExactOutUnsupportedError, ButterPartialExecutionError, ButterReadOnlyAccountError, ButterUnsupportedError } from './errors.js';
 /** Butter Smart Router implementation of the WDK Swidge protocol. */
 export class ButterSwidgeProtocol extends SwidgeProtocol {
     account;
@@ -51,6 +51,9 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
         }
         validateFeeLimits(config);
         const maxNativeFee = parseMaxNativeFee(config.maxNativeFee);
+        const executionMarginSeconds = parseExecutionMarginSeconds(config.routeExecutionMarginSeconds);
+        const affiliate = parseAffiliate(config.affiliate);
+        const referrer = normalizeOptionalText(config.referrer);
         const fetchImpl = config.fetch ?? globalThis.fetch;
         if (!fetchImpl) {
             throw new ButterConfigurationError('A fetch implementation is required');
@@ -87,6 +90,9 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
             tokenDecimals: config.tokenDecimals ?? {},
             nativeTokenDecimals: config.nativeTokenDecimals ?? {},
             strictSlippageChainIds,
+            ...(executionMarginSeconds != null ? { executionMarginSeconds } : {}),
+            ...(affiliate != null ? { affiliate } : {}),
+            ...(referrer != null ? { referrer } : {}),
             requestRoute: (params) => this.http.router('/route', params),
             lookupDecimals: (token) => this.discovery.findTokenDecimals(this.sourceChainId, token)
         });
@@ -116,10 +122,25 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
         this.assertQuoteOptions(options);
         this.assertExecutionCapability();
         const sender = await this.getSender();
-        if (options.refundAddress && !sameRecipient(options.refundAddress, sender)) {
-            throw new ButterUnsupportedError('Butter requires refundAddress to match the source sender');
+        // WDK defaults the recipient to the account address, which is only safe while
+        // the destination chain speaks the same address format. Across families the
+        // source sender is not a spendable address on the destination chain, and the
+        // /swap stage — where this default is first used as the destination receiver —
+        // would send it anyway. Enforced only here, never in quoteSwidge: quoting
+        // without a recipient is the normal way to ask a price.
+        const destinationChainId = String(options.toChain ?? this.sourceChainId);
+        const sourceFamily = addressFamilyForChain(this.sourceChainId);
+        const destinationFamily = addressFamilyForChain(destinationChainId);
+        if (options.recipient == null && sourceFamily !== destinationFamily) {
+            throw new ButterActionRequiredError('Butter requires an explicit recipient when the destination chain uses a different address format than the source', {
+                sourceChainId: this.sourceChainId,
+                sourceFamily,
+                destinationChainId,
+                destinationFamily
+            });
         }
         const receiver = options.recipient ?? sender;
+        const maxNativeFee = parseMaxNativeFee(options.maxNativeFee) ?? this.maxNativeFee;
         const pinnedHash = normalizeRouteHash(options.routeHash);
         const cached = pinnedHash != null
             ? await this.routes.consumeRouteByHash(pinnedHash, options, sender)
@@ -139,7 +160,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
         const nativeSource = isNativeToken(options.fromToken);
         const swapValidationContext = {
             sourceChainId: this.sourceChainId,
-            destinationChainId: String(options.toChain ?? this.sourceChainId),
+            destinationChainId,
             route: cached.route,
             routerRegistry: this.routerRegistry,
             nativeSource,
@@ -149,9 +170,12 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
             sourceToken: options.fromToken,
             destinationToken: options.toToken,
             requireRouterAllowlist: this.isBuiltInEvmExecution(),
+            // Only forwarded when the caller named one: an absent refundAddress leaves
+            // Butter's own default in place and the nested payload undecoded.
+            ...(options.refundAddress ? { refundAddress: options.refundAddress } : {}),
             routerNativeFee: routeNativeFee(cached.route, feeContext),
             requestedAmountIn,
-            ...(this.maxNativeFee != null ? { maxNativeFee: this.maxNativeFee } : {}),
+            ...(maxNativeFee != null ? { maxNativeFee } : {}),
             ...(cached.route.feeConfig ? { feeConfig: cached.route.feeConfig } : {})
         };
         const swapTransactions = validateSwapTransactions(swapData, swapValidationContext);
@@ -159,7 +183,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
         // One entry per execution unit; undefined means that unit's gas was not
         // measured. Only fold in a measured fee when EVERY unit reported one.
         const feeParts = [];
-        const toChain = String(options.toChain ?? this.sourceChainId);
+        const toChain = destinationChainId;
         if (this.isBuiltInEvmExecution()) {
             // The built-in EVM path is exactly one Router transaction (enforced by
             // validateSwapTransactions); executeEvmSwap adds any approval + the source.
@@ -562,6 +586,44 @@ function parseMaxNativeFee(value) {
     if (result < 0n)
         throw new ButterConfigurationError('maxNativeFee must be a non-negative integer in native base units');
     return result;
+}
+/** Validates the optional execution-path route freshness margin, in seconds. */
+function parseExecutionMarginSeconds(value) {
+    if (value == null)
+        return undefined;
+    if (!Number.isFinite(value) || value < 0 || value >= ROUTE_TTL_SECONDS) {
+        throw new ButterConfigurationError(`routeExecutionMarginSeconds must be a non-negative number below the ${ROUTE_TTL_SECONDS}s route lifetime`);
+    }
+    return value;
+}
+/** Treats a blank or whitespace-only configuration string as absent. */
+function normalizeOptionalText(value) {
+    if (value == null)
+        return undefined;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+}
+/**
+ * Validates the optional Butter affiliate, documented as `<nickname>[:rate]`.
+ *
+ * Checked at construction rather than on the first request because Butter
+ * substitutes its own default affiliate wallet whenever the parameter is absent
+ * or unusable: a malformed value would otherwise hand the integrator's share
+ * away silently, with a successful swap and no error to notice.
+ */
+function parseAffiliate(value) {
+    const affiliate = normalizeOptionalText(value);
+    if (affiliate == null)
+        return undefined;
+    const [nickname, rate, ...rest] = affiliate.split(':');
+    if (!nickname || rest.length > 0 || /\s/.test(affiliate)) {
+        throw new ButterConfigurationError('affiliate must be formatted as "<nickname>" or "<nickname>:<rate>"');
+    }
+    // `Number('')` is 0, so the empty-rate case ("nickname:") needs its own test.
+    if (rate !== undefined && (rate.length === 0 || !Number.isFinite(Number(rate)) || Number(rate) < 0)) {
+        throw new ButterConfigurationError('affiliate rate must be a non-negative number');
+    }
+    return affiliate;
 }
 /** Normalizes the optional Butter `routeHash` pin, treating empty strings as absent. */
 function normalizeRouteHash(hash) {

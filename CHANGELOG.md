@@ -75,6 +75,69 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
   receipt classifier (unknown status is never treated as success).
 - Add an absolute `maxNativeFee` cap on `routerFee + bridgeFee`; cross-chain
   execution fails closed without it. Same-chain fee-cap semantics documented.
+- Bound `tx.value` instead of requiring exact equality with
+  `input + routerFee + bridgeFee`. `/route` formats the router fee as a decimal
+  string while `/swap` returns `tx.value` as a hex integer, so a sub-wei artifact
+  in that round-trip previously failed an otherwise valid transaction. The native
+  input half is now a hard *lower* bound and the fee half an *upper* bound only
+  (`maxNativeFee`, plus the quoted `routerFee + bridgeFee` and a 0.5 %
+  formatting-drift tolerance as a consistency check) — paying less than the quoted
+  fee cannot harm the user, since the router reverts if it is genuinely
+  insufficient. The security property is unchanged: source-token exposure stays
+  bounded by the exact approval and native spend by `maxNativeFee`.
+- Verify the refund address Butter actually encodes instead of asserting one.
+  Execution previously required `refundAddress` to equal the source sender and
+  never checked the calldata, so the constraint bought nothing: the nested bridge
+  payload that carries the field was not decoded. It is now decoded and compared
+  (raw 20 bytes for an EVM address, UTF-8 text otherwise) whenever the caller
+  names a refund destination, and fails closed with `ButterUnsupportedError` when
+  the payload is empty or does not match Butter's documented
+  `(gasLimit, refundAddress, swapData)` layout — an unverifiable guarantee is
+  never reported as holding. Same-chain has no bridge payload, so `swapAndCall`'s
+  leftover receiver is compared against the requested address instead. Omitting
+  `refundAddress` leaves Butter's default in place and the nested payload
+  undecoded, so the default path's trust boundary is unchanged.
+- Value the route's native protocol fee by rounding **up** when Butter reports
+  more decimals than the chain's native token has. It is the quoted side of an
+  upper bound, so rounding up can only widen the bound by one wei, whereas the
+  previous hard rejection failed the whole quote on a formatting artifact.
+- Require a route freshness margin on the **execution** path, configurable via the
+  new `routeExecutionMarginSeconds` (default 45s). The two margins were previously
+  inverted: quoting demanded ≥15s of remaining route lifetime while execution
+  accepted any route that had not literally expired — even though execution still
+  has to complete a `/swap` round-trip, an optional ERC-20 approval (whose receipt
+  wait defaults to 60s), and the swap send. A route with a second left could pass
+  `/swap` and then land on-chain long after its quote went stale, leaving only
+  `minAmount` as protection. Inside the margin, unpinned execution now re-quotes;
+  a pinned `routeHash` is rejected with `ButterActionRequiredError` rather than
+  silently re-fetched, since a pin is a price the caller already approved. Raise
+  the margin above `evm.approvalTimeoutMs / 1000` when approvals are expected.
+- Allow `maxNativeFee` to be set **per call** on `swidge(options)`, taking
+  precedence over the configured value in either direction (and satisfying the
+  cross-chain fail-closed requirement on its own). It is the only guard that
+  actually bounds native spend, and as a construction-time absolute it could not
+  serve a long-lived instance across a wide range of trade sizes — too low made
+  small routes unusable, too high made the cap nominal. The caller knows the size
+  at call time.
+- Forward Butter's `affiliate` and `referrer` parameters to `/route` via the new
+  `affiliate` / `referrer` config. Previously neither was sent, with two
+  consequences: Butter substituted its **own** default affiliate wallet (the
+  documented behaviour when the parameter is absent), so the integrator could
+  neither collect nor waive a share the user was paying regardless; and Solana
+  **same-chain** routes — which Butter documents as requiring `referrer` — could
+  never produce a valid request, which now fails as an explicit
+  `ButterConfigurationError` instead. `affiliate` is validated at construction
+  (`<nickname>[:rate]`) precisely because an unusable value fails silently on
+  Butter's side. Both participate in the route cache key; when unset, neither
+  appears in the request, so an existing integrator's cache keys are unchanged.
+- `getSupportedChains` now applies the same fail-closed rule as
+  `getSupportedTokens`: a chain missing an `id`, `type`, or `nativeToken` symbol
+  is dropped instead of being listed with a placeholder. WDK marks both fields
+  as required, and the previous `'unknown'` / `''` values read as authoritative
+  while being nothing of the kind. Detection of strict-slippage chains still runs
+  before the filter, so dropping a chain never relaxes its slippage floor.
+  `npm run example:discover` now reports which chains the filter dropped and
+  which field each was missing, so the cost is measurable on live data.
 - Cross-chain routes must include a matching `dstChain` (a missing one is a
   same-chain path and is rejected).
 - The built-in EVM path executes exactly one Router transaction.
@@ -98,6 +161,33 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
   original error is preserved as `.cause`, so callers matching the underlying type
   should read `error.cause` (the swap is still never sent against an unconfirmed
   approval).
+- Cross-chain execution now **always** requires `maxNativeFee`. The fail-closed
+  requirement is keyed on the destination chain differing from the source chain; it
+  was previously conditioned on the calldata declaring a non-zero bridge fee, so a
+  route reporting a zero bridge fee opted out of the only cap that bounds what
+  `tx.value` actually spends.
+- `refundAddress` changes meaning on `swidge`. It no longer has to equal the
+  source sender — that rejection is gone, and a cross-VM refund destination (or a
+  cold wallet / multisig) is now accepted. In exchange, a requested
+  `refundAddress` that cannot be verified against the calldata now throws
+  `ButterUnsupportedError` where execution previously proceeded. Callers who were
+  passing the sender's own address to satisfy the old rule can simply drop the
+  field. `quoteSwidge` is unaffected.
+- `swidge` now requires an explicit `recipient` when the destination chain's
+  address family differs from the source chain's (EVM → Solana / BTC / TON / Tron
+  and the reverse). WDK's documented default — recipient falls back to the wallet
+  account address — is only meaningful within one address family; across families
+  it forwarded a `0x` address as the destination receiver, at best rejected by
+  Butter and at worst delivering funds to an address nobody can spend. Families
+  come from a best-effort table of Butter's non-EVM chain ids
+  (`constants.ts: NON_EVM_CHAIN_FAMILIES`); unlisted chains are assumed EVM, so
+  the table must be extended when Butter adds a non-EVM chain. `quoteSwidge` is
+  unaffected and still prices a cross-VM route with no recipient.
+- `getSupportedChains` may return **fewer** chains than before: entries whose
+  merged discovery metadata lacks a `type` or a `nativeToken` symbol are dropped.
+  Consumers that relied on `type: 'unknown'` or `nativeToken: ''` appearing in the
+  listing will no longer see those entries. Quoting and execution are unaffected
+  (they take chain ids from the caller, not from this listing).
 - Multi-transaction non-EVM adapters must classify each transaction
   (`{ transaction, type }`) and resolve to **exactly one** `source` (the operation
   id); an ambiguous, unclassified, or illegally-typed result is now rejected before
@@ -121,3 +211,20 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
 ### Follow-ups
 - Testnet integration tests (per the WDK integration guide) are not yet included;
   the env-gated flows in `examples/` cover live checks in the meantime.
+- Two behaviours are pending a check against live Butter responses before
+  release, both covered by read-only env-gated examples: the nested cross-chain
+  bridge payload layout that the explicit-`refundAddress` check decodes
+  (`npm run example:decode-swap-data` reports `layoutConfirmed`; if Butter's live
+  encoding differs from its documentation, an explicit `refundAddress` fails
+  closed rather than mis-verifying, but the feature would be unusable until the
+  layout is corrected) and how much chain coverage the new discovery metadata
+  filter costs (`npm run example:discover`).
+- Enforcing the destination minimum output for cross-chain routes would make
+  `toTokenAmountMin` a guarantee rather than a route estimate. The nested payload
+  is now decoded at one point (for `refundAddress`), which is where that check
+  would go, but it tightens the documented trust boundary and needs its own
+  security review.
+- A relative `maxNativeFeeBps` (scaling the native cap with trade size) was
+  considered alongside the per-call absolute cap and deliberately deferred: it
+  would have to reuse the USD valuation chain in `fees.ts` for non-native inputs,
+  and the per-call absolute already covers the case that motivated it.

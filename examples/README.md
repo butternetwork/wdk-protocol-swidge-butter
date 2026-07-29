@@ -23,6 +23,27 @@ npm run example:discover
 `SOURCE_CHAIN_ID` defaults to BNB Smart Chain. Set `TOKEN_CHAIN_ID` to choose
 which chain's complete token list is returned.
 
+The output includes a `chainCoverage` section listing the chains Butter reported
+but `getSupportedChains()` dropped for missing WDK-required metadata (`type`,
+`nativeToken`). Check it against live data before assuming that filter is free.
+
+## Inspect the Router calldata Butter returns
+
+```sh
+npm run example:decode-swap-data
+```
+
+Read-only: it requests a `/route` plus the matching `/swap` and decodes the
+resulting Router V3 calldata, including the nested cross-chain bridge payload
+(`b_data`). No wallet is constructed and nothing is signed or broadcast. `SENDER`
+is required — it is only the `from` address of the `/swap` request, so any
+address works and no key is involved.
+
+Use it to confirm that `b_data` really is
+`(uint256 gasLimit, bytes refundAddress, bytes swapData)` on live responses, as
+Butter's router-interface documentation states. `layoutConfirmed` in the output
+reports the verdict per transaction.
+
 ## Request an exact-in quote
 
 ```sh

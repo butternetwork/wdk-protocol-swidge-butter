@@ -12,6 +12,12 @@ export interface SwapValidationContext {
     receiver: string;
     sourceToken: string;
     destinationToken: string;
+    /**
+     * Refund destination the caller explicitly asked for, if any. When set, the
+     * address Butter actually encoded is verified against it; when unset, Butter's
+     * own default is trusted and the nested payload is not decoded at all.
+     */
+    refundAddress?: string;
     requireRouterAllowlist: boolean;
     /** Router protocol native fee (route.swapFee.nativeFee), distinct from the bridge fee. */
     routerNativeFee?: bigint;

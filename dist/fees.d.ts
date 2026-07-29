@@ -34,7 +34,14 @@ export declare function validateFeeLimits(config: SwidgeProtocolConfig): void;
  * (which providers must not do); it needs a WDK PR #39 mapping-contract change.
  */
 export declare function mapRouteFees(route: ButterRoute, context: FeeContext): SwidgeFee[];
-/** Returns the route's additional native protocol fee in source-chain base units. */
+/**
+ * Returns the route's additional native protocol fee in source-chain base units.
+ *
+ * Rounds up: this value is the quoted side of an upper bound on `tx.value`
+ * (`swap-data.ts`), so rounding down would turn a sub-wei formatting artifact in
+ * Butter's decimal string into a rejected transaction. Rounding up can only widen
+ * the bound by one wei, and the absolute `maxNativeFee` cap is unaffected.
+ */
 export declare function routeNativeFee(route: ButterRoute, context: FeeContext): bigint;
 /** Enforces WDK network and protocol fee caps before transaction construction. */
 export declare function enforceFeeLimits(route: ButterRoute, context: FeeContext, limits: ResolvedFeeLimits): void;
