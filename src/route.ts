@@ -26,9 +26,9 @@ import {
   ButterActionRequiredError,
   ButterApiError,
   ButterConfigurationError,
-  ButterExactOutUnsupportedError
+  ButterNoRouteError
 } from './errors.js'
-import { formatTokenAmount, parseTokenAmount } from './amounts.js'
+import { assertBaseUnitAmount, formatTokenAmount, parseTokenAmount } from './amounts.js'
 import { toButterSlippage } from './slippage.js'
 import type { ButterRoute, CachedRoute, SwidgeOptions } from './types.js'
 
@@ -90,10 +90,17 @@ export class RouteManager {
     }
 
     const response = await this.context.requestRoute(request)
-    const route = Array.isArray(response) ? response[0] : response
+    // Butter returns candidates ordered best-output-first, so the first liquid one
+    // is still the best available. Taking `[0]` unconditionally failed the whole
+    // request whenever the top candidate happened to lack liquidity.
+    const route = Array.isArray(response)
+      ? response.find((candidate) => candidate != null && candidate.hasLiquidity !== false)
+      : response
     if (!route || route.hasLiquidity === false) {
-      throw new ButterApiError('Butter router returned no liquid route', response)
+      throw new ButterNoRouteError('Butter router returned no liquid route', response)
     }
+    // Runs on whichever candidate was chosen: falling back to a later one must not
+    // skip the chain/token consistency checks.
     this.validateRouteMatchesRequest(route, request)
     const cachedRoute = {
       key,
@@ -175,10 +182,13 @@ export class RouteManager {
     if (isSolanaSource && toChainId === SOLANA_CHAIN_ID && !this.context.referrer) {
       throw new ButterConfigurationError('Butter requires a referrer for Solana same-chain routes; set config.referrer')
     }
-    if (!('fromTokenAmount' in options) || options.fromTokenAmount == null) {
-      throw new ButterExactOutUnsupportedError()
-    }
-    const amount = formatTokenAmount(options.fromTokenAmount, await this.decimalsFor(options.fromToken))
+    // Exactly one of the two amounts is present (assertQuoteOptions). Butter's
+    // `amount` is denominated in whichever side the caller pinned, so exact-out
+    // formats it with the *destination* token's decimals.
+    const exactIn = 'fromTokenAmount' in options && options.fromTokenAmount != null
+    const amount = exactIn
+      ? formatTokenAmount(options.fromTokenAmount as number | bigint, await this.decimalsFor(options.fromToken))
+      : formatTokenAmount(options.toTokenAmount as number | bigint, await this.decimalsFor(options.toToken))
     const strictChain = this.context.strictSlippageChainIds.has(this.context.sourceChainId) || this.context.strictSlippageChainIds.has(toChainId)
     const slippage = toButterSlippage(options.slippage, {
       crossChain: toChainId !== this.context.sourceChainId,
@@ -193,7 +203,7 @@ export class RouteManager {
       amount,
       tokenInAddress: options.fromToken,
       tokenOutAddress: options.toToken,
-      type: 'exactIn',
+      type: exactIn ? 'exactIn' : 'exactOut',
       slippage,
       // Only Solana needs the sender-derived fallback; other chains keep the
       // explicit recipient (possibly undefined) so the cache key stays stable.
@@ -210,11 +220,15 @@ export class RouteManager {
 
   enforceMinAmountOut (options: SwidgeOptions, route: ButterRoute): void {
     if (options.minAmountOut == null) return
+    // Validated like `fromTokenAmount`: WDK types this as `number | bigint`, so an
+    // out-of-range number reached `BigInt()` and threw a raw RangeError. Zero is a
+    // meaningful request here ("no minimum"), unlike an input amount.
+    const requested = assertBaseUnitAmount(options.minAmountOut, 'minAmountOut', { allowZero: true })
     const destinationDecimals = decimalsOf(route.dstChain?.tokenOut ?? route.srcChain?.tokenOut, 'destination token')
     const routeMinimum = parseTokenAmount(route.minAmountOut?.amount ?? route.amountOutMin, destinationDecimals)
-    if (routeMinimum < BigInt(options.minAmountOut)) {
+    if (routeMinimum < requested) {
       throw new ButterActionRequiredError('Butter route minimum output is below requested minAmountOut', {
-        requestedMinAmountOut: String(options.minAmountOut),
+        requestedMinAmountOut: String(requested),
         routeMinimum: String(routeMinimum)
       })
     }

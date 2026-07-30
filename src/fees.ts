@@ -24,6 +24,7 @@ import type {
   ButterBridgeFee,
   ButterRoute,
   ButterRouteToken,
+  ButterWarning,
   SwidgeFee,
   SwidgeProtocolConfig
 } from './types.js'
@@ -43,6 +44,14 @@ export interface FeeContext {
    * fee cap is enforced.
    */
   requestedAmountIn?: bigint
+  /**
+   * Exact-out only: the caller's `maxFromTokenAmount`, used as the denominator's
+   * upper bound when {@link requestedAmountIn} cannot exist because the caller
+   * named the output instead of the input.
+   */
+  maxAmountIn?: bigint
+  /** Receives non-fatal fee-mapping notices; see {@link ButterWarning}. */
+  onWarning?: (warning: ButterWarning) => void
 }
 
 /** Effective WDK fee limits after constructor and per-call precedence. */
@@ -75,6 +84,17 @@ export function validateFeeLimits (config: SwidgeProtocolConfig): void {
 }
 
 /**
+ * Rounding for **reported** fee amounts.
+ *
+ * These are display/estimate values, not enforced ones, so a Butter response with
+ * more decimals than the token carries (a USDT fee quoted to 7 places) must not
+ * reject the whole quote — under-reporting a displayed fee by one base unit cannot
+ * harm the caller. Cap-enforcement parses elsewhere in this file deliberately keep
+ * `'reject'`, or `'ceil'` where the value is a quoted upper bound.
+ */
+const DISPLAY_ROUNDING = { rounding: 'floor' } as const
+
+/**
  * Maps Butter fee metadata into WDK fee entries using denomination-specific decimals.
  *
  * NOTE (upstream WDK contract): the base SwidgeProtocol's legacy `swap()` and
@@ -95,7 +115,7 @@ export function mapRouteFees (route: ButterRoute, context: FeeContext): SwidgeFe
     const token = bridgeFeeToken(route)
     fees.push({
       type: 'protocol',
-      amount: parseTokenAmount(route.bridgeFee?.amount, requiredDecimals(token, 'bridge fee')),
+      amount: parseTokenAmount(route.bridgeFee?.amount, requiredDecimals(token, 'bridge fee'), DISPLAY_ROUNDING),
       token: requiredTokenId(route.bridgeFee?.address ?? token?.address ?? route.bridgeFee?.symbol ?? token?.symbol, 'bridge fee'),
       chain: route.bridgeFee?.chainId,
       included: true,
@@ -106,7 +126,7 @@ export function mapRouteFees (route: ButterRoute, context: FeeContext): SwidgeFe
     const token = route.bridgeFee?.affiliate?.token
     fees.push({
       type: 'affiliate',
-      amount: parseTokenAmount(route.bridgeFee?.affiliate?.amount, requiredDecimals(token, 'affiliate fee')),
+      amount: parseTokenAmount(route.bridgeFee?.affiliate?.amount, requiredDecimals(token, 'affiliate fee'), DISPLAY_ROUNDING),
       token: requiredTokenId(token?.address ?? token?.symbol, 'affiliate fee'),
       chain: route.bridgeFee?.chainId,
       included: true,
@@ -116,7 +136,7 @@ export function mapRouteFees (route: ButterRoute, context: FeeContext): SwidgeFe
   if (isNonZero(route.gasFee?.amount)) {
     fees.push({
       type: 'network',
-      amount: parseTokenAmount(route.gasFee?.amount, nativeDecimals),
+      amount: parseTokenAmount(route.gasFee?.amount, nativeDecimals, DISPLAY_ROUNDING),
       token: requiredTokenId(route.gasFee?.address ?? route.gasFee?.symbol ?? nativeTokenId(context), 'network fee'),
       chain: route.gasFee?.chainId ?? context.sourceChainId,
       included: false,
@@ -126,7 +146,7 @@ export function mapRouteFees (route: ButterRoute, context: FeeContext): SwidgeFe
   if (isNonZero(route.swapFee?.nativeFee)) {
     fees.push({
       type: 'protocol',
-      amount: parseTokenAmount(route.swapFee?.nativeFee, nativeDecimals),
+      amount: parseTokenAmount(route.swapFee?.nativeFee, nativeDecimals, DISPLAY_ROUNDING),
       token: requiredTokenId(
         route.swapFee?.nativeSymbol ?? route.gasFee?.address ?? route.gasFee?.symbol ?? nativeTokenId(context),
         'native protocol fee'
@@ -139,11 +159,46 @@ export function mapRouteFees (route: ButterRoute, context: FeeContext): SwidgeFe
   if (isNonZero(route.swapFee?.tokenFee)) {
     fees.push({
       type: 'protocol',
-      amount: parseTokenAmount(route.swapFee?.tokenFee, requiredDecimals(sourceToken, 'token protocol fee')),
+      amount: parseTokenAmount(route.swapFee?.tokenFee, requiredDecimals(sourceToken, 'token protocol fee'), DISPLAY_ROUNDING),
       token: requiredTokenId(sourceToken?.address ?? context.sourceToken ?? route.swapFee?.tokenSymbol, 'token protocol fee'),
       chain: context.sourceChainId,
       included: true,
       description: 'Butter token swap fee'
+    })
+  }
+  return reportFeeCaveats(fees, context)
+}
+
+/**
+ * Emits the caveats a caller reading only WDK's surface could not otherwise see,
+ * and guarantees a populated array.
+ *
+ * The WDK integration guide requires fees to always be a populated array, and an
+ * empty one also reads as "free" rather than "Butter told us nothing". The
+ * placeholder is zero-amount and only added when there is nothing else, so it can
+ * never mask a real fee.
+ */
+function reportFeeCaveats (fees: SwidgeFee[], context: FeeContext): SwidgeFee[] {
+  if (fees.length === 0) {
+    context.onWarning?.({
+      code: 'no-fees-reported',
+      message: 'Butter reported no fees for this route; fees[] carries a zero-amount placeholder'
+    })
+    return [{
+      type: 'network',
+      amount: 0n,
+      token: nativeTokenId(context) ?? context.sourceToken,
+      chain: context.sourceChainId,
+      included: false,
+      description: 'Butter reported no fees for this route'
+    }]
+  }
+  const protocolTokens = new Set(fees.filter(({ type }) => type === 'protocol').map(({ token }) => token))
+  if (protocolTokens.size > 1) {
+    context.onWarning?.({
+      code: 'mixed-currency-protocol-fees',
+      message: 'Butter protocol fees span multiple tokens; the WDK legacy bridgeFee scalar sums across denominations and is not meaningful — read fees[]',
+      details: { tokens: [...protocolTokens] }
     })
   }
   return fees
@@ -184,7 +239,8 @@ function networkFeeRatios (route: ButterRoute, context: FeeContext): Ratio[] {
   const nativeDecimals = nativeDecimalsForChain(context.sourceChainId, context.nativeTokenDecimals)
   const gasAmount = parseTokenAmount(route.gasFee?.amount, nativeDecimals)
   if (isNativeSource(context.sourceToken)) {
-    return [{ numerator: gasAmount, denominator: sourceDenominator(context) }]
+    // Source is native here, so native decimals are the source token's decimals.
+    return [{ numerator: gasAmount, denominator: sourceDenominator(context, route, nativeDecimals) }]
   }
   return [usdRatio(route.gasFee?.inUSD, route.totalAmountInUSD, 'network fee')]
 }
@@ -198,13 +254,13 @@ function protocolFeeRatios (route: ButterRoute, context: FeeContext): Ratio[] {
   if (isNonZero(route.swapFee?.tokenFee)) {
     ratios.push({
       numerator: parseTokenAmount(route.swapFee?.tokenFee, sourceDecimals),
-      denominator: sourceDenominator(context)
+      denominator: sourceDenominator(context, route, sourceDecimals)
     })
   }
   if (isNonZero(route.swapFee?.nativeFee)) {
     const nativeFee = parseTokenAmount(route.swapFee?.nativeFee, nativeDecimals)
     if (isNativeSource(context.sourceToken)) {
-      ratios.push({ numerator: nativeFee, denominator: sourceDenominator(context) })
+      ratios.push({ numerator: nativeFee, denominator: sourceDenominator(context, route, nativeDecimals) })
     } else {
       const gasAmount = parseTokenAmount(route.gasFee?.amount, nativeDecimals)
       const gasUsd = parseUsd(route.gasFee?.inUSD, 'native protocol fee')
@@ -266,12 +322,22 @@ function parseUsd (value: string | undefined, label: string): bigint {
  * Denominator for source-denominated fee caps: the caller's exact input, NOT the
  * route-reported `srcChain.totalAmountIn` (which is untrusted and, if inflated,
  * would understate the ratio and let an over-cap fee pass).
+ *
+ * Exact-out has no exact input to use, so the denominator is
+ * `min(maxFromTokenAmount, route-reported input)`. The `min` is what keeps this
+ * safe in both directions: the caller's cap bounds it from above, so inflating the
+ * reported input cannot understate the ratio; and if Butter instead under-reports,
+ * the smaller denominator overstates the ratio and trips the cap, which is the
+ * fail-closed direction. The reported value is only ever allowed to make the check
+ * stricter, never looser.
  */
-function sourceDenominator (context: FeeContext): bigint {
-  if (context.requestedAmountIn == null) {
+function sourceDenominator (context: FeeContext, route: ButterRoute, sourceDecimals: number): bigint {
+  if (context.requestedAmountIn != null) return context.requestedAmountIn
+  if (context.maxAmountIn == null) {
     throw new ButterFeeValuationError('Cannot value a source-denominated Butter fee without the requested input amount')
   }
-  return context.requestedAmountIn
+  const reported = parseTokenAmount(route.srcChain?.totalAmountIn, sourceDecimals, { rounding: 'floor' })
+  return reported > 0n && reported < context.maxAmountIn ? reported : context.maxAmountIn
 }
 
 function bridgeFeeToken (route: ButterRoute): ButterRouteToken | undefined {

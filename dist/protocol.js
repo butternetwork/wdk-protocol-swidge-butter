@@ -13,6 +13,7 @@
 // limitations under the License.
 import { SwidgeProtocol } from '@tetherto/wdk-wallet/protocols';
 import { addressFamilyForChain, DEFAULT_APP_BASE_URL, DEFAULT_ROUTER_BASE_URL, DEFAULT_TOKEN_BASE_URL, OPERATION_KIND_MAX_ENTRIES, ROUTE_TTL_SECONDS, SOLANA_CHAIN_ID, TRON_CHAIN_ID } from './constants.js';
+import { assertBaseUnitAmount } from './amounts.js';
 import { ButterHttpClient } from './http.js';
 import { RouteManager } from './route.js';
 import { enforceFeeLimits, resolveFeeLimits, routeNativeFee, validateFeeLimits } from './fees.js';
@@ -22,7 +23,7 @@ import { routerFunctionName, validateSwapTransactions } from './swap-data.js';
 import { assertGasFee, assertTransactionHash, executeEvmSwap, isNativeToken } from './evm.js';
 import { mapReceiptStatus, mapStatusResponse } from './status.js';
 import { createRouterRegistry, routerDeploymentsForChain } from './router-registry.js';
-import { ButterActionRequiredError, ButterApiError, ButterConfigurationError, ButterExactOutUnsupportedError, ButterPartialExecutionError, ButterReadOnlyAccountError, ButterUnsupportedError } from './errors.js';
+import { ButterActionRequiredError, ButterApiError, ButterConfigurationError, ButterPartialExecutionError, ButterReadOnlyAccountError, ButterUnsupportedError } from './errors.js';
 /** Butter Smart Router implementation of the WDK Swidge protocol. */
 export class ButterSwidgeProtocol extends SwidgeProtocol {
     account;
@@ -69,7 +70,8 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
         this.feeContext = {
             sourceChainId: this.sourceChainId,
             sourceToken: '',
-            ...(config.nativeTokenDecimals ? { nativeTokenDecimals: config.nativeTokenDecimals } : {})
+            ...(config.nativeTokenDecimals ? { nativeTokenDecimals: config.nativeTokenDecimals } : {}),
+            ...(config.onWarning ? { onWarning: config.onWarning } : {})
         };
         this.now = config.now ?? (() => Math.floor(Date.now() / 1000));
         this.http = new ButterHttpClient({
@@ -115,7 +117,21 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
         const cached = await this.routes.getRoute(options, { senderFallback });
         this.routes.enforceMinAmountOut(options, cached.route);
         const quote = routeToQuote(cached.route, this.now, cached.expiresAt, this.feeContextFor(options.fromToken), options.fromTokenAmount);
-        return { ...quote, routeHash: cached.route.hash };
+        return {
+            ...quote,
+            routeHash: cached.route.hash,
+            destinationGuarantees: this.destinationGuaranteesFor(options)
+        };
+    }
+    /**
+     * Reports whether `toTokenAmountMin` is checked against the calldata at execution.
+     *
+     * Only same-chain is: cross-chain leaves the destination minimum inside the
+     * nested bridge payload, which is trusted to Butter by design.
+     */
+    destinationGuaranteesFor(options) {
+        const destinationChainId = String(options.toChain ?? this.sourceChainId);
+        return destinationChainId === this.sourceChainId ? 'enforced' : 'quoted-only';
     }
     /** Executes an exact-in operation after validating route fees and transaction intent. */
     async swidge(options, config = {}) {
@@ -146,9 +162,14 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
             ? await this.routes.consumeRouteByHash(pinnedHash, options, sender)
             : await this.routes.getRoute(options, { forExecution: true, senderFallback: sender });
         this.routes.enforceMinAmountOut(options, cached.route);
-        // assertQuoteOptions guarantees a valid, positive exact-in amount.
-        const requestedAmountIn = BigInt(options.fromTokenAmount);
-        const feeContext = { ...this.feeContextFor(options.fromToken), requestedAmountIn };
+        // assertQuoteOptions guarantees exactly one of the two amounts is present.
+        // Exact-in pins the input exactly; exact-out can only bound it, and fails
+        // closed without the caller's cap.
+        const exactIn = 'fromTokenAmount' in options && options.fromTokenAmount != null;
+        const amountBound = exactIn
+            ? { requestedAmountIn: BigInt(options.fromTokenAmount) }
+            : { maxAmountIn: this.resolveMaxFromTokenAmount(options) };
+        const feeContext = { ...this.feeContextFor(options.fromToken), ...amountBound };
         enforceFeeLimits(cached.route, feeContext, resolveFeeLimits(this.config, config));
         const quote = routeToQuote(cached.route, this.now, cached.expiresAt, feeContext, options.fromTokenAmount);
         const swapData = await this.http.router('/swap', {
@@ -174,7 +195,9 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
             // Butter's own default in place and the nested payload undecoded.
             ...(options.refundAddress ? { refundAddress: options.refundAddress } : {}),
             routerNativeFee: routeNativeFee(cached.route, feeContext),
-            requestedAmountIn,
+            // Exactly one of requestedAmountIn / maxAmountIn — the first demands an exact
+            // calldata match, the second only an upper bound (see assertSourceAmountIn).
+            ...amountBound,
             ...(maxNativeFee != null ? { maxNativeFee } : {}),
             ...(cached.route.feeConfig ? { feeConfig: cached.route.feeConfig } : {})
         };
@@ -197,7 +220,13 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
                         swapTx,
                         options,
                         sourceChainId: this.sourceChainId,
-                        nativeSource
+                        nativeSource,
+                        // Exact-in approves the exact input; exact-out approves the caller's
+                        // cap, since the required input is only known once the router runs.
+                        // Either way the allowance is a caller-chosen bound, never Butter's.
+                        approvalAmount: 'requestedAmountIn' in amountBound
+                            ? amountBound.requestedAmountIn
+                            : amountBound.maxAmountIn
                     });
                     transactions.push(...executed.transactions);
                     feeParts.push(executed.gasFee);
@@ -417,25 +446,28 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
         }
         const hasInput = 'fromTokenAmount' in options && options.fromTokenAmount != null;
         const hasOutput = 'toTokenAmount' in options && options.toTokenAmount != null;
-        if (hasOutput)
-            throw new ButterExactOutUnsupportedError();
+        // WDK: "Exact in mode requires fromTokenAmount. Exact out mode requires
+        // toTokenAmount. Not both."
         if (hasInput === hasOutput) {
-            throw new ButterUnsupportedError('fromTokenAmount is required');
+            throw new ButterUnsupportedError('exactly one of fromTokenAmount (exact-in) or toTokenAmount (exact-out) is required');
         }
-        const inputAmount = options.fromTokenAmount;
-        if (typeof inputAmount === 'number' && !Number.isSafeInteger(inputAmount)) {
-            throw new ButterUnsupportedError('fromTokenAmount must use bigint base units when it exceeds safe integer precision');
+        if (hasInput)
+            assertBaseUnitAmount(options.fromTokenAmount, 'fromTokenAmount');
+        else
+            assertBaseUnitAmount(options.toTokenAmount, 'toTokenAmount');
+    }
+    /**
+     * Resolves the source-spend bound for an exact-out execution.
+     *
+     * Fails closed, like the cross-chain `maxNativeFee` requirement: exact-out names
+     * the output, so without this the only value bounding the source spend would be
+     * Butter's own `srcChain.totalAmountIn` — the response validating itself.
+     */
+    resolveMaxFromTokenAmount(options) {
+        if (options.maxFromTokenAmount == null) {
+            throw new ButterConfigurationError('Butter exact-out execution requires maxFromTokenAmount to bound the source amount; quoteSwidge needs no cap');
         }
-        try {
-            if (BigInt(inputAmount) <= 0n) {
-                throw new ButterUnsupportedError('fromTokenAmount must be greater than zero');
-            }
-        }
-        catch (cause) {
-            if (cause instanceof ButterUnsupportedError)
-                throw cause;
-            throw new ButterUnsupportedError('fromTokenAmount must be a positive integer in base units', { cause });
-        }
+        return assertBaseUnitAmount(options.maxFromTokenAmount, 'maxFromTokenAmount');
     }
     isBuiltInEvmExecution() {
         return this.sourceChainId !== TRON_CHAIN_ID && routerDeploymentsForChain(this.routerRegistry, this.sourceChainId).length > 0;

@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-import { ButterApiError } from './errors.js';
+import { ButterApiError, ButterUnsupportedError } from './errors.js';
 /** Converts a non-negative decimal token amount into integer base units. */
 export function parseTokenAmount(amount, decimals = 18, options = {}) {
     assertDecimals(decimals);
@@ -55,19 +55,55 @@ export function formatTokenAmount(amount, decimals = 18) {
         return whole.toString();
     return `${whole}.${fraction.toString().padStart(decimals, '0').replace(/0+$/, '')}`;
 }
-/** Parses a decimal or hexadecimal integer amount returned by Butter. */
+/**
+ * Parses a decimal or hexadecimal integer amount returned by Butter.
+ *
+ * `BigInt` already accepts a `0x` prefix, so there is no separate hex branch. The
+ * negative check applies to every input form: a `"-1"` string used to pass here
+ * and only fail later in an equality comparison, which pointed the error at the
+ * wrong cause.
+ */
 export function parseIntegerAmount(value) {
     if (value == null)
         return 0n;
-    if (typeof value === 'bigint')
-        return value;
     if (typeof value === 'number' && (!Number.isSafeInteger(value) || value < 0)) {
         throw new ButterApiError(`Unsafe integer amount: ${value}`);
     }
-    const raw = String(value);
-    if (raw.startsWith('0x'))
-        return BigInt(raw);
-    return BigInt(raw);
+    const result = typeof value === 'bigint' ? value : BigInt(String(value).trim());
+    if (result < 0n)
+        throw new ButterApiError(`Invalid integer amount: ${value}`);
+    return result;
+}
+/**
+ * Validates a caller-supplied base-unit amount from the WDK `number | bigint` union.
+ *
+ * WDK declares these as `number | bigint`, so an out-of-range `number` (e.g. `1e20`)
+ * reaches `BigInt()` and throws a raw `RangeError` that names neither the field nor
+ * this package. Every caller-facing amount goes through here so the diagnostics are
+ * uniform: `fromTokenAmount`, `toTokenAmount`, `minAmountOut`, `maxFromTokenAmount`.
+ *
+ * Throws `ButterUnsupportedError` (not `ButterApiError`) because the value came from
+ * the caller, not from Butter — this is the type `assertQuoteOptions` already used.
+ */
+export function assertBaseUnitAmount(value, field, options = {}) {
+    if (value == null)
+        throw new ButterUnsupportedError(`${field} is required as an integer in base units`);
+    if (typeof value === 'number' && !Number.isSafeInteger(value)) {
+        throw new ButterUnsupportedError(`${field} must use bigint base units when it exceeds safe integer precision`);
+    }
+    let result;
+    try {
+        result = BigInt(value);
+    }
+    catch (cause) {
+        throw new ButterUnsupportedError(`${field} must be an integer in base units`, { cause });
+    }
+    if (result < 0n || (result === 0n && options.allowZero !== true)) {
+        throw new ButterUnsupportedError(options.allowZero === true
+            ? `${field} must not be negative`
+            : `${field} must be greater than zero`);
+    }
+    return result;
 }
 function assertDecimals(decimals) {
     if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) {

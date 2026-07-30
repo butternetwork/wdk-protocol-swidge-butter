@@ -83,6 +83,12 @@ export interface SwapValidationContext {
   feeConfig?: ButterFeeConfig
   /** Absolute cap (native base units) on routerNativeFee + bridgeNativeFee; required cross-chain. */
   maxNativeFee?: bigint
+  /**
+   * Exact-out only: upper bound on the calldata's source amount, from the caller's
+   * `maxFromTokenAmount`. Mutually exclusive with {@link requestedAmountIn}, which
+   * demands exact equality; see `assertSourceAmountIn`.
+   */
+  maxAmountIn?: bigint
 }
 
 export function validateSwapTransactions (
@@ -97,14 +103,74 @@ export function validateSwapTransactions (
   // Executing multiple individually-valid Router txs would multiply native/ERC-20
   // spend while only the first hash and one quote are returned, so reject them.
   // (The adapter path may legitimately return multiple txs, e.g. BTC.)
+  //
+  // Butter documents `/swap` as returning "one or more" transactions, so this is a
+  // deliberate narrowing rather than a contract violation on their side. Describe
+  // each transaction in the error: if this ever fires, whether it is "one Router
+  // call plus an approval" or "two Router calls" decides what to do about it, and
+  // a bare count answers neither.
   if (context.requireRouterAllowlist && transactions.length > 1) {
     throw new ButterTransactionValidationError(
       'Butter /swap returned multiple transactions for a single EVM Router execution',
-      { count: transactions.length }
+      { count: transactions.length, transactions: transactions.map(describeSwapTransaction) }
     )
   }
 
   return transactions.map((tx) => validateSwapTransaction(tx, context))
+}
+
+/**
+ * Validates the calldata's source amount and returns what is actually being spent.
+ *
+ * Exact-in: the caller named the input, so the calldata must match it **exactly**.
+ *
+ * Exact-out: the caller named the *output*, so the required input is not knowable
+ * up front and can only be bounded. It is bounded by `maxAmountIn`, which comes
+ * from the caller — deliberately not by `route.srcChain.totalAmountIn`, which is
+ * Butter-reported and would let the response validate itself. This is the one
+ * place the source-amount check is an inequality, and it must stay confined to the
+ * exact-out branch.
+ */
+function assertSourceAmountIn (amount: bigint, context: SwapValidationContext): bigint {
+  if (context.maxAmountIn != null) {
+    if (amount > context.maxAmountIn) {
+      throw new ButterTransactionValidationError('Butter Router source amount exceeds maxFromTokenAmount', {
+        maxFromTokenAmount: context.maxAmountIn.toString(),
+        actual: amount.toString()
+      })
+    }
+    return amount
+  }
+  if (context.requestedAmountIn == null) {
+    throw new ButterTransactionValidationError('Butter /swap cannot be validated without the quoted input amount')
+  }
+  if (amount !== context.requestedAmountIn) {
+    throw new ButterTransactionValidationError('Butter Router source amount does not match quote', {
+      expected: context.requestedAmountIn.toString(),
+      actual: amount.toString()
+    })
+  }
+  return amount
+}
+
+/**
+ * Summarizes an unvalidated `/swap` entry for an error report.
+ *
+ * Runs on untrusted input that has failed no check yet, so every field is read
+ * defensively — this must never throw and mask the error it is describing.
+ */
+function describeSwapTransaction (value: unknown, index: number): Record<string, unknown> {
+  if (value == null || typeof value !== 'object') return { index, shape: typeof value }
+  const tx = value as { to?: unknown, chainId?: unknown, value?: unknown, data?: unknown }
+  return {
+    index,
+    to: typeof tx.to === 'string' ? tx.to : undefined,
+    chainId: typeof tx.chainId === 'string' || typeof tx.chainId === 'number' ? String(tx.chainId) : undefined,
+    value: typeof tx.value === 'string' || typeof tx.value === 'number' ? String(tx.value) : undefined,
+    // `undefined` here means "not a recognized Router call" — an ERC-20 approve,
+    // for instance, which is exactly the distinction worth surfacing.
+    method: typeof tx.data === 'string' ? routerFunctionName(tx.data) : undefined
+  }
 }
 
 export function validateSwapTransaction (
@@ -176,12 +242,7 @@ function validateEvmRouterTransaction (
   const [, initiator, srcToken, amount, encodedSwap, functionData, permitData, feeData] = args
   assertAddressEqual(initiator, context.sender, 'Butter Router initiator does not match sender')
   assertTokenEqual(srcToken, context.sourceToken, 'Butter Router source token does not match quote')
-  if (context.requestedAmountIn == null || amount !== context.requestedAmountIn) {
-    throw new ButterTransactionValidationError('Butter Router source amount does not match quote', {
-      expected: context.requestedAmountIn?.toString(),
-      actual: amount.toString()
-    })
-  }
+  const effectiveAmountIn = assertSourceAmountIn(amount, context)
   if (permitData !== '0x') {
     throw new ButterTransactionValidationError('Butter Router permit data is not supported')
   }
@@ -219,11 +280,11 @@ function validateEvmRouterTransaction (
   // one exact sum: `/route` formats the router fee as a decimal string while
   // `/swap` returns tx.value as a hex integer, so a sub-wei formatting artifact in
   // that round-trip would otherwise reject a perfectly good transaction.
-  if (context.requestedAmountIn == null) {
-    throw new ButterTransactionValidationError('Butter /swap cannot be validated without the quoted input amount')
-  }
   const routerNativeFee = context.routerNativeFee ?? 0n
-  const inputPart = context.nativeSource ? context.requestedAmountIn : 0n
+  // Exact-out uses the amount the calldata actually spends (already bounded above
+  // by maxFromTokenAmount) rather than the cap itself: a route needing less than
+  // the cap is the normal case, and requiring the full cap would reject it.
+  const inputPart = context.nativeSource ? effectiveAmountIn : 0n
   // The input half is a hard lower bound: anything less would under-fund the swap.
   if (nativeValue < inputPart) {
     throw new ButterTransactionValidationError('Butter /swap native value is below the quoted native input', {

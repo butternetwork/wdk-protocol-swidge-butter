@@ -39,6 +39,12 @@ export declare function executeEvmSwap(context: {
     options: SwidgeOptions;
     sourceChainId: string;
     nativeSource: boolean;
+    /**
+     * Exact ERC-20 allowance to grant the router, in source-token base units. The
+     * caller resolves it because exact-out has no `fromTokenAmount` to read — it is
+     * the caller's `maxFromTokenAmount` bound there, and the exact input for exact-in.
+     */
+    approvalAmount: bigint;
 }): Promise<{
     transactions: Array<{
         hash: string;

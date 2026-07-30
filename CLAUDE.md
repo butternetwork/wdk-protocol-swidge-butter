@@ -199,8 +199,19 @@ Everything else is a focused collaborator it composes:
   approval receipts. The `walletClient.account.address` is validated against the WDK account (no signer/
   initiator/allowance-owner split). There is no raw `evm.sendTransaction` and no `approvalAmount: 'max'`.
   The dual requirement merges only if WDK extends `Transaction` with `data`.
-- **Exact-in only**: exact-out (`toTokenAmount`) is rejected before any network request
-  (`ButterExactOutUnsupportedError`); this also governs the WDK base-class `swap()` delegation path.
+- **Exact-out quotes freely, executes only under a cap**: `quoteSwidge` accepts
+  `toTokenAmount` unconditionally (a quote binds nothing), but `swidge` **fails closed** without
+  `options.maxFromTokenAmount` (`ButterConfigurationError`). WDK's exact-out options name the output
+  and carry no input cap, so that value is the only caller-supplied bound on the source spend — the
+  alternative would be trusting `route.srcChain.totalAmountIn`, i.e. the response validating itself.
+  The cap replaces `requestedAmountIn` in three places: the calldata source-amount check becomes
+  `amount <= cap` (`swap-data.ts: assertSourceAmountIn` — the **only** inequality there, and it must
+  stay inside the exact-out branch), the ERC20 approval is set to it, and `fees.ts: sourceDenominator`
+  uses `min(cap, route-reported input)`. The `tx.value` native-input lower bound uses the validated
+  calldata amount, not the cap, since needing less than the cap is normal; total native spend stays
+  bounded by `cap + maxNativeFee`. Legacy `swap()` cannot carry the cap, so exact-out **execution** is
+  unreachable through it by construction (quoting works). `ButterExactOutUnsupportedError` is
+  `@deprecated` and no longer thrown, but stays exported.
 - **Fail closed on unvaluable fees**: if a configured fee cap can't be evaluated (missing USD
   metadata, zero gas fee, etc.), throw `ButterFeeValuationError` rather than skipping the check.
 - **Conservative status**: an unrecognized Butter state maps to `pending`, never a false terminal;

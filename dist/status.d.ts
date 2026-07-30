@@ -1,4 +1,4 @@
-import type { EvmTransactionReceipt, SwidgeStatusResult } from './types.js';
+import type { ButterSwidgeStatusOptions, EvmTransactionReceipt, SwidgeStatusResult } from './types.js';
 /**
  * Maps an on-chain receipt to a SwidgeStatus for same-chain swaps, which do not
  * produce a Butter cross-chain record. A missing receipt means the tx is not
@@ -14,9 +14,5 @@ export declare function mapReceiptStatus(id: string, receipt: EvmTransactionRece
  * rather than treating an uninterpretable receipt as success.
  */
 export declare function classifyReceiptStatus(receipt: EvmTransactionReceipt | null | undefined): 'success' | 'reverted' | 'unknown';
-export declare function mapStatusResponse(id: string, data: unknown, hints?: {
-    fromChain?: string | number;
-    toChain?: string | number;
-    byOrderId?: boolean;
-}): SwidgeStatusResult;
+export declare function mapStatusResponse(id: string, data: unknown, hints?: ButterSwidgeStatusOptions): SwidgeStatusResult;
 //# sourceMappingURL=status.d.ts.map

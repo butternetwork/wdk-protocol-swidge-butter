@@ -27,6 +27,18 @@ export declare class ButterActionRequiredError extends Error {
 export declare class ButterFeeValuationError extends ButterApiError {
     constructor(message: string, details?: unknown);
 }
+/**
+ * Indicates that Butter has no route for the requested pair — either an explicit
+ * `errno 2003` ("No Route Found", which Butter returns with HTTP 200) or a response
+ * whose candidates all report no liquidity.
+ *
+ * Distinguished from a plain {@link ButterApiError} because "this pair is not
+ * routable right now" is a normal, retryable outcome a caller may want to surface
+ * to a user, whereas a bad parameter or a rejected API key is not.
+ */
+export declare class ButterNoRouteError extends ButterApiError {
+    constructor(message: string, details?: unknown);
+}
 /** Indicates that a configured WDK network or protocol fee cap was exceeded. */
 export declare class ButterFeeLimitExceededError extends ButterActionRequiredError {
     constructor(feeType: 'network' | 'protocol', actualBps: bigint, maximumBps: bigint);
@@ -60,7 +72,13 @@ export declare class ButterPartialExecutionError extends ButterActionRequiredErr
 export declare class ButterReadOnlyAccountError extends ButterConfigurationError {
     constructor(message?: string);
 }
-/** Indicates use of exact-out, which Butter Router does not currently support. */
+/**
+ * @deprecated No longer thrown. Exact-out is supported: `quoteSwidge` accepts it
+ * unconditionally, and `swidge` requires `options.maxFromTokenAmount` — whose
+ * absence raises `ButterConfigurationError`, matching the cross-chain
+ * `maxNativeFee` requirement. Still exported so existing `catch` clauses and
+ * imports keep compiling; it will be removed in a future major.
+ */
 export declare class ButterExactOutUnsupportedError extends ButterUnsupportedError {
     constructor();
 }
