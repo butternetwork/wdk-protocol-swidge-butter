@@ -300,7 +300,7 @@ function validateFeeData(feeData, context) {
     }
 }
 /** True when the route's integrator fee config charges a non-zero fee. */
-function feeConfigChargesFee(config) {
+export function feeConfigChargesFee(config) {
     if (!config)
         return false;
     try {

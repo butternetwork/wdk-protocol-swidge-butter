@@ -26,6 +26,7 @@ import {
   ButterActionRequiredError,
   ButterApiError,
   ButterConfigurationError,
+  ButterExactOutUnsupportedError,
   ButterNoRouteError
 } from './errors.js'
 import { assertBaseUnitAmount, formatTokenAmount, parseTokenAmount } from './amounts.js'
@@ -182,13 +183,13 @@ export class RouteManager {
     if (isSolanaSource && toChainId === SOLANA_CHAIN_ID && !this.context.referrer) {
       throw new ButterConfigurationError('Butter requires a referrer for Solana same-chain routes; set config.referrer')
     }
-    // Exactly one of the two amounts is present (assertQuoteOptions). Butter's
-    // `amount` is denominated in whichever side the caller pinned, so exact-out
-    // formats it with the *destination* token's decimals.
-    const exactIn = 'fromTokenAmount' in options && options.fromTokenAmount != null
-    const amount = exactIn
-      ? formatTokenAmount(options.fromTokenAmount as number | bigint, await this.decimalsFor(options.fromToken))
-      : formatTokenAmount(options.toTokenAmount as number | bigint, await this.decimalsFor(options.toToken))
+    // Exact-in only: `assertQuoteOptions` rejects exact-out before any request
+    // reaches here (see the errno 2000 note there). Butter documents `amount` as
+    // "amount of source token", which is what this sends.
+    if (!('fromTokenAmount' in options) || options.fromTokenAmount == null) {
+      throw new ButterExactOutUnsupportedError()
+    }
+    const amount = formatTokenAmount(options.fromTokenAmount, await this.decimalsFor(options.fromToken))
     const strictChain = this.context.strictSlippageChainIds.has(this.context.sourceChainId) || this.context.strictSlippageChainIds.has(toChainId)
     const slippage = toButterSlippage(options.slippage, {
       crossChain: toChainId !== this.context.sourceChainId,
@@ -203,7 +204,7 @@ export class RouteManager {
       amount,
       tokenInAddress: options.fromToken,
       tokenOutAddress: options.toToken,
-      type: exactIn ? 'exactIn' : 'exactOut',
+      type: 'exactIn',
       slippage,
       // Only Solana needs the sender-derived fallback; other chains keep the
       // explicit recipient (possibly undefined) so the cache key stays stable.

@@ -44,6 +44,48 @@ Use it to confirm that `b_data` really is
 Butter's router-interface documentation states. `layoutConfirmed` in the output
 reports the verdict per transaction.
 
+## Check whether Butter accepts exact-out
+
+```sh
+npm run example:probe-exact-out
+```
+
+Read-only, no funded account, nothing signed. Sends the same `/route` request twice
+— once as `exactIn` (the control) and once as `exactOut` — and prints both verdicts.
+
+This package rejects exact-out with `ButterExactOutUnsupportedError` because the
+default production endpoint has answered `errno 2000` ("Parameter error") for it
+while the identical `exactIn` request succeeds, and because `/route` documents
+`amount` only as *"amount of source token"*, leaving the exactOut denomination
+unspecified. Run this to re-check both against the live API. If it reports exactOut
+accepted, compare `amount` with the echoed `totalAmountIn` / `totalAmountOut` to
+settle which side it denominates before re-enabling anything.
+
+Override the probe with `PROBE_FROM_CHAIN`, `PROBE_TO_CHAIN`, `PROBE_TOKEN_IN`,
+`PROBE_TOKEN_OUT`, `PROBE_AMOUNT`, `PROBE_SLIPPAGE`.
+
+## Inspect Butter's fee model
+
+```sh
+npm run example:probe-fee-model
+```
+
+Read-only, no funded account. Prints a live route's `bridgeFee` — the top-level
+`amount` alongside `in`, `out`, and `affiliate` — plus `feeConfig` and `swapFee`.
+
+It answers one question the documentation leaves open: whether `bridgeFee.amount` is
+the **sum** of `in` and `out` or merely a restatement of `out`. This is not a release
+gate — `mapRouteFees` prices the components and ignores the summary, which cannot
+under-report under either reading — but settling it lets the summary fallback be
+removed, and shows whether Butter ever charges on both sides in different tokens.
+
+Defaults to a cross-chain pair, since a same-chain route has no bridge leg and so no
+bridge fee to look at. Set `PROBE_AFFILIATE=<nickname>:<rate>` to make Butter
+populate a non-zero `feeConfig`, which the protocol fee cap now values directly
+(`feeType: 1` → `rateOrNativeFee` in bps of the input; `feeType: 0` → source-chain
+native base units). Other overrides: `PROBE_FROM_CHAIN`, `PROBE_TO_CHAIN`,
+`PROBE_TOKEN_IN`, `PROBE_TOKEN_OUT`, `PROBE_AMOUNT`, `PROBE_SLIPPAGE`.
+
 ## Request an exact-in quote
 
 ```sh

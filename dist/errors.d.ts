@@ -73,11 +73,14 @@ export declare class ButterReadOnlyAccountError extends ButterConfigurationError
     constructor(message?: string);
 }
 /**
- * @deprecated No longer thrown. Exact-out is supported: `quoteSwidge` accepts it
- * unconditionally, and `swidge` requires `options.maxFromTokenAmount` — whose
- * absence raises `ButterConfigurationError`, matching the cross-chain
- * `maxNativeFee` requirement. Still exported so existing `catch` clauses and
- * imports keep compiling; it will be removed in a future major.
+ * Indicates an exact-out request (`toTokenAmount`), which is rejected before any
+ * network request.
+ *
+ * Butter's `/route` documents `type: exactOut`, but the default production endpoint
+ * rejects it with `errno 2000` ("Parameter error"), and the same document describes
+ * `amount` only as "amount of source token" with no exactOut variant — leaving even
+ * the denomination to send unspecified. Both conditions are re-checkable against the
+ * live API via `npm run example:probe-exact-out`.
  */
 export declare class ButterExactOutUnsupportedError extends ButterUnsupportedError {
     constructor();

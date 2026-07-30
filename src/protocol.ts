@@ -47,6 +47,7 @@ import {
   ButterActionRequiredError,
   ButterApiError,
   ButterConfigurationError,
+  ButterExactOutUnsupportedError,
   ButterPartialExecutionError,
   ButterReadOnlyAccountError,
   ButterUnsupportedError
@@ -85,6 +86,8 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
   private readonly routerRegistry: ButterRouterRegistry
   private readonly feeContext: FeeContext
   private readonly maxNativeFee: bigint | undefined
+  /** Caller-supplied EVM chain ids, normalized, for the address-family check. */
+  private readonly evmChainIds: ReadonlySet<string>
   // Remembers whether an executed operation was same- or cross-chain, keyed by
   // source hash, so getSwidgeStatus can route correctly when the caller omits
   // the optional fromChain/toChain hints. Instance-scoped (like the route cache).
@@ -115,6 +118,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
     this.account = account
     this.config = config
     this.maxNativeFee = maxNativeFee
+    this.evmChainIds = new Set((config.evmChainIds ?? []).map((id) => String(id)))
     this.sourceChainId = String(config.sourceChainId)
     this.routerRegistry = createRouterRegistry(config.routerContracts)
     this.feeContext = {
@@ -204,10 +208,16 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
     // would send it anyway. Enforced only here, never in quoteSwidge: quoting
     // without a recipient is the normal way to ask a price.
     const destinationChainId = String(options.toChain ?? this.sourceChainId)
-    const sourceFamily = addressFamilyForChain(this.sourceChainId)
-    const destinationFamily = addressFamilyForChain(destinationChainId)
-    if (options.recipient == null && sourceFamily !== destinationFamily) {
-      throw new ButterActionRequiredError('Butter requires an explicit recipient when the destination chain uses a different address format than the source', {
+    const sourceFamily = addressFamilyForChain(this.sourceChainId, this.evmChainIds)
+    const destinationFamily = addressFamilyForChain(destinationChainId, this.evmChainIds)
+    // An `unknown` family on either side also requires an explicit recipient, and
+    // must not be allowed to "match" the other side: two unknowns are not evidence
+    // of a shared address format. Butter adds chains without this package being
+    // republished, so an unrecognized destination is exactly where a silently
+    // reused `0x` sender would land somewhere unspendable.
+    const unknownFamily = sourceFamily === 'unknown' || destinationFamily === 'unknown'
+    if (options.recipient == null && (unknownFamily || sourceFamily !== destinationFamily)) {
+      throw new ButterActionRequiredError('Butter requires an explicit recipient when the destination chain uses a different or unrecognized address format', {
         sourceChainId: this.sourceChainId,
         sourceFamily,
         destinationChainId,
@@ -221,14 +231,9 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
       ? await this.routes.consumeRouteByHash(pinnedHash, options, sender)
       : await this.routes.getRoute(options, { forExecution: true, senderFallback: sender })
     this.routes.enforceMinAmountOut(options, cached.route)
-    // assertQuoteOptions guarantees exactly one of the two amounts is present.
-    // Exact-in pins the input exactly; exact-out can only bound it, and fails
-    // closed without the caller's cap.
-    const exactIn = 'fromTokenAmount' in options && options.fromTokenAmount != null
-    const amountBound: { requestedAmountIn: bigint } | { maxAmountIn: bigint } = exactIn
-      ? { requestedAmountIn: BigInt(options.fromTokenAmount as number | bigint) }
-      : { maxAmountIn: this.resolveMaxFromTokenAmount(options) }
-    const feeContext: FeeContext = { ...this.feeContextFor(options.fromToken), ...amountBound }
+    // assertQuoteOptions guarantees a valid, positive exact-in amount.
+    const requestedAmountIn = BigInt(options.fromTokenAmount as number | bigint)
+    const feeContext: FeeContext = { ...this.feeContextFor(options.fromToken), requestedAmountIn }
     enforceFeeLimits(cached.route, feeContext, resolveFeeLimits(this.config, config))
     const quote = routeToQuote(cached.route, this.now, cached.expiresAt, feeContext, options.fromTokenAmount)
     const swapData = await this.http.router<ButterSwapTx[]>('/swap', {
@@ -254,9 +259,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
       // Butter's own default in place and the nested payload undecoded.
       ...(options.refundAddress ? { refundAddress: options.refundAddress } : {}),
       routerNativeFee: routeNativeFee(cached.route, feeContext),
-      // Exactly one of requestedAmountIn / maxAmountIn — the first demands an exact
-      // calldata match, the second only an upper bound (see assertSourceAmountIn).
-      ...amountBound,
+      requestedAmountIn,
       ...(maxNativeFee != null ? { maxNativeFee } : {}),
       ...(cached.route.feeConfig ? { feeConfig: cached.route.feeConfig } : {})
     }
@@ -280,12 +283,9 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
             options,
             sourceChainId: this.sourceChainId,
             nativeSource,
-            // Exact-in approves the exact input; exact-out approves the caller's
-            // cap, since the required input is only known once the router runs.
-            // Either way the allowance is a caller-chosen bound, never Butter's.
-            approvalAmount: 'requestedAmountIn' in amountBound
-              ? amountBound.requestedAmountIn
-              : amountBound.maxAmountIn
+            // Exact-in: the caller's own input, which the calldata was validated to
+            // equal exactly. A caller-chosen bound, never Butter's.
+            approvalAmount: requestedAmountIn
           })
           transactions.push(...executed.transactions)
           feeParts.push(executed.gasFee)
@@ -506,29 +506,19 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
     }
     const hasInput = 'fromTokenAmount' in options && options.fromTokenAmount != null
     const hasOutput = 'toTokenAmount' in options && options.toTokenAmount != null
-    // WDK: "Exact in mode requires fromTokenAmount. Exact out mode requires
-    // toTokenAmount. Not both."
+    // Exact-out is rejected before any network request. Butter's `/route` documents
+    // `type: exactOut`, but the default production endpoint rejects it with
+    // errno 2000 ("Parameter error"), and the docs describe `amount` only as
+    // "amount of source token" with no exactOut variant — so even the denomination
+    // to send is unspecified. Advertising it would be advertising a feature that
+    // does not work. `npm run example:probe-exact-out` re-checks both against the
+    // live API; the execution-side plumbing (maxAmountIn / assertSourceAmountIn) is
+    // retained and tested, so re-enabling is a small change once Butter confirms.
+    if (hasOutput) throw new ButterExactOutUnsupportedError()
     if (hasInput === hasOutput) {
-      throw new ButterUnsupportedError('exactly one of fromTokenAmount (exact-in) or toTokenAmount (exact-out) is required')
+      throw new ButterUnsupportedError('fromTokenAmount is required')
     }
-    if (hasInput) assertBaseUnitAmount(options.fromTokenAmount, 'fromTokenAmount')
-    else assertBaseUnitAmount(options.toTokenAmount, 'toTokenAmount')
-  }
-
-  /**
-   * Resolves the source-spend bound for an exact-out execution.
-   *
-   * Fails closed, like the cross-chain `maxNativeFee` requirement: exact-out names
-   * the output, so without this the only value bounding the source spend would be
-   * Butter's own `srcChain.totalAmountIn` — the response validating itself.
-   */
-  private resolveMaxFromTokenAmount (options: ButterSwidgeOptions): bigint {
-    if (options.maxFromTokenAmount == null) {
-      throw new ButterConfigurationError(
-        'Butter exact-out execution requires maxFromTokenAmount to bound the source amount; quoteSwidge needs no cap'
-      )
-    }
-    return assertBaseUnitAmount(options.maxFromTokenAmount, 'maxFromTokenAmount')
+    assertBaseUnitAmount(options.fromTokenAmount, 'fromTokenAmount')
   }
 
   private isBuiltInEvmExecution (): boolean {

@@ -88,6 +88,9 @@ export function parseIntegerAmount(value) {
 export function assertBaseUnitAmount(value, field, options = {}) {
     if (value == null)
         throw new ButterUnsupportedError(`${field} is required as an integer in base units`);
+    if (typeof value === 'number' && !Number.isInteger(value)) {
+        throw new ButterUnsupportedError(`${field} must be a whole number of base units, not a fraction`);
+    }
     if (typeof value === 'number' && !Number.isSafeInteger(value)) {
         throw new ButterUnsupportedError(`${field} must use bigint base units when it exceeds safe integer precision`);
     }

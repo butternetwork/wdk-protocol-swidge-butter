@@ -30,6 +30,8 @@
     "lint": "npm run typecheck",
     "example:decode-swap-data": "npm run build --silent && node --env-file-if-exists=examples/.env --import tsx examples/decode-swap-data.ts",
     "example:discover": "npm run build --silent && node --env-file-if-exists=examples/.env --import tsx examples/discover.ts",
+    "example:probe-exact-out": "npm run build --silent && node --env-file-if-exists=examples/.env --import tsx examples/probe-exact-out.ts",
+    "example:probe-fee-model": "npm run build --silent && node --env-file-if-exists=examples/.env --import tsx examples/probe-fee-model.ts",
     "example:quote": "npm run build --silent && node --env-file-if-exists=examples/.env --import tsx examples/quote.ts",
     "example:status": "npm run build --silent && node --env-file-if-exists=examples/.env --import tsx examples/status.ts",
     "example:swap": "npm run build --silent && node --env-file-if-exists=examples/.env --import tsx examples/swap.ts",

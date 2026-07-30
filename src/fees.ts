@@ -14,6 +14,7 @@
 
 import { NATIVE_TOKEN_ADDRESSES, SOLANA_CHAIN_ID, BTC_CHAIN_ID, TRON_CHAIN_ID } from './constants.js'
 import { parseTokenAmount } from './amounts.js'
+import { feeConfigChargesFee } from './swap-data.js'
 import {
   ButterApiError,
   ButterConfigurationError,
@@ -22,6 +23,7 @@ import {
 } from './errors.js'
 import type {
   ButterBridgeFee,
+  ButterFeePart,
   ButterRoute,
   ButterRouteToken,
   ButterWarning,
@@ -111,15 +113,14 @@ export function mapRouteFees (route: ButterRoute, context: FeeContext): SwidgeFe
   const sourceToken = route.srcChain?.tokenIn
   const nativeDecimals = nativeDecimalsForChain(context.sourceChainId, context.nativeTokenDecimals)
 
-  if (isNonZero(route.bridgeFee?.amount)) {
-    const token = bridgeFeeToken(route)
+  for (const component of bridgeFeeComponents(route)) {
     fees.push({
       type: 'protocol',
-      amount: parseTokenAmount(route.bridgeFee?.amount, requiredDecimals(token, 'bridge fee'), DISPLAY_ROUNDING),
-      token: requiredTokenId(route.bridgeFee?.address ?? token?.address ?? route.bridgeFee?.symbol ?? token?.symbol, 'bridge fee'),
+      amount: parseTokenAmount(component.amount, component.decimals, DISPLAY_ROUNDING),
+      token: component.token,
       chain: route.bridgeFee?.chainId,
       included: true,
-      description: 'Butter bridge fee'
+      description: component.description
     })
   }
   if (isNonZero(route.bridgeFee?.affiliate?.amount)) {
@@ -187,7 +188,11 @@ function reportFeeCaveats (fees: SwidgeFee[], context: FeeContext): SwidgeFee[] 
     return [{
       type: 'network',
       amount: 0n,
-      token: nativeTokenId(context) ?? context.sourceToken,
+      // A `network` fee is gas, which is always paid in the chain's native token —
+      // never in the input token. `nativeTokenId` only answers when the source token
+      // IS native, so fall back to the generic 'native' identifier (recognized in
+      // NATIVE_TOKEN_ADDRESSES) rather than mislabelling gas as e.g. USDC.
+      token: nativeTokenId(context) ?? 'native',
       chain: context.sourceChainId,
       included: false,
       description: 'Butter reported no fees for this route'
@@ -235,7 +240,14 @@ export function enforceFeeLimits (
 }
 
 function networkFeeRatios (route: ButterRoute, context: FeeContext): Ratio[] {
-  if (!isNonZero(route.gasFee?.amount)) return []
+  // Absent is NOT zero. An unreported gas fee cannot be valued, so a configured cap
+  // must fail closed rather than score it as free — otherwise omitting the metadata
+  // is enough to pass any limit. An explicit zero is a real answer and passes.
+  // Only reached when a cap is configured (see enforceFeeLimits).
+  if (route.gasFee?.amount == null) {
+    throw new ButterFeeValuationError('Cannot enforce the Butter network fee cap: the route reports no gas fee amount')
+  }
+  if (!isNonZero(route.gasFee.amount)) return []
   const nativeDecimals = nativeDecimalsForChain(context.sourceChainId, context.nativeTokenDecimals)
   const gasAmount = parseTokenAmount(route.gasFee?.amount, nativeDecimals)
   if (isNativeSource(context.sourceToken)) {
@@ -250,15 +262,40 @@ function protocolFeeRatios (route: ButterRoute, context: FeeContext): Ratio[] {
   const sourceToken = route.srcChain?.tokenIn
   const sourceDecimals = requiredDecimals(sourceToken, 'source token')
   const nativeDecimals = nativeDecimalsForChain(context.sourceChainId, context.nativeTokenDecimals)
-
-  if (isNonZero(route.swapFee?.tokenFee)) {
-    ratios.push({
-      numerator: parseTokenAmount(route.swapFee?.tokenFee, sourceDecimals),
-      denominator: sourceDenominator(context, route, sourceDecimals)
-    })
+  // A cross-chain route always carries a bridge fee (route.ts rejects a cross-chain
+  // response without dstChain, so its presence is the reliable cross-chain signal).
+  // Absent is not zero: scoring an unreported bridge fee as free would let omitted
+  // metadata pass any cap. An explicit zero in any of the three places is a real
+  // answer and passes.
+  const bridgeFee = route.bridgeFee
+  const reportsBridgeFee = bridgeFee?.amount != null || bridgeFee?.in?.amount != null || bridgeFee?.out?.amount != null
+  if (route.dstChain != null && !reportsBridgeFee) {
+    throw new ButterFeeValuationError('Cannot enforce the Butter protocol fee cap: the cross-chain route reports no bridge fee amount')
   }
-  if (isNonZero(route.swapFee?.nativeFee)) {
-    const nativeFee = parseTokenAmount(route.swapFee?.nativeFee, nativeDecimals)
+
+  // The integrator fee appears twice: `swapFee` reports it, and `feeConfig` encodes
+  // it for the calldata. Only `feeConfig` is verified against what the Router will
+  // actually charge (`swap-data.ts: validateFeeData`), so counting `swapFee` alone
+  // let a route declare a fat `feeConfig`, omit `swapFee`, pass any cap, and then
+  // execute calldata carrying the fee. They are taken as two views of ONE fee — the
+  // larger wins rather than being summed, which neither double-counts when they
+  // agree nor lets the under-reported one decide when they do not.
+  const integratorRate = feeConfigRateRatio(route, context)
+  const tokenFeeRatio = isNonZero(route.swapFee?.tokenFee)
+    ? {
+        numerator: parseTokenAmount(route.swapFee?.tokenFee, sourceDecimals),
+        denominator: sourceDenominator(context, route, sourceDecimals)
+      }
+    : undefined
+  const proportional = largerRatio(tokenFeeRatio, integratorRate)
+  if (proportional) ratios.push(proportional)
+
+  const feeConfigNative = feeConfigNativeAmount(route)
+  if (isNonZero(route.swapFee?.nativeFee) || feeConfigNative != null) {
+    // Same pairing on the native side: feeType 0 is a fixed native fee, which is
+    // what `swapFee.nativeFee` reports.
+    const reported = parseTokenAmount(route.swapFee?.nativeFee, nativeDecimals)
+    const nativeFee = feeConfigNative != null && feeConfigNative > reported ? feeConfigNative : reported
     if (isNativeSource(context.sourceToken)) {
       ratios.push({ numerator: nativeFee, denominator: sourceDenominator(context, route, nativeDecimals) })
     } else {
@@ -269,26 +306,161 @@ function protocolFeeRatios (route: ButterRoute, context: FeeContext): Ratio[] {
       ratios.push({ numerator: nativeFee * gasUsd, denominator: gasAmount * inputUsd })
     }
   }
-  if (isNonZero(route.bridgeFee?.amount)) {
-    ratios.push(bridgeFeeRatio(route))
+  for (const component of bridgeFeeComponents(route)) {
+    ratios.push(bridgeFeeComponentRatio(component, route, context))
   }
   return ratios
 }
 
-function bridgeFeeRatio (route: ButterRoute): Ratio {
+/** Butter's proportional integrator fee type; `rateOrNativeFee` is then in bps. */
+const FEE_TYPE_PROPORTION = 1
+/** Butter's fixed integrator fee type; `rateOrNativeFee` is then source-chain wei. */
+const FEE_TYPE_FIXED_NATIVE = 0
+
+/**
+ * Values a **proportional** integrator fee (`feeType: 1`) as a fraction of the input.
+ *
+ * `rateOrNativeFee` is in basis points of the input amount, so the ratio is simply
+ * `rate / 10000` — it depends on no Butter-reported amount at all, which makes this
+ * the one fee check in the module that requires zero trust in the route.
+ *
+ * Returns `undefined` when the config charges nothing or is a fixed-native fee
+ * (handled separately). Fails closed on a `feeType` this package does not model:
+ * an unrecognized encoding could charge anything.
+ */
+function feeConfigRateRatio (route: ButterRoute, context: FeeContext): Ratio | undefined {
+  const config = route.feeConfig
+  if (!feeConfigChargesFee(config)) return undefined
+  const feeType = Number(config?.feeType)
+  if (!Number.isInteger(feeType) || (feeType !== FEE_TYPE_PROPORTION && feeType !== FEE_TYPE_FIXED_NATIVE)) {
+    throw new ButterFeeValuationError('Cannot value the Butter integrator fee: unrecognized feeConfig feeType', {
+      feeType: config?.feeType
+    })
+  }
+  if (feeType !== FEE_TYPE_PROPORTION) return undefined
+  if (!isNonZero(route.swapFee?.tokenFee)) {
+    context.onWarning?.({
+      code: 'undeclared-integrator-fee',
+      message: 'Butter feeConfig charges a proportional integrator fee that swapFee does not report; the quoted fees understate what the Router will take',
+      details: { feeConfig: config }
+    })
+  }
+  return { numerator: BigInt(config?.rateOrNativeFee ?? 0), denominator: BPS_DENOMINATOR }
+}
+
+/** Fixed native integrator fee (`feeType: 0`) in source-chain base units, if any. */
+function feeConfigNativeAmount (route: ButterRoute): bigint | undefined {
+  const config = route.feeConfig
+  if (!feeConfigChargesFee(config)) return undefined
+  if (Number(config?.feeType) !== FEE_TYPE_FIXED_NATIVE) return undefined
+  return BigInt(config?.rateOrNativeFee ?? 0)
+}
+
+/** Returns whichever ratio is larger, comparing by cross-multiplication. */
+function largerRatio (left: Ratio | undefined, right: Ratio | undefined): Ratio | undefined {
+  if (!left) return right
+  if (!right) return left
+  return left.numerator * right.denominator >= right.numerator * left.denominator ? left : right
+}
+
+/** One priced component of Butter's `bridgeFee`, carrying its OWN token. */
+interface BridgeFeeComponent {
+  amount: string
+  token: string
+  decimals: number
+  /** The route token this component is denominated in, for denominator matching. */
+  routeToken: ButterRouteToken | undefined
+  description: string
+}
+
+/**
+ * Resolves `bridgeFee` into its priced components.
+ *
+ * Butter reports a bridge fee as a top-level `{ amount, address, symbol }` summary
+ * plus `in` and `out` parts that each carry their own amount and token. The docs
+ * describe `in`/`out` only as "input/output token details" and never say whether
+ * the summary is their sum or a restatement of `out` — the published example has
+ * `in.amount: "0.0"`, so it cannot distinguish the two.
+ *
+ * Preferring the components is correct under either reading: if the summary is a
+ * sum, `in + out` equals it; if it only mirrors `out`, `in + out` is the more
+ * complete figure. It is never lower than the summary, so this cannot under-report
+ * while the ambiguity stands. The summary is used only when neither part exists.
+ *
+ * Each component keeps its own token rather than sharing one guessed for the whole
+ * fee: `in` and `out` can sit on different chains in different tokens, and folding
+ * them into a single entry forced a guess about which one to report.
+ */
+function bridgeFeeComponents (route: ButterRoute): BridgeFeeComponent[] {
+  const fee = route.bridgeFee
+  const parts: Array<{ part: ButterFeePart | undefined, label: string }> = [
+    { part: fee?.in, label: 'inbound' },
+    { part: fee?.out, label: 'outbound' }
+  ]
+  const components: BridgeFeeComponent[] = []
+  for (const { part, label } of parts) {
+    if (!isNonZero(part?.amount)) continue
+    components.push({
+      amount: part?.amount as string,
+      token: requiredTokenId(part?.token?.address ?? part?.token?.symbol, `${label} bridge fee`),
+      decimals: requiredDecimals(part?.token, `${label} bridge fee`),
+      routeToken: part?.token,
+      description: `Butter ${label} bridge fee`
+    })
+  }
+  if (components.length > 0) return components
+  if (!isNonZero(fee?.amount)) return []
+  // Neither part is present: fall back to the summary, resolving its token the way
+  // this always did.
   const token = bridgeFeeToken(route)
-  const decimals = requiredDecimals(token, 'bridge fee')
-  const numerator = parseTokenAmount(route.bridgeFee?.amount, decimals)
+  return [{
+    amount: fee?.amount as string,
+    token: requiredTokenId(fee?.address ?? token?.address ?? fee?.symbol ?? token?.symbol, 'bridge fee'),
+    decimals: requiredDecimals(token, 'bridge fee'),
+    routeToken: token,
+    description: 'Butter bridge fee'
+  }]
+}
+
+/**
+ * Values one bridge fee component against a denominator in its OWN token.
+ *
+ * When the component is charged in the SOURCE token the caller's own input is
+ * available and MUST be used: falling through to a route-reported amount reopens
+ * precisely the bypass `sourceDenominator` exists to close — inflate
+ * `srcChain.totalAmountIn` and any ratio can be pushed under a bps cap. A component
+ * in some other token has no caller-supplied amount to divide by, which is the
+ * documented trust concession; but it is matched strictly by token and **never**
+ * falls back to an amount denominated in a different currency, since dividing by
+ * the wrong currency produces a meaningless ratio.
+ */
+function bridgeFeeComponentRatio (component: BridgeFeeComponent, route: ButterRoute, context: FeeContext): Ratio {
+  const numerator = parseTokenAmount(component.amount, component.decimals)
+  if (tokenHasAddress(component.routeToken, context.sourceToken)) {
+    return { numerator, denominator: sourceDenominator(context, route, component.decimals) }
+  }
   const candidates: Array<{ token: ButterRouteToken | undefined, amount: string | undefined }> = [
     { token: route.bridgeChain?.tokenIn, amount: route.bridgeChain?.totalAmountIn },
+    { token: route.bridgeChain?.tokenOut, amount: route.bridgeChain?.totalAmountOut },
     { token: route.srcChain?.tokenOut, amount: route.srcChain?.totalAmountOut },
+    { token: route.dstChain?.tokenOut, amount: route.dstChain?.totalAmountOut },
     { token: route.srcChain?.tokenIn, amount: route.srcChain?.totalAmountIn }
   ]
-  const denominator = candidates.find((candidate) => sameToken(candidate.token, token) && candidate.amount != null)
+  const denominator = candidates.find((candidate) => sameToken(candidate.token, component.routeToken) && candidate.amount != null)
   if (!denominator?.amount) {
-    throw new ButterFeeValuationError('Cannot value Butter bridge fee against a matching route amount')
+    throw new ButterFeeValuationError('Cannot value a Butter bridge fee component against a route amount in the same token', {
+      token: component.token,
+      description: component.description
+    })
   }
-  return { numerator, denominator: parseTokenAmount(denominator.amount, decimals) }
+  return { numerator, denominator: parseTokenAmount(denominator.amount, component.decimals) }
+}
+
+/** True when a route token is the given address/identifier (case-insensitive). */
+function tokenHasAddress (token: ButterRouteToken | undefined, address: string): boolean {
+  const candidate = token?.address?.trim()
+  if (!candidate || !address.trim()) return false
+  return candidate.toLowerCase() === address.trim().toLowerCase()
 }
 
 function enforceLimit (type: 'network' | 'protocol', ratios: Ratio[], maximumBps: bigint): void {

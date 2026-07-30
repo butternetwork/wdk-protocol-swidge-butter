@@ -12,6 +12,8 @@ export declare class ButterSwidgeProtocol extends SwidgeProtocol {
     private readonly routerRegistry;
     private readonly feeContext;
     private readonly maxNativeFee;
+    /** Caller-supplied EVM chain ids, normalized, for the address-family check. */
+    private readonly evmChainIds;
     private readonly operationKinds;
     /** Creates a protocol instance bound to one source chain. */
     constructor(account: ButterAccount | undefined, config: ButterSwidgeProtocolConfig);
@@ -91,14 +93,6 @@ export declare class ButterSwidgeProtocol extends SwidgeProtocol {
      */
     getSupportedTokens(options?: SwidgeSupportedTokensOptions): Promise<SwidgeSupportedToken[]>;
     private assertQuoteOptions;
-    /**
-     * Resolves the source-spend bound for an exact-out execution.
-     *
-     * Fails closed, like the cross-chain `maxNativeFee` requirement: exact-out names
-     * the output, so without this the only value bounding the source spend would be
-     * Butter's own `srcChain.totalAmountIn` — the response validating itself.
-     */
-    private resolveMaxFromTokenAmount;
     private isBuiltInEvmExecution;
     private getSender;
     /** Resolves a sender address without throwing (used to default Solana recipient at quote time). */

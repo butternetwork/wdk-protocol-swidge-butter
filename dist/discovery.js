@@ -102,6 +102,9 @@ export class DiscoveryService {
         const tokens = [];
         let pageNo = 1;
         let count;
+        // Raw records consumed, before filtering — the only quantity comparable to
+        // Butter's advertised `count`.
+        let consumed = 0;
         const seen = new Set();
         const maxPages = 1000;
         while (true) {
@@ -115,16 +118,25 @@ export class DiscoveryService {
             const results = data.results ?? [];
             if (data.count != null)
                 count = data.count;
-            if (results.length === 0 && count != null && tokens.length < count) {
+            // Compare Butter's advertised `count` against RAW records consumed, never
+            // against `tokens.length`: entries are dropped below (unusable decimals,
+            // duplicates), so a filtered total can never reach `count`. Conflating the two
+            // made every one of these three checks misfire the moment a single token was
+            // dropped — the loop could not terminate, then threw on the final empty page.
+            if (results.length === 0 && count != null && consumed < count) {
                 throw new ButterApiError('Butter token pagination returned an empty page before the advertised count', {
                     pageNo,
                     count,
+                    consumed,
                     received: tokens.length
                 });
             }
             if (results.length === 0)
                 break;
-            let added = 0;
+            // A non-empty page is forward progress by definition, so no separate
+            // "made no progress" guard is needed: a page of nothing but duplicates or
+            // decimals-less tokens still advances `consumed`. `maxPages` bounds the loop.
+            consumed += results.length;
             for (const token of results.map((item) => tokenToSupportedToken(item, chainId))) {
                 // Fail closed per token: drop entries lacking a usable identifier or
                 // valid decimals rather than surfacing a placeholder ('' / 18).
@@ -135,13 +147,8 @@ export class DiscoveryService {
                     continue;
                 seen.add(key);
                 tokens.push(token);
-                added++;
             }
-            const moreExpected = count != null ? tokens.length < count : results.length >= 100;
-            if (added === 0 && moreExpected) {
-                throw new ButterApiError('Butter token pagination made no progress', { pageNo, count, received: tokens.length });
-            }
-            if (count != null ? tokens.length >= count : results.length < 100)
+            if (count != null ? consumed >= count : results.length < 100)
                 break;
             pageNo++;
         }
