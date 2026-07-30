@@ -1,4 +1,4 @@
-import type { ButterRoute, SwidgeFee, SwidgeProtocolConfig } from './types.js';
+import type { ButterRoute, ButterWarning, SwidgeFee, SwidgeProtocolConfig } from './types.js';
 /** Chain and token context required to parse Butter route fees. */
 export interface FeeContext {
     sourceChainId: string;
@@ -11,6 +11,14 @@ export interface FeeContext {
      * fee cap is enforced.
      */
     requestedAmountIn?: bigint;
+    /**
+     * Exact-out only: the caller's `maxFromTokenAmount`, used as the denominator's
+     * upper bound when {@link requestedAmountIn} cannot exist because the caller
+     * named the output instead of the input.
+     */
+    maxAmountIn?: bigint;
+    /** Receives non-fatal fee-mapping notices; see {@link ButterWarning}. */
+    onWarning?: (warning: ButterWarning) => void;
 }
 /** Effective WDK fee limits after constructor and per-call precedence. */
 export interface ResolvedFeeLimits {

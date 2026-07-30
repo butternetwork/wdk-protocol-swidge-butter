@@ -167,7 +167,7 @@ export async function executeEvmSwap(context) {
  */
 async function approveIfNeeded(context, record) {
     const publicClient = context.config.evm?.publicClient;
-    const amount = sourceAmountForApproval(context.options);
+    const amount = context.approvalAmount;
     if (publicClient) {
         const allowance = await publicClient.readContract({
             address: context.options.fromToken,
@@ -273,11 +273,6 @@ async function waitForApproval(context, hash) {
         await sleep(Math.min(APPROVAL_POLL_INTERVAL_MS, Math.max(deadline - Date.now(), 0)));
     }
     throw new ButterConfigurationError('Timed out waiting for the ERC20 approval to confirm', { hash, timeoutMs });
-}
-function sourceAmountForApproval(options) {
-    if ('fromTokenAmount' in options && options.fromTokenAmount != null)
-        return BigInt(options.fromTokenAmount);
-    throw new ButterConfigurationError('Butter exact-in amount is required for approval');
 }
 /**
  * Sends an EVM transaction (carrying `data`/`chainId`) via `evm.walletClient`.

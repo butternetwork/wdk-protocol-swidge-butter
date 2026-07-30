@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import { ButterApiError } from './errors.js'
-import type { EvmTransactionReceipt, SwidgeStatusResult } from './types.js'
+import type { ButterSwidgeStatusOptions, EvmTransactionReceipt, SwidgeStatusResult } from './types.js'
 
 /**
  * Maps an on-chain receipt to a SwidgeStatus for same-chain swaps, which do not
@@ -46,7 +46,7 @@ export function classifyReceiptStatus (receipt: EvmTransactionReceipt | null | u
   return 'unknown'
 }
 
-export function mapStatusResponse (id: string, data: unknown, hints: { fromChain?: string | number, toChain?: string | number, byOrderId?: boolean } = {}): SwidgeStatusResult {
+export function mapStatusResponse (id: string, data: unknown, hints: ButterSwidgeStatusOptions = {}): SwidgeStatusResult {
   // Tolerate either an object or a single-element array, and an optional `info`
   // envelope, since Butter's status response shape is not formally documented.
   let info = (data as { info?: unknown })?.info ?? data

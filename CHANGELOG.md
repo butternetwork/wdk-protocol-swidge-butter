@@ -138,6 +138,45 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
   before the filter, so dropping a chain never relaxes its slippage floor.
   `npm run example:discover` now reports which chains the filter dropped and
   which field each was missing, so the cost is measurable on live data.
+- Check the HTTP status **before** parsing the body. A failing gateway commonly
+  returns HTML, so parsing first threw a raw `SyntaxError` and lost both the status
+  code and this package's error typing on the single most common failure mode.
+  Non-2xx now raises `ButterApiError` with `{ status, body }` (body read as text and
+  truncated), and an unparseable 2xx body raises one too instead of escaping as a
+  `SyntaxError`.
+- Reject negative integer amounts in every input form. A `"-1"` string previously
+  passed `parseIntegerAmount` and only failed later in an equality comparison, which
+  pointed the error at the wrong cause. Also removed a dead branch that special-cased
+  a `0x` prefix `BigInt` already handles.
+- Validate caller-supplied base-unit amounts through one shared
+  `assertBaseUnitAmount`, so `minAmountOut` gets the guard `fromTokenAmount` already
+  had. An out-of-range `number` (WDK types these as `number | bigint`) previously
+  reached `BigInt()` and threw a raw `RangeError` naming neither the field nor this
+  package.
+- Round **reported** fee amounts down rather than rejecting extra decimals: a USDT
+  fee quoted to 7 places used to fail the whole quote over a formatting artifact,
+  and under-reporting a displayed fee by one base unit cannot harm the caller. The
+  cap-enforcement parses are deliberately left on `reject` (or `ceil` for a quoted
+  upper bound), where the rounding direction does matter.
+- Warn instead of silently misreporting when the legacy fee scalars are
+  meaningless. The new `onWarning` config receives
+  `mixed-currency-protocol-fees` when the `protocol` group spans several tokens, and
+  `no-fees-reported` when Butter reports none.
+- `fees[]` is never empty: a route with no reported fees yields a single
+  zero-amount `network` entry (the WDK guide requires a populated array, and an
+  empty one reads as "free" rather than "Butter told us nothing"). As a side effect,
+  a measured source gas fee now lands on that entry even when the route carried no
+  `gasFee` metadata, where it was previously dropped.
+- Describe each transaction when `/swap` returns more than one, instead of only a
+  count. The single-Router-transaction rule is unchanged, but the error now carries
+  `{ index, to, chainId, value, method }` per entry, so "one Router call plus an
+  approval" is distinguishable from "two Router calls" — which is what decides the
+  response. Butter documents `/swap` as returning one *or more*, so this narrowing
+  is deliberate and now explains itself.
+- Fall back to the next liquid route candidate. Butter returns candidates ordered
+  best-output-first; taking `[0]` unconditionally failed the entire request whenever
+  the top candidate happened to lack liquidity. Chain/token validation still runs on
+  whichever candidate is chosen.
 - Cross-chain routes must include a matching `dstChain` (a missing one is a
   same-chain path and is rejected).
 - The built-in EVM path executes exactly one Router transaction.
@@ -183,6 +222,25 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
   (`constants.ts: NON_EVM_CHAIN_FAMILIES`); unlisted chains are assumed EVM, so
   the table must be extended when Butter adds a non-EVM chain. `quoteSwidge` is
   unaffected and still prices a cross-VM route with no recipient.
+- Exact-out (`toTokenAmount`) is no longer rejected outright. `quoteSwidge` accepts
+  it unconditionally, and `swidge` requires the new `options.maxFromTokenAmount` —
+  raising `ButterConfigurationError` without it, the same fail-closed treatment as a
+  missing cross-chain `maxNativeFee`. WDK's exact-out options name the output and
+  carry no input cap, so that value is the only caller-supplied bound on the source
+  spend; the alternative would be trusting Butter's own `srcChain.totalAmountIn`,
+  i.e. letting the response validate itself. The cap is what the calldata's source
+  amount is checked against (`amount <= cap`), what the ERC-20 approval is set to,
+  and what bounds the source-denominated fee-cap denominator. Exact-out **execution**
+  is unreachable through the legacy `swap()`, whose options have nowhere to carry the
+  cap; quoting via `quoteSwap({ tokenOutAmount })` works.
+  `ButterExactOutUnsupportedError` is `@deprecated` and no longer thrown, but remains
+  exported so existing `catch` clauses compile.
+- `ButterSwidgeQuote` gains a required `destinationGuarantees` field
+  (`'enforced' | 'quoted-only'`). Code that only reads quotes is unaffected; code
+  that *constructs* the type must now supply it.
+- `assertQuoteOptions` rejects "both amounts" and "neither amount" with a single
+  message naming both modes, where it previously said only `fromTokenAmount is
+  required`.
 - `getSupportedChains` may return **fewer** chains than before: entries whose
   merged discovery metadata lacks a `type` or a `nativeToken` symbol are dropped.
   Consumers that relied on `type: 'unknown'` or `nativeToken: ''` appearing in the
@@ -195,6 +253,18 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
 - The `@tetherto/wdk-wallet` peer range is capped to `<2.0.0`.
 
 ### Types
+- Export `ButterNoRouteError` (extends `ButterApiError`), raised for Butter's in-band
+  `errno 2003` "No Route Found" and for a response whose candidates all lack
+  liquidity — so an unroutable pair (normal, retryable) is finally distinguishable
+  from a bad parameter or a rejected API key. Both previously surfaced as a plain
+  `ButterApiError`, which still matches it.
+- Export `ButterSwidgeStatusOptions` (`SwidgeStatusOptions & { byOrderId?: boolean }`)
+  and use it for `getSwidgeStatus`, replacing an inline object literal that TypeScript
+  consumers could not name. `byOrderId` is documented rather than removed: this
+  package never produces an order ID (`SwidgeResult.id` is always the source hash), so
+  the flag is for callers who obtained one from Butter separately.
+- Export `ButterWarning` and `ButterDestinationGuarantees`; add `config.onWarning`
+  and `options.maxFromTokenAmount`.
 - Export `ButterPartialExecutionError` (extends `ButterActionRequiredError`) with a
   `transactions: readonly SwidgeTransaction[]` list and the underlying `cause`.
 - Export `ButterAdapterResult` and `ViemPublicClientLike`, and simplify
@@ -202,15 +272,48 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
   which collapsed to `unknown` — so the typed adapter form is discoverable. Return
   stays intentionally open for arbitrary non-EVM transaction shapes.
 
+### Tooling
+- `test/` is now type-checked (`tsconfig.test.json`, wired into `npm run typecheck`).
+  It never was, and the net immediately caught four latent errors in tests that had
+  been passing: a legacy `bridge()` call passing `targetChain` as a number where WDK
+  declares a string, two unchecked array index accesses under
+  `noUncheckedIndexedAccess`, and an explicit `undefined` override rejected by
+  `exactOptionalPropertyTypes`.
+- Added coverage for the legacy delegation paths the WDK integration guide requires
+  (§7.2). `quoteSwap` and `quoteBridge` had none at all.
+
 ### Known upstream issue
 - The WDK base class's legacy `swap`/`quoteSwap`/`bridge`/`quoteBridge` sum
   `fees[].amount` across denominations (ignoring `fee.token`); the scalar totals
   are only meaningful when all fees share a currency. This requires a WDK-side fix
-  (PR #39 follow-up); consumers should read the itemised `fees[]`.
+  (PR #39 follow-up); consumers should read the itemised `fees[]`. Worse than first
+  documented: only `bridge`/`quoteBridge` group by fee **type** at all —
+  `swap`/`quoteSwap` add every entry together regardless of type or currency. A
+  regression test now pins both behaviours so a WDK-side fix is noticed, and
+  `config.onWarning` reports when a route is affected.
 
 ### Follow-ups
 - Testnet integration tests (per the WDK integration guide) are not yet included;
-  the env-gated flows in `examples/` cover live checks in the meantime.
+  the env-gated flows in `examples/` cover live checks in the meantime. Now also
+  listed under "Known limitations" in the README so integrators see it, not just
+  contributors.
+- Deferred robustness items, none affecting correctness: inject the clock into
+  `evm.ts` (approval polling still uses a bare `Date.now()`, bypassing the injectable
+  `config.now` used for route TTLs — note the seconds/milliseconds mismatch when
+  fixing); an `evm.allowanceStrategy: 'exact' | 'sufficient'` option (an existing
+  allowance *larger* than the input currently costs two extra approvals to reduce);
+  a TTL or `refreshChains()` for `DiscoveryService.chainDetails` (populated once and
+  reused for the process lifetime, so a long-lived instance never sees new Butter
+  chains); and splitting the strict-slippage detection out of `getSupportedChains`,
+  which mutates policy state as a side effect of a getter.
+- Not passing Butter's `caller`/`swapCaller` (semantically already the sender, which
+  the calldata `initiator` check enforces) or `disableSrcSwap` (no confirmed demand;
+  it would add a route cache-key dimension).
+- `/swap` returning multiple transactions is reported with per-transaction detail but
+  still rejected. Absorbing a recognizable ERC-20 `approve` from that array was
+  considered and declined: `evm.ts` already issues its own exact-amount approval, and
+  accepting one from `/swap` would add a second approval source and a new trust
+  surface.
 - Two behaviours are pending a check against live Butter responses before
   release, both covered by read-only env-gated examples: the nested cross-chain
   bridge payload layout that the explicit-`refundAddress` check decodes

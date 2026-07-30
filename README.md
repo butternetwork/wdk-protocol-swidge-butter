@@ -5,6 +5,10 @@ Butter Network Swidge provider for WDK.
 This package adapts WDK's Swidge interface to Butter Smart Router's `/route`,
 `/swap`, `/supportedChainInfo`, token-discovery, and Butter swap-data APIs.
 
+See [CHANGELOG.md](./CHANGELOG.md) for release notes, breaking changes, and known
+upstream issues, and [Known limitations](#known-limitations) for what this provider
+does not do.
+
 ## Install
 
 ```sh
@@ -95,6 +99,55 @@ Both participate in the route cache key, so a route quoted under one affiliate i
 never reused after it changes. When unset, neither appears in the outgoing query
 nor in the cache key.
 
+### Exact-in and exact-out
+
+Pass exactly one of `fromTokenAmount` (exact-in) or `toTokenAmount` (exact-out);
+passing both, or neither, throws `ButterUnsupportedError`.
+
+**Quoting exact-out needs nothing extra.** A quote is non-binding, so
+`quoteSwidge({ toTokenAmount })` simply asks Butter for an `exactOut` route and
+reports the input it estimates.
+
+**Executing exact-out requires `maxFromTokenAmount`**, a cap on the source tokens
+you are willing to spend, in base units:
+
+```ts
+const quote = await protocol.quoteSwidge({
+  fromToken: USDC,
+  toToken: USDT,
+  toChain: 137,
+  toTokenAmount: 100_000000n,   // exactly 100 USDT out
+  slippage: 0.01
+})
+
+const result = await protocol.swidge({
+  fromToken: USDC,
+  toToken: USDT,
+  toChain: 137,
+  toTokenAmount: 100_000000n,
+  slippage: 0.01,
+  maxNativeFee: 2_000_000_000_000_000n,
+  // Required: bound what the swap may spend. Size it from quote.fromTokenAmount
+  // plus your own tolerance.
+  maxFromTokenAmount: (quote.fromTokenAmount * 102n) / 100n
+})
+```
+
+Without it, execution throws `ButterConfigurationError` — the same fail-closed
+treatment as a missing cross-chain `maxNativeFee`, and for the same reason. WDK's
+exact-out options name the *output* amount and carry no input cap, so nothing you
+supplied would bound the source spend; the only remaining candidate is Butter's own
+`srcChain.totalAmountIn`, which would let the response validate itself. The cap is
+what the Router calldata's source amount is checked against (`amount <= cap`,
+the one place that check is an inequality rather than an equality), what the ERC-20
+approval is set to, and what bounds the denominator of the source-denominated fee
+caps.
+
+Exact-out execution is **not reachable through the legacy `swap()`**: WDK's
+`SwapOptions` has no field to carry the cap, so a legacy exact-out swap always
+throws. Quoting via `quoteSwap({ tokenOutAmount })` works; call `swidge` directly to
+execute one.
+
 ## Behavior
 
 - `quoteSwidge(options)` calls Butter `/route`, stores a non-binding quote as an
@@ -123,9 +176,15 @@ nor in the cache key.
   unpinned execution is. Pins are held in the instance's in-memory
   route cache, so quote and execution must use the same protocol instance.
   Without `routeHash`, execution auto-re-quotes as before.
+- Exact-in and exact-out are both supported; see
+  [Exact-in and exact-out](#exact-in-and-exact-out) for the cap exact-out execution
+  requires.
 - `getSwidgeStatus(id)` calls
   `/api/queryBridgeInfoBySourceHash`; `{ byOrderId: true }` calls
-  `/api/queryCrossInfoByOrderId`. Same-chain swaps produce no cross-chain record,
+  `/api/queryCrossInfoByOrderId`. The options type is exported as
+  `ButterSwidgeStatusOptions`. Note this package never produces an order ID —
+  `SwidgeResult.id` is always the source-chain hash — so `byOrderId` is for callers
+  who obtained one from Butter separately. Same-chain swaps produce no cross-chain record,
   so their status is derived from the transaction receipt — but only after the
   source transaction is **attributed to a Butter Router**. If this instance
   executed the id (recorded at `swidge` time) it is trusted; otherwise the source
@@ -183,18 +242,38 @@ nor in the cache key.
 | Same-chain receipt | explicit revert | `failed` |
 | Same-chain receipt | missing / unknown | `pending` |
 
-`quoteSwidge`/`swidge` map Butter route fees into WDK `SwidgeFee[]`:
+`quoteSwidge`/`swidge` map Butter route fees into WDK `SwidgeFee[]`. The last column
+is where each entry lands in the legacy `swap()`/`bridge()` scalars:
 
-| Butter field | `SwidgeFee.type` | Notes |
-| --- | --- | --- |
-| `bridgeFee` | `protocol` | cross-chain bridge fee |
-| `bridgeFee.affiliate` | `affiliate` | integrator/affiliate share |
-| `gasFee` | `network` | source-chain gas; estimate, replaced by measured gas when the sender reports every send's fee |
-| `swapFee.nativeFee` | `protocol` | native-denominated swap fee |
-| `swapFee.tokenFee` | `protocol` | input-token-denominated swap fee |
+| Butter field | `SwidgeFee.type` | Legacy field | Notes |
+| --- | --- | --- | --- |
+| `bridgeFee` | `protocol` | `bridgeFee` | cross-chain bridge fee, denominated in the bridge token |
+| `bridgeFee.affiliate` | `affiliate` | *(not visible)* | integrator/affiliate share |
+| `gasFee` | `network` | `fee` | source-chain gas; estimate, replaced by measured gas when the sender reports every send's fee |
+| `swapFee.nativeFee` | `protocol` | `bridgeFee` | native-denominated swap fee |
+| `swapFee.tokenFee` | `protocol` | `bridgeFee` | input-token-denominated swap fee |
 
-Fees can span different tokens; read the itemised `fees[]` (see the legacy-scalar
-caveat in Safety Defaults) rather than summing amounts.
+`fees[]` is always populated: if Butter reports no fees at all, it carries a single
+zero-amount `network` entry rather than being empty (an empty array reads as "free").
+
+**Read `fees[]`, not the legacy scalars.** The `protocol` group can hold three
+different denominations at once — bridge token, native, and input token — so the
+legacy `bridgeFee` total adds unlike currencies together. `bridge()`/`quoteBridge()`
+at least group by type (`fee` ← `network`, `bridgeFee` ← `protocol`);
+`swap()`/`quoteSwap()` do **not** group at all and sum every entry regardless of
+type or currency. Both behaviours live in the WDK base class, which providers must
+not override, so this needs a WDK-side fix. Set `onWarning` to be told when it
+applies to a given route:
+
+```js
+const protocol = new ButterSwidgeProtocol(account, {
+  sourceChainId: 56,
+  entrance: 'wdk',
+  onWarning: ({ code, message, details }) => console.warn(code, message, details)
+})
+// -> 'mixed-currency-protocol-fees' when the protocol group spans several tokens
+// -> 'no-fees-reported'              when Butter reported none and fees[] is a placeholder
+```
 
 ## Safety Defaults
 
@@ -363,6 +442,65 @@ const protocol = new ButterSwidgeProtocol(account, {
 
 await protocol.swidge(options, { maxNetworkFeeBps: 50 })
 ```
+
+## Supported chains and tokens
+
+Execution capability comes in three tiers (`discovery.ts: executionFor`), reported
+per chain as `execution` by `getSupportedChains()`:
+
+| Tier | Meaning |
+| --- | --- |
+| `native` | built-in EVM Router execution: this package validates the `/swap` calldata itself and submits it through `evm.walletClient` |
+| `adapter` | execution goes through a `transactionAdapters` entry you supply. Router calldata validation does **not** apply — only chain ID and required fields are checked |
+| `quote-only` | quoting, discovery, and status work; execution is unavailable until you pin a Router via `routerContracts` or supply an adapter |
+
+Chains with a pinned Router in the built-in registry (`constants.ts:
+DEFAULT_ROUTER_CONTRACTS`), i.e. `native` out of the box:
+
+| Chain | ID |
+| --- | --- |
+| Ethereum | `1` |
+| OP Mainnet | `10` |
+| BNB Smart Chain | `56` |
+| Unichain | `130` |
+| Polygon | `137` |
+| X Layer | `196` |
+| Base | `8453` |
+| Arbitrum One | `42161` |
+| Avalanche C-Chain | `43114` |
+| Linea | `59144` |
+
+This is a curated subset of Butter's deployments, not the full set — see
+[Router Registry](#router-registry) for adding others. Non-EVM chains Butter
+supports (Solana, Bitcoin, TON, Tron) are `quote-only` until you supply an adapter;
+Tron is always `adapter`-or-`quote-only` and never uses the built-in EVM path.
+
+**Tokens are discovered at runtime**, not listed here — call
+`getSupportedTokens({ chain })`. Both listings are fail-closed on missing required
+metadata: a token without usable decimals, and a chain without an `id`, `type`, or
+`nativeToken` symbol, are **dropped** rather than returned with a placeholder. A
+chain you expect to see but don't is usually this, not an outage.
+
+## Known limitations
+
+- **No automated testnet integration tests.** The WDK integration guide asks for
+  them; this package does not have them yet. The env-gated flows in
+  [`examples/`](./examples/README.md) are the live-check mechanism in the meantime,
+  including a read-only `example:decode-swap-data` for inspecting real Router
+  calldata.
+- **Cross-chain `toTokenAmountMin` is quoted, not enforced.** Check
+  `quote.destinationGuarantees`: `'enforced'` (same-chain, the minimum is verified
+  against the Router calldata) or `'quoted-only'` (cross-chain, the destination
+  minimum sits in the nested bridge payload that this package trusts to Butter by
+  design). WDK's field description calls it a guaranteed minimum, so the difference
+  is worth knowing.
+- **Exact-out execution requires `maxFromTokenAmount`** and is unreachable through
+  the legacy `swap()` (see [Exact-in and exact-out](#exact-in-and-exact-out)).
+- **`priceImpact` is not reported.** Butter only exposes it per route leg, with no
+  documented unit or whole-operation aggregation, so picking one leg would
+  misrepresent a multi-leg operation. The field is left `undefined` rather than
+  guessed.
+- **Legacy fee scalars can be meaningless.** See the fee mapping table above.
 
 ## Router Registry
 

@@ -25,6 +25,12 @@ export interface SwapValidationContext {
     feeConfig?: ButterFeeConfig;
     /** Absolute cap (native base units) on routerNativeFee + bridgeNativeFee; required cross-chain. */
     maxNativeFee?: bigint;
+    /**
+     * Exact-out only: upper bound on the calldata's source amount, from the caller's
+     * `maxFromTokenAmount`. Mutually exclusive with {@link requestedAmountIn}, which
+     * demands exact equality; see `assertSourceAmountIn`.
+     */
+    maxAmountIn?: bigint;
 }
 export declare function validateSwapTransactions(swapData: unknown, context: SwapValidationContext): ButterSwapTx[];
 export declare function validateSwapTransaction(value: unknown, context: SwapValidationContext): ButterSwapTx;

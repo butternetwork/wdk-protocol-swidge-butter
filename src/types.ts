@@ -18,6 +18,7 @@ import type {
   SwidgeProtocolConfig,
   SwidgeQuote,
   SwidgeResult,
+  SwidgeStatusOptions,
   SwidgeStatusResult,
   SwidgeSupportedChain,
   SwidgeSupportedToken,
@@ -31,6 +32,7 @@ export type {
   SwidgeProtocolConfig,
   SwidgeQuote,
   SwidgeResult,
+  SwidgeStatusOptions,
   SwidgeStatusResult,
   SwidgeSupportedChain,
   SwidgeSupportedToken,
@@ -39,11 +41,42 @@ export type {
 }
 
 /**
+ * How far `toTokenAmountMin` is actually guaranteed at execution time.
+ *
+ * `enforced` — same-chain. The minimum is checked against the Router calldata
+ * (`swapAndCall`'s `minAmount`), so the transaction reverts below it.
+ *
+ * `quoted-only` — cross-chain. The destination leg's minimum lives in the nested
+ * bridge payload, which this package intentionally trusts to Butter rather than
+ * re-verifying (see the trust boundary in `AGENTS.md`). The value is Butter's own
+ * estimate, not a checked guarantee. WDK's field description calls it a "minimum
+ * guaranteed amount", so this flag exists to make the difference visible in code
+ * instead of only in prose.
+ */
+export type ButterDestinationGuarantees = 'enforced' | 'quoted-only'
+
+/**
  * A Butter quote enriched with the provider-specific route `hash`. Pass it back
  * as `options.routeHash` to {@link ButterSwidgeProtocol.swidge} to pin the exact
  * quoted route instead of allowing an automatic re-quote at execution time.
  */
-export type ButterSwidgeQuote = SwidgeQuote & { routeHash: string }
+export type ButterSwidgeQuote = SwidgeQuote & {
+  routeHash: string
+  destinationGuarantees: ButterDestinationGuarantees
+}
+
+/**
+ * WDK status hints plus Butter's `byOrderId` lookup.
+ *
+ * Set `byOrderId` to resolve a Butter **order ID** instead of a source-chain
+ * transaction hash. Note that this package never produces one: `SwidgeResult.id`
+ * is always the source hash, and neither `/route`, `/swap`, nor
+ * `queryBridgeInfoBySourceHash` returns an order ID. The flag exists for callers
+ * who obtained an order ID from Butter by some other route (a dashboard or a
+ * direct API call); with it set, `id` is passed to `queryCrossInfoByOrderId` and is
+ * not treated as a hash.
+ */
+export type ButterSwidgeStatusOptions = SwidgeStatusOptions & { byOrderId?: boolean }
 
 /** Butter-specific execution options layered on top of the WDK `SwidgeOptions`. */
 export interface ButterSwidgeExecutionOptions {
@@ -63,6 +96,20 @@ export interface ButterSwidgeExecutionOptions {
    * it here satisfies the cross-chain fail-closed requirement.
    */
   maxNativeFee?: number | bigint
+  /**
+   * Maximum source-token input, in base units. **Required for exact-out execution**
+   * (`toTokenAmount`), which fails closed without it.
+   *
+   * WDK's exact-out options name the output amount and carry no input cap, so
+   * nothing the caller supplies would otherwise bound the source spend — the only
+   * remaining candidate is Butter's self-reported `srcChain.totalAmountIn`, which
+   * would let the response validate itself. This cap is what the calldata's source
+   * amount is checked against, what the ERC-20 approval is set to, and what bounds
+   * the source-denominated fee-cap denominator.
+   *
+   * Ignored for exact-in, where `fromTokenAmount` already is the bound.
+   */
+  maxFromTokenAmount?: number | bigint
 }
 
 /** WDK swidge options plus Butter's provider-specific execution fields. */
@@ -93,6 +140,12 @@ export interface ButterFetchResponse {
   ok: boolean
   status: number
   json: () => Promise<unknown>
+  /**
+   * Optional so an existing test double supplying only `json` stays valid. When
+   * present it is used to capture a failed response's body, which is frequently
+   * not JSON at all (a gateway's HTML error page).
+   */
+  text?: () => Promise<string>
 }
 
 /** Fetch-compatible function used for dependency injection and testing. */
@@ -188,6 +241,19 @@ export interface ButterRouterDeployment {
   version: ButterRouterVersion
 }
 
+/** A non-fatal condition reported through {@link ButterSwidgeProtocolConfig.onWarning}. */
+export interface ButterWarning {
+  /**
+   * Stable machine-readable identifier. `mixed-currency-protocol-fees` — the
+   * `protocol` fee group spans more than one token, so the WDK base class's legacy
+   * `bridgeFee` scalar is summing across currencies. `no-fees-reported` — Butter
+   * reported no fees at all, so `fees[]` carries a single zero-amount placeholder.
+   */
+  code: 'mixed-currency-protocol-fees' | 'no-fees-reported'
+  message: string
+  details?: unknown
+}
+
 /** Construction and execution configuration for {@link ButterSwidgeProtocol}. */
 export interface ButterSwidgeProtocolConfig extends SwidgeProtocolConfig {
   /** Source chain handled by this protocol instance. */
@@ -234,6 +300,16 @@ export interface ButterSwidgeProtocolConfig extends SwidgeProtocolConfig {
    * `routeHash` inside the margin is rejected rather than silently re-quoted.
    */
   routeExecutionMarginSeconds?: number
+  /**
+   * Notified about conditions that are not errors but that a caller reading only
+   * the WDK surface would otherwise never see — chiefly that the base class's
+   * legacy `fee`/`bridgeFee` scalars are summing across denominations for this
+   * route, so only the itemised `fees[]` is meaningful.
+   *
+   * Called synchronously during quoting; a throw from the callback would abort the
+   * quote, so keep it side-effect free (log, count, forward).
+   */
+  onWarning?: (warning: ButterWarning) => void
   /**
    * Absolute ceiling (source-chain native base units) on the non-input native
    * value a `/swap` transaction may spend — the router protocol fee plus the

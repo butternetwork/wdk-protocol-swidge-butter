@@ -1,5 +1,5 @@
 import { SwidgeProtocol } from '@tetherto/wdk-wallet/protocols';
-import type { ButterAccount, ButterSupportedChain, ButterSwidgeOptions, ButterSwidgeProtocolConfig, ButterSwidgeQuote, SwidgeOptions, SwidgeProtocolConfig, SwidgeResult, SwidgeStatusResult, SwidgeSupportedToken, SwidgeSupportedTokensOptions } from './types.js';
+import type { ButterAccount, ButterSupportedChain, ButterSwidgeOptions, ButterSwidgeProtocolConfig, ButterSwidgeQuote, ButterSwidgeStatusOptions, SwidgeOptions, SwidgeProtocolConfig, SwidgeResult, SwidgeStatusResult, SwidgeSupportedToken, SwidgeSupportedTokensOptions } from './types.js';
 /** Butter Smart Router implementation of the WDK Swidge protocol. */
 export declare class ButterSwidgeProtocol extends SwidgeProtocol {
     private readonly account;
@@ -26,6 +26,13 @@ export declare class ButterSwidgeProtocol extends SwidgeProtocol {
      * to {@link swidge} to pin this exact route instead of auto-re-quoting.
      */
     quoteSwidge(options: SwidgeOptions): Promise<ButterSwidgeQuote>;
+    /**
+     * Reports whether `toTokenAmountMin` is checked against the calldata at execution.
+     *
+     * Only same-chain is: cross-chain leaves the destination minimum inside the
+     * nested bridge payload, which is trusted to Butter by design.
+     */
+    private destinationGuaranteesFor;
     /** Executes an exact-in operation after validating route fees and transaction intent. */
     swidge(options: ButterSwidgeOptions, config?: SwidgeProtocolConfig): Promise<SwidgeResult>;
     /**
@@ -35,11 +42,7 @@ export declare class ButterSwidgeProtocol extends SwidgeProtocol {
      * indicates a same-chain operation (`fromChain === toChain`) the status is
      * derived from the transaction receipt instead of the cross-chain APIs.
      */
-    getSwidgeStatus(id: string, options?: {
-        byOrderId?: boolean;
-        fromChain?: string | number;
-        toChain?: string | number;
-    }): Promise<SwidgeStatusResult>;
+    getSwidgeStatus(id: string, options?: ButterSwidgeStatusOptions): Promise<SwidgeStatusResult>;
     /**
      * Builds the error to throw when a send fails part-way through execution.
      *
@@ -88,6 +91,14 @@ export declare class ButterSwidgeProtocol extends SwidgeProtocol {
      */
     getSupportedTokens(options?: SwidgeSupportedTokensOptions): Promise<SwidgeSupportedToken[]>;
     private assertQuoteOptions;
+    /**
+     * Resolves the source-spend bound for an exact-out execution.
+     *
+     * Fails closed, like the cross-chain `maxNativeFee` requirement: exact-out names
+     * the output, so without this the only value bounding the source spend would be
+     * Butter's own `srcChain.totalAmountIn` — the response validating itself.
+     */
+    private resolveMaxFromTokenAmount;
     private isBuiltInEvmExecution;
     private getSender;
     /** Resolves a sender address without throwing (used to default Solana recipient at quote time). */

@@ -18,8 +18,8 @@ import ButterSwidgeProtocol, {
   ButterActionRequiredError,
   ButterApiError,
   ButterConfigurationError,
-  ButterExactOutUnsupportedError,
   ButterFeeLimitExceededError,
+  ButterNoRouteError,
   ButterPartialExecutionError,
   ButterReadOnlyAccountError,
   ButterTransactionValidationError,
@@ -29,6 +29,7 @@ import ButterSwidgeProtocol, {
   toEvmWalletClient,
   toEvmPublicClient
 } from '../src/index.ts'
+import { assertBaseUnitAmount, parseIntegerAmount } from '../src/amounts.ts'
 import { SOLANA_CHAIN_ID } from '../src/constants.ts'
 import { routeNativeFee } from '../src/fees.ts'
 import { RouteManager } from '../src/route.ts'
@@ -443,6 +444,137 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     })
 
     assert.equal(getAddressCalls, 0)
+  })
+
+  it('reports whether the destination minimum is enforced or only quoted', async () => {
+    const fetch = makeFetch({
+      '/route': async (url) => ({
+        errno: 0,
+        message: 'success',
+        data: [url.searchParams.get('toChainId') === '56'
+          ? quoteRoute({
+              srcChain: {
+                chainId: '56',
+                tokenIn: { address: '0xfrom', decimals: 18, symbol: 'BNB' },
+                tokenOut: { address: '0xto', decimals: 6, symbol: 'USDT' },
+                totalAmountIn: '1.5',
+                totalAmountOut: '10.25'
+              },
+              dstChain: undefined
+            })
+          : quoteRoute()]
+      })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch,
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS
+    })
+    const base = { fromToken: '0xfrom', toToken: '0xto', fromTokenAmount: 1500000000000000000n, slippage: 0.02 }
+
+    // Same-chain checks minAmount against the swapAndCall calldata, so the
+    // minimum genuinely holds. Cross-chain leaves it in the nested bridge payload,
+    // which is trusted to Butter — the caller can now see that difference in code
+    // rather than only in the README.
+    assert.equal((await protocol.quoteSwidge({ ...base, toChain: 56 })).destinationGuarantees, 'enforced')
+    assert.equal((await protocol.quoteSwidge({ ...base, toChain: 137 })).destinationGuarantees, 'quoted-only')
+    // Omitted toChain means same-chain.
+    assert.equal((await protocol.quoteSwidge(base)).destinationGuarantees, 'enforced')
+  })
+
+  it('falls back to the next candidate when the best route has no liquidity', async () => {
+    const fetch = makeFetch({
+      '/route': async () => ({
+        errno: 0,
+        message: 'success',
+        // Butter orders candidates best-output-first. Taking [0] unconditionally
+        // failed the whole request whenever the top one lacked liquidity.
+        data: [
+          quoteRoute({ hash: '0xilliquid', hasLiquidity: false }),
+          quoteRoute({ hash: '0xliquid' })
+        ]
+      })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch,
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS
+    })
+
+    const quote = await protocol.quoteSwidge({
+      fromToken: '0xfrom',
+      toToken: '0xto',
+      toChain: 137,
+      fromTokenAmount: 1500000000000000000n,
+      slippage: 0.02
+    })
+
+    assert.equal(quote.routeHash, '0xliquid')
+  })
+
+  it('still validates the chosen candidate against the request', async () => {
+    const fetch = makeFetch({
+      '/route': async () => ({
+        errno: 0,
+        message: 'success',
+        // Falling back must not skip the chain/token consistency checks: the only
+        // liquid candidate here goes to the wrong destination chain.
+        data: [
+          quoteRoute({ hasLiquidity: false }),
+          quoteRoute({
+            dstChain: { chainId: '10', tokenOut: { address: '0xto', decimals: 6, symbol: 'USDT' }, totalAmountOut: '10.25' }
+          })
+        ]
+      })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch,
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS
+    })
+
+    await assert.rejects(protocol.quoteSwidge({
+      fromToken: '0xfrom',
+      toToken: '0xto',
+      toChain: 137,
+      fromTokenAmount: 1500000000000000000n,
+      slippage: 0.02
+    }), ButterApiError)
+  })
+
+  it('reports an unroutable pair as a no-route error, not a generic API error', async () => {
+    const illiquidFetch = makeFetch({
+      '/route': async () => ({ errno: 0, message: 'success', data: [quoteRoute({ hasLiquidity: false })] })
+    })
+    // Butter also signals this in-band: HTTP 200 with errno 2003.
+    const noRouteFetch = makeFetch({
+      '/route': async () => ({ errno: 2003, message: 'No Route Found' })
+    })
+    const options = {
+      fromToken: '0xfrom',
+      toToken: '0xto',
+      toChain: 137,
+      fromTokenAmount: 1500000000000000000n,
+      slippage: 0.02
+    }
+    const config = { sourceChainId: 56, entrance: 'wdk', tokenDecimals: DEFAULT_TOKEN_DECIMALS }
+
+    await assert.rejects(
+      new ButterSwidgeProtocol(undefined, { ...config, fetch: illiquidFetch }).quoteSwidge(options),
+      ButterNoRouteError
+    )
+    await assert.rejects(
+      new ButterSwidgeProtocol(undefined, { ...config, fetch: noRouteFetch }).quoteSwidge(options),
+      ButterNoRouteError
+    )
+    // Still a ButterApiError subclass, so existing catch blocks keep working.
+    await assert.rejects(
+      new ButterSwidgeProtocol(undefined, { ...config, fetch: noRouteFetch }).quoteSwidge(options),
+      ButterApiError
+    )
   })
 
   it('rejects a cross-chain route that is missing dstChain', async () => {
@@ -964,13 +1096,214 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     })
 
     const result = await protocol.bridge({
+      // WDK declares `targetChain` as a string; `normalizeId` accepts either form,
+      // so this only pins the declared type.
       token: 'btc',
       amount: 100000000n,
-      targetChain: 137,
+      targetChain: '137',
       recipient: 'btc-recipient'
     })
 
     assert.equal(result.hash, 'btc-hash')
+  })
+
+  it('quotes a legacy swap without an account', async () => {
+    const fetch = makeFetch({
+      '/route': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [quoteRoute({
+          srcChain: {
+            chainId: '56',
+            tokenIn: { address: '0xfrom', decimals: 18, symbol: 'BNB' },
+            tokenOut: { address: '0xto', decimals: 6, symbol: 'USDT' },
+            totalAmountIn: '1.5',
+            totalAmountOut: '10.25'
+          },
+          dstChain: undefined
+        })]
+      })
+    })
+    // quoteSwidge tolerates an absent account, so the legacy quote path must too:
+    // the base class only requires an account for the executing methods.
+    const protocol = new ButterSwidgeProtocol(undefined, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch,
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS
+    })
+
+    const quote = await protocol.quoteSwap({
+      tokenIn: '0xfrom',
+      tokenOut: '0xto',
+      tokenInAmount: 1500000000000000000n,
+      to: VALID_RECIPIENT
+    })
+
+    assert.equal(quote.tokenInAmount, 1500000000000000000n)
+    assert.equal(quote.tokenOutAmount, 10250000n)
+    assert.equal(fetch.calls.filter(({ url }) => url.pathname === '/route').length, 1)
+  })
+
+  it('quotes a legacy bridge with fees grouped by type', async () => {
+    const fetch = makeFetch({
+      '/route': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [quoteRoute({
+          // A bridge sends the same token to the destination chain, so the route's
+          // output token has to match the input for validateRouteMatchesRequest.
+          dstChain: {
+            chainId: '137',
+            tokenOut: { address: '0xfrom', decimals: 18, symbol: 'BNB' },
+            totalAmountOut: '1.4'
+          },
+          minAmountOut: { amount: '1.39', symbol: 'BNB' }
+        })]
+      })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch,
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS
+    })
+
+    const quote = await protocol.quoteBridge({
+      token: '0xfrom',
+      amount: 1500000000000000000n,
+      targetChain: '137',
+      recipient: VALID_RECIPIENT
+    })
+
+    // Unlike swap()/quoteSwap(), the base class groups these by fee type: legacy
+    // `fee` takes only `network`, legacy `bridgeFee` only `protocol`.
+    assert.equal(quote.fee, 100000000000000n) // gasFee 0.0001 BNB
+    // Still a cross-denomination sum inside one group: 0.25 USDT + 0.02 BNB.
+    assert.equal(quote.bridgeFee, 250000n + 20000000000000000n)
+  })
+
+  it('cannot execute a legacy exact-out swap, which has nowhere to carry a cap', async () => {
+    const fetch = makeFetch({
+      // legacy swap() sends no toChain, so this is a same-chain request and the
+      // route must be same-chain shaped (no dstChain).
+      '/route': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [quoteRoute({
+          srcChain: {
+            chainId: '56',
+            tokenIn: { address: '0xfrom', decimals: 18, symbol: 'BNB' },
+            tokenOut: { address: '0xto', decimals: 6, symbol: 'USDT' },
+            totalAmountIn: '1.5',
+            totalAmountOut: '10.25'
+          },
+          dstChain: undefined
+        })]
+      })
+    })
+    const protocol = new ButterSwidgeProtocol(account, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch,
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS,
+      evm: { walletClient: evmWallet(async () => '0xshould-not-send') }
+    })
+
+    // The base class forwards `tokenOutAmount` as `toTokenAmount` but accepts only
+    // SwapOptions, with no field for maxFromTokenAmount — so exact-out execution is
+    // permanently unreachable through legacy swap(). Quoting it works fine; use
+    // swidge() directly to execute one.
+    await assert.rejects(protocol.swap({
+      tokenIn: '0xfrom',
+      tokenOut: '0xto',
+      tokenOutAmount: 10250000n,
+      to: VALID_RECIPIENT
+    }), ButterConfigurationError)
+  })
+
+  it('quotes a legacy exact-out swap', async () => {
+    const fetch = makeFetch({
+      '/route': async (url) => {
+        assert.equal(url.searchParams.get('type'), 'exactOut')
+        return {
+          errno: 0,
+          message: 'success',
+          data: [quoteRoute({
+            srcChain: {
+              chainId: '56',
+              tokenIn: { address: '0xfrom', decimals: 18, symbol: 'BNB' },
+              tokenOut: { address: '0xto', decimals: 6, symbol: 'USDT' },
+              totalAmountIn: '1.5',
+              totalAmountOut: '10.25'
+            },
+            dstChain: undefined
+          })]
+        }
+      }
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch,
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS
+    })
+
+    const quote = await protocol.quoteSwap({
+      tokenIn: '0xfrom',
+      tokenOut: '0xto',
+      tokenOutAmount: 10250000n,
+      to: VALID_RECIPIENT
+    })
+
+    assert.equal(quote.tokenOutAmount, 10250000n)
+    // No caller-supplied input, so the quote reports the route's own estimate.
+    assert.equal(quote.tokenInAmount, 1500000000000000000n)
+  })
+
+  it('sums legacy scalar swap fees across every denomination', async () => {
+    const fetch = makeFetch({
+      '/route': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [quoteRoute({
+          srcChain: {
+            chainId: '56',
+            tokenIn: { address: '0xfrom', decimals: 18, symbol: 'BNB' },
+            tokenOut: { address: '0xto', decimals: 6, symbol: 'USDT' },
+            totalAmountIn: '1.5',
+            totalAmountOut: '10.25'
+          },
+          dstChain: undefined
+        })]
+      })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch,
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS
+    })
+    const legacyOptions = {
+      tokenIn: '0xfrom',
+      tokenOut: '0xto',
+      tokenInAmount: 1500000000000000000n,
+      to: VALID_RECIPIENT
+    }
+
+    const quote = await protocol.quoteSwidge({
+      fromToken: legacyOptions.tokenIn,
+      toToken: legacyOptions.tokenOut,
+      fromTokenAmount: legacyOptions.tokenInAmount,
+      recipient: legacyOptions.to
+    })
+    const legacy = await protocol.quoteSwap(legacyOptions)
+
+    // Known upstream defect (see CHANGELOG "Known upstream issue"): swap() and
+    // quoteSwap() do not group by fee type at all — they add every amount together
+    // regardless of currency. This pins the behavior so a WDK-side fix is noticed.
+    assert.equal(legacy.fee, quote.fees.reduce((acc, fee) => acc + fee.amount, 0n))
+    assert.equal(new Set(quote.fees.map((fee) => fee.token)).size, 3)
   })
 
   function multiTxAdapterFetch (bitcoinChain: string) {
@@ -1904,8 +2237,12 @@ describe('ButterSwidgeProtocol formal behavior', () => {
 
     // Reset to 0, set to exact input, then swap.
     assert.equal(sent.length, 3)
-    assert.deepEqual(decodeFunctionData({ abi: erc20Abi, data: sent[0].data }).args, [ROUTER, 0n])
-    assert.deepEqual(decodeFunctionData({ abi: erc20Abi, data: sent[1].data }).args, [ROUTER, 1500000000000000000n])
+    // Mapped rather than indexed so the elements stay non-optional under
+    // noUncheckedIndexedAccess.
+    assert.deepEqual(
+      sent.slice(0, 2).map((tx) => decodeFunctionData({ abi: erc20Abi, data: tx.data }).args),
+      [[ROUTER, 0n], [ROUTER, 1500000000000000000n]]
+    )
     assert.deepEqual((result.transactions ?? []).map((tx) => tx.type), ['approval', 'approval', 'source'])
   })
 
@@ -3055,15 +3392,48 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     assert.ok(quote.fees.some((fee) => fee.type === 'protocol'))
   })
 
-  it('rejects exact-out before requesting a route or sending a transaction', async () => {
-    const fetch = makeFetch({})
+  it('quotes exact-out by asking Butter for an exactOut route', async () => {
+    const fetch = makeFetch({
+      '/route': async (url) => {
+        assert.equal(url.searchParams.get('type'), 'exactOut')
+        // The amount is denominated in whichever side the caller pinned, so
+        // exact-out formats it with the destination token's 6 decimals.
+        assert.equal(url.searchParams.get('amount'), '10.25')
+        return { errno: 0, message: 'success', data: [quoteRoute()] }
+      }
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch,
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS
+    })
+
+    // A quote is non-binding, so exact-out needs no cap here — the route's own
+    // reported input is a fine estimate to show.
+    const quote = await protocol.quoteSwidge({
+      fromToken: '0xfrom',
+      toToken: '0xto',
+      toChain: 137,
+      recipient: '0xrecipient',
+      toTokenAmount: 10250000n,
+      slippage: 0.02
+    })
+
+    assert.equal(quote.fromTokenAmount, 1500000000000000000n)
+    assert.equal(quote.toTokenAmount, 10250000n)
+  })
+
+  it('rejects exact-out execution without maxFromTokenAmount', async () => {
+    const fetch = makeFetch({
+      '/route': async () => ({ errno: 0, message: 'success', data: [quoteRoute()] })
+    })
     const sent: unknown[] = []
     const protocol = new ButterSwidgeProtocol(account, {
       sourceChainId: 56,
       entrance: 'wdk',
-      apiKeyId: 'key',
-      apiSecret: 'secret',
       fetch,
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS,
       evm: {
         walletClient: evmWallet(async (tx) => {
           sent.push(tx)
@@ -3072,19 +3442,44 @@ describe('ButterSwidgeProtocol formal behavior', () => {
       }
     })
 
+    // Exact-out names the output, so without a caller-supplied cap the only value
+    // bounding the source spend would be Butter's own srcChain.totalAmountIn.
     await assert.rejects(
-      protocol.quoteSwidge({
-        fromToken: ERC20_TOKEN,
+      protocol.swidge({
+        fromToken: '0xfrom',
         toToken: '0xto',
         toChain: 137,
-        recipient: '0xrecipient',
+        recipient: VALID_RECIPIENT,
         toTokenAmount: 10250000n,
-        slippage: 0.02
+        slippage: 0.02,
+        maxNativeFee: 100n
       }),
-      ButterExactOutUnsupportedError
+      ButterConfigurationError
     )
-    assert.equal(fetch.calls.length, 0)
+    // No /swap request and nothing sent: it fails before either.
+    assert.deepEqual(fetch.calls.map(({ url }) => url.pathname), ['/route'])
     assert.equal(sent.length, 0)
+  })
+
+  it('rejects both amounts and neither amount', async () => {
+    const fetch = makeFetch({})
+    const protocol = new ButterSwidgeProtocol(undefined, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch,
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS
+    })
+    const base = { fromToken: '0xfrom', toToken: '0xto', toChain: 137, slippage: 0.02 }
+
+    // WDK: exact-in requires fromTokenAmount, exact-out requires toTokenAmount,
+    // not both.
+    await assert.rejects(protocol.quoteSwidge({
+      ...base,
+      fromTokenAmount: 1500000000000000000n,
+      toTokenAmount: 10250000n
+    } as never), ButterUnsupportedError)
+    await assert.rejects(protocol.quoteSwidge(base as never), ButterUnsupportedError)
+    assert.equal(fetch.calls.length, 0)
   })
 
   it('rejects zero and unsafe numeric exact-in amounts before requesting a route', async () => {
@@ -3208,8 +3603,7 @@ describe('ButterSwidgeProtocol formal behavior', () => {
       refundAddress: VALID_RECIPIENT,
       slippage: 0.02
     }), ButterApiError)
-    assert.equal(executionFetch.calls.length, 1)
-    assert.equal(executionFetch.calls[0].url.pathname, '/route')
+    assert.deepEqual(executionFetch.calls.map(({ url }) => url.pathname), ['/route'])
   })
 
   it('executes non-EVM swap data through the configured adapter without EVM router validation', async () => {
@@ -4058,6 +4452,126 @@ describe('helpers', () => {
     ))
   })
 
+  /**
+   * Exact-out context: `requestedAmountIn` is *absent*, not undefined, because the
+   * caller named the output and there is no exact input to demand.
+   */
+  function exactOutContext (maxAmountIn: bigint) {
+    const { requestedAmountIn: _exactIn, ...rest } = validationContext()
+    return { ...rest, maxAmountIn }
+  }
+
+  it('accepts an exact-out source amount at or below maxFromTokenAmount', () => {
+    const context = exactOutContext(1000n)
+
+    assert.doesNotThrow(() => validateSwapTransaction({
+      to: ROUTER,
+      value: '0',
+      chainId: '56',
+      data: sameChainSwapData({ amount: 900n })
+    }, context))
+    assert.doesNotThrow(() => validateSwapTransaction({
+      to: ROUTER,
+      value: '0',
+      chainId: '56',
+      data: sameChainSwapData({ amount: 1000n })
+    }, context))
+  })
+
+  it('rejects an exact-out source amount above maxFromTokenAmount', () => {
+    const context = exactOutContext(1000n)
+
+    assert.throws(() => validateSwapTransaction({
+      to: ROUTER,
+      value: '0',
+      chainId: '56',
+      data: sameChainSwapData({ amount: 1001n })
+    }, context), ButterTransactionValidationError)
+  })
+
+  it('still requires an exact source amount for exact-in', () => {
+    // The inequality must stay confined to the exact-out branch: exact-in named
+    // the input, so anything else is a mismatch — including spending less.
+    const context = validationContext()
+
+    assert.throws(() => validateSwapTransaction({
+      to: ROUTER,
+      value: '0',
+      chainId: '56',
+      data: sameChainSwapData({ amount: 999n })
+    }, context), ButterTransactionValidationError)
+    assert.throws(() => validateSwapTransaction({
+      to: ROUTER,
+      value: '0',
+      chainId: '56',
+      data: sameChainSwapData({ amount: 1001n })
+    }, context), ButterTransactionValidationError)
+  })
+
+  it('bounds a native exact-out tx.value by what the calldata actually spends', () => {
+    // The lower bound uses the calldata amount, not the cap: a route needing less
+    // than the cap is the normal case and must not be rejected. The upper bound on
+    // the remainder still comes from maxNativeFee.
+    const context = {
+      ...exactOutContext(1000n),
+      nativeSource: true,
+      sourceToken: NATIVE_TOKEN,
+      // Quoted above maxNativeFee so the cap, not the drift check, is what the
+      // last assertion trips.
+      routerNativeFee: 60n,
+      maxNativeFee: 50n
+    }
+    const swap = (value: string, amount: bigint) => ({
+      to: ROUTER,
+      value,
+      chainId: '56',
+      data: sameChainSwapData({ srcToken: NATIVE_TOKEN, amount })
+    })
+
+    // Spends 900 of a 1000 cap, plus a 10 native fee. Using the cap as the lower
+    // bound would reject this, and needing less than the cap is the normal case.
+    assert.doesNotThrow(() => validateSwapTransaction(swap('910', 900n), context))
+    // Under-funds the 900 it claims to spend.
+    assert.throws(() => validateSwapTransaction(swap('899', 900n), context), ButterTransactionValidationError)
+    // Fee half over maxNativeFee.
+    assert.throws(() => validateSwapTransaction(swap('951', 900n), context), ButterTransactionValidationError)
+  })
+
+  it('describes each transaction when /swap returns more than one', () => {
+    const routerTx = { to: ROUTER, value: '0x0', chainId: '56', data: sameChainSwapData() }
+    // A plausible real shape if Butter ever splits the call: an ERC-20 approve
+    // alongside the Router call. Which of the two it is decides the response, so
+    // the error has to say — a bare count cannot.
+    const approveTx = { to: ERC20_TOKEN, value: '0x0', chainId: '56', data: '0x095ea7b3' }
+
+    assert.throws(
+      () => validateSwapTransactions([approveTx, routerTx], validationContext()),
+      (error: unknown) => {
+        assert.ok(error instanceof ButterTransactionValidationError)
+        const details = error.details as { count: number, transactions: Array<Record<string, unknown>> }
+        assert.equal(details.count, 2)
+        assert.deepEqual(details.transactions.map((tx) => tx.method), [undefined, 'swapAndCall'])
+        assert.deepEqual(details.transactions.map((tx) => tx.to), [ERC20_TOKEN, ROUTER])
+        assert.deepEqual(details.transactions.map((tx) => tx.index), [0, 1])
+        return true
+      }
+    )
+  })
+
+  it('describes a malformed /swap entry without throwing over it', () => {
+    // The describer runs on input that has passed no check yet, so it must not
+    // throw and mask the validation error it is describing.
+    assert.throws(
+      () => validateSwapTransactions([null, 'nonsense'], validationContext()),
+      (error: unknown) => {
+        assert.ok(error instanceof ButterTransactionValidationError)
+        const details = error.details as { transactions: Array<Record<string, unknown>> }
+        assert.deepEqual(details.transactions.map((tx) => tx.shape), ['object', 'string'])
+        return true
+      }
+    )
+  })
+
   it('accepts Router V3 same-chain calldata only when it matches the quoted intent', () => {
     const tx = validateSwapTransaction({
       to: ROUTER,
@@ -4561,7 +5075,9 @@ describe('helpers', () => {
 
   it('rejects invalid router addresses and validator versions', () => {
     assert.throws(
-      () => createRouterRegistry({ 56: [{ address: 'not-an-address', version: 'v3' }] }),
+      // Deliberately ill-typed: the registry must reject a non-address at runtime,
+      // not merely at compile time (config can arrive from untyped JSON).
+      () => createRouterRegistry({ 56: [{ address: 'not-an-address' as never, version: 'v3' }] }),
       ButterConfigurationError
     )
     assert.throws(
@@ -4582,6 +5098,88 @@ describe('helpers', () => {
     assert.throws(() => parseTokenAmount(Number.MAX_SAFE_INTEGER + 1, 6), ButterApiError)
     assert.throws(() => parseTokenAmount('1.0000001', 6), ButterApiError)
     assert.equal(parseTokenAmount('1.0000000', 6), 1000000n)
+  })
+
+  it('reports a gateway failure as a typed error carrying the status code', async () => {
+    // The classic failure mode: a 502 whose body is an HTML error page. Parsing
+    // first threw a raw SyntaxError and lost the status entirely.
+    const gatewayFetch = async () => ({
+      ok: false,
+      status: 502,
+      async json () { throw new SyntaxError("Unexpected token '<'") },
+      async text () { return '<html><head><title>502 Bad Gateway</title></head></html>' }
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch: gatewayFetch,
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS
+    })
+
+    await assert.rejects(
+      protocol.quoteSwidge({
+        fromToken: '0xfrom',
+        toToken: '0xto',
+        toChain: 137,
+        fromTokenAmount: 1500000000000000000n,
+        slippage: 0.02
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof ButterApiError, `expected ButterApiError, got ${String(error)}`)
+        assert.match(error.message, /502/)
+        assert.deepEqual((error.details as { status?: number }).status, 502)
+        assert.match((error.details as { body?: string }).body ?? '', /502 Bad Gateway/)
+        return true
+      }
+    )
+  })
+
+  it('reports a 200 response whose body is not JSON as a typed error', async () => {
+    const brokenFetch = async () => ({
+      ok: true,
+      status: 200,
+      async json () { throw new SyntaxError("Unexpected token '<'") }
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch: brokenFetch,
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS
+    })
+
+    await assert.rejects(
+      protocol.quoteSwidge({
+        fromToken: '0xfrom',
+        toToken: '0xto',
+        toChain: 137,
+        fromTokenAmount: 1500000000000000000n,
+        slippage: 0.02
+      }),
+      (error: unknown) => error instanceof ButterApiError && /not valid JSON/.test(error.message)
+    )
+  })
+
+  it('rejects a negative integer amount in every input form', () => {
+    // A "-1" string used to pass here and only fail later in an equality check,
+    // which pointed the error at the wrong cause.
+    assert.throws(() => parseIntegerAmount('-1'), ButterApiError)
+    assert.throws(() => parseIntegerAmount(-1n), ButterApiError)
+    assert.throws(() => parseIntegerAmount(-1), ButterApiError)
+    // Hex is still accepted; BigInt handles the 0x prefix itself.
+    assert.equal(parseIntegerAmount('0x10'), 16n)
+    assert.equal(parseIntegerAmount('16'), 16n)
+  })
+
+  it('names the field when a caller amount cannot be a base-unit integer', () => {
+    assert.throws(
+      () => assertBaseUnitAmount(Number.MAX_SAFE_INTEGER + 1, 'minAmountOut'),
+      (error: unknown) => error instanceof ButterUnsupportedError && /minAmountOut/.test(error.message)
+    )
+    assert.throws(() => assertBaseUnitAmount(0, 'fromTokenAmount'), ButterUnsupportedError)
+    assert.throws(() => assertBaseUnitAmount(-1n, 'minAmountOut', { allowZero: true }), ButterUnsupportedError)
+    // Zero is a meaningful minimum ("no floor"), unlike a zero input amount.
+    assert.equal(assertBaseUnitAmount(0n, 'minAmountOut', { allowZero: true }), 0n)
+    assert.equal(assertBaseUnitAmount(5, 'fromTokenAmount'), 5n)
   })
 
   it('rejects invalid Butter slippage values', () => {

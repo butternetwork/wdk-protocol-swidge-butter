@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { ButterApiError, ButterConfigurationError } from './errors.js'
-import type { ButterFetch } from './types.js'
+import { ButterApiError, ButterConfigurationError, ButterNoRouteError } from './errors.js'
+import type { ButterFetch, ButterFetchResponse } from './types.js'
 
 export interface ButterHttpClientOptions {
   routerBaseUrl: string
@@ -24,6 +24,9 @@ export interface ButterHttpClientOptions {
   apiSecret?: string | undefined
   authMode: 'required' | 'optional'
 }
+
+/** Butter's in-band "No Route Found" code, returned with HTTP 200. */
+const BUTTER_NO_ROUTE_ERRNO = 2003
 
 export class ButterHttpClient {
   private readonly options: ButterHttpClientOptions
@@ -47,6 +50,12 @@ export class ButterHttpClient {
     const body = await this.requestJson(this.options.routerBaseUrl, path, params)
     const envelope = body as { errno?: number, message?: string, data?: unknown }
     if (!isRecord(body) || envelope.errno !== 0) {
+      // Butter signals "no route" in-band, with HTTP 200 and errno 2003. Typing it
+      // separately lets a caller tell an unroutable pair (normal, retryable) from a
+      // bad parameter or a rejected key.
+      if (envelope.errno === BUTTER_NO_ROUTE_ERRNO) {
+        throw new ButterNoRouteError(messageOf(body) ?? 'Butter found no route for this request', body)
+      }
       throw new ButterApiError(messageOf(body) ?? 'Butter router request failed', body)
     }
     if (!Object.hasOwn(envelope, 'data')) throw new ButterApiError('Butter router response is missing data', envelope)
@@ -82,11 +91,20 @@ export class ButterHttpClient {
       method: 'GET',
       headers: this.headers()
     })
-    const body = await response.json()
+    // Check the status BEFORE parsing. A failing gateway commonly returns HTML, so
+    // parsing first threw a raw SyntaxError and lost both the status code and this
+    // package's error typing on the most common failure mode there is.
     if (!response.ok) {
-      throw new ButterApiError(`Butter HTTP request failed with ${response.status}`, body)
+      throw new ButterApiError(`Butter HTTP request failed with ${response.status}`, {
+        status: response.status,
+        body: await readErrorBody(response)
+      })
     }
-    return body
+    try {
+      return await response.json()
+    } catch (cause) {
+      throw new ButterApiError('Butter response body is not valid JSON', { status: response.status, cause })
+    }
   }
 
   private headers (): Record<string, string> {
@@ -94,6 +112,27 @@ export class ButterHttpClient {
     if (this.options.apiKeyId) headers['x-api-key-id'] = this.options.apiKeyId
     if (this.options.apiSecret) headers.Authorization = `Bearer ${this.options.apiSecret}`
     return headers
+  }
+}
+
+/** Caps a captured error body so a whole HTML page never lands in an error object. */
+const MAX_ERROR_BODY_CHARS = 512
+
+/**
+ * Reads a failed response's body as text, best effort.
+ *
+ * Deliberately swallows its own failures: the status code is the valuable part of
+ * a non-2xx response and must not be lost to a second error raised while trying
+ * to describe the first. Absent when the injected fetch supplies no `text()`.
+ */
+async function readErrorBody (response: ButterFetchResponse): Promise<string | undefined> {
+  if (typeof response.text !== 'function') return undefined
+  try {
+    const text = await response.text()
+    if (!text) return undefined
+    return text.length > MAX_ERROR_BODY_CHARS ? `${text.slice(0, MAX_ERROR_BODY_CHARS)}…` : text
+  } catch {
+    return undefined
   }
 }
 

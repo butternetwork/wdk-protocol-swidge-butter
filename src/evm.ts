@@ -129,6 +129,12 @@ export async function executeEvmSwap (context: {
   options: SwidgeOptions
   sourceChainId: string
   nativeSource: boolean
+  /**
+   * Exact ERC-20 allowance to grant the router, in source-token base units. The
+   * caller resolves it because exact-out has no `fromTokenAmount` to read — it is
+   * the caller's `maxFromTokenAmount` bound there, and the exact input for exact-in.
+   */
+  approvalAmount: bigint
 }): Promise<{
   transactions: Array<{ hash: string, chain: string | number, type: 'approval' | 'source' }>
   gasFee: bigint | undefined
@@ -185,9 +191,10 @@ async function approveIfNeeded (context: {
   swapTx: ButterSwapTx
   options: SwidgeOptions
   sourceChainId: string
+  approvalAmount: bigint
 }, record: RecordSend): Promise<void> {
   const publicClient = context.config.evm?.publicClient
-  const amount = sourceAmountForApproval(context.options)
+  const amount = context.approvalAmount
   if (publicClient) {
     const allowance = await publicClient.readContract({
       address: context.options.fromToken,
@@ -309,11 +316,6 @@ async function waitForApproval (context: {
     await sleep(Math.min(APPROVAL_POLL_INTERVAL_MS, Math.max(deadline - Date.now(), 0)))
   }
   throw new ButterConfigurationError('Timed out waiting for the ERC20 approval to confirm', { hash, timeoutMs })
-}
-
-function sourceAmountForApproval (options: SwidgeOptions): bigint {
-  if ('fromTokenAmount' in options && options.fromTokenAmount != null) return BigInt(options.fromTokenAmount)
-  throw new ButterConfigurationError('Butter exact-in amount is required for approval')
 }
 
 /**
