@@ -384,7 +384,7 @@ function validateFeeData (feeData: Hex, context: SwapValidationContext): void {
 }
 
 /** True when the route's integrator fee config charges a non-zero fee. */
-function feeConfigChargesFee (config: ButterFeeConfig | undefined): boolean {
+export function feeConfigChargesFee (config: ButterFeeConfig | undefined): boolean {
   if (!config) return false
   try {
     return BigInt(config.rateOrNativeFee ?? 0) !== 0n

@@ -63,10 +63,12 @@ export const TON_CHAIN_ID = '1360104473493505';
  * `SwidgeSupportedChain.type`: reading that would require a discovery round-trip
  * inside `swidge`, and Butter does not always report a chain type.
  *
- * This is a **best-effort** table, not a complete taxonomy — it only has to be
- * right about the chains this package can route to. When Butter adds a non-EVM
- * chain, add it here too; an unlisted chain is assumed EVM, which is the
- * permissive direction (the recipient default applies as it does today).
+ * This is a **best-effort** table, not a complete taxonomy. A chain in neither
+ * this map nor {@link KNOWN_EVM_CHAIN_IDS} resolves to `'unknown'`, NOT to `'evm'`:
+ * Butter's supported-chain list changes without this package being republished, so
+ * assuming EVM would silently reuse a `0x` sender as the destination receiver on a
+ * newly added non-EVM chain — funds delivered to an address nobody can spend. When
+ * Butter adds a chain, add it to the appropriate table here.
  */
 export const NON_EVM_CHAIN_FAMILIES = new Map([
     [BTC_CHAIN_ID, 'utxo'],
@@ -74,9 +76,49 @@ export const NON_EVM_CHAIN_FAMILIES = new Map([
     [TRON_CHAIN_ID, 'tvm'],
     [TON_CHAIN_ID, 'ton']
 ]);
-/** Resolves a chain's address family, defaulting to `'evm'` for unlisted chains. */
-export function addressFamilyForChain(chainId) {
-    return NON_EVM_CHAIN_FAMILIES.get(chainId) ?? 'evm';
+/**
+ * EVM chains this package recognizes by id, for the address-family check only.
+ *
+ * Broader than the Router registry on purpose: a *destination* chain needs no
+ * Router entry here, so pinning the family to executable chains would demand an
+ * explicit recipient for ordinary EVM-to-EVM routes. Extend via
+ * `config.evmChainIds` rather than editing this list downstream.
+ */
+export const KNOWN_EVM_CHAIN_IDS = new Set([
+    '1', // Ethereum
+    '10', // OP Mainnet
+    '56', // BNB Smart Chain
+    '100', // Gnosis
+    '130', // Unichain
+    '137', // Polygon
+    '196', // X Layer
+    '199', // BitTorrent Chain
+    '324', // zkSync Era
+    '1101', // Polygon zkEVM
+    '5000', // Mantle
+    '8453', // Base
+    '22776', // MAP Protocol
+    '34443', // Mode
+    '42161', // Arbitrum One
+    '43114', // Avalanche C-Chain
+    '59144', // Linea
+    '81457', // Blast
+    '534352' // Scroll
+]);
+/**
+ * Resolves a chain's address family, or `'unknown'` when neither table lists it.
+ *
+ * `'unknown'` is deliberately not `'evm'`: see {@link NON_EVM_CHAIN_FAMILIES}.
+ * Callers must treat it as "cannot default the recipient", never as a family that
+ * happens to match the source.
+ */
+export function addressFamilyForChain(chainId, extraEvmChainIds) {
+    const nonEvm = NON_EVM_CHAIN_FAMILIES.get(chainId);
+    if (nonEvm != null)
+        return nonEvm;
+    if (KNOWN_EVM_CHAIN_IDS.has(chainId) || extraEvmChainIds?.has(chainId) === true)
+        return 'evm';
+    return 'unknown';
 }
 export const NATIVE_TOKEN_ADDRESSES = new Set([
     '0x0000000000000000000000000000000000000000',

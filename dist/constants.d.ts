@@ -47,14 +47,31 @@ export declare const TON_CHAIN_ID = "1360104473493505";
  * `SwidgeSupportedChain.type`: reading that would require a discovery round-trip
  * inside `swidge`, and Butter does not always report a chain type.
  *
- * This is a **best-effort** table, not a complete taxonomy — it only has to be
- * right about the chains this package can route to. When Butter adds a non-EVM
- * chain, add it here too; an unlisted chain is assumed EVM, which is the
- * permissive direction (the recipient default applies as it does today).
+ * This is a **best-effort** table, not a complete taxonomy. A chain in neither
+ * this map nor {@link KNOWN_EVM_CHAIN_IDS} resolves to `'unknown'`, NOT to `'evm'`:
+ * Butter's supported-chain list changes without this package being republished, so
+ * assuming EVM would silently reuse a `0x` sender as the destination receiver on a
+ * newly added non-EVM chain — funds delivered to an address nobody can spend. When
+ * Butter adds a chain, add it to the appropriate table here.
  */
 export declare const NON_EVM_CHAIN_FAMILIES: ReadonlyMap<string, string>;
-/** Resolves a chain's address family, defaulting to `'evm'` for unlisted chains. */
-export declare function addressFamilyForChain(chainId: string): string;
+/**
+ * EVM chains this package recognizes by id, for the address-family check only.
+ *
+ * Broader than the Router registry on purpose: a *destination* chain needs no
+ * Router entry here, so pinning the family to executable chains would demand an
+ * explicit recipient for ordinary EVM-to-EVM routes. Extend via
+ * `config.evmChainIds` rather than editing this list downstream.
+ */
+export declare const KNOWN_EVM_CHAIN_IDS: ReadonlySet<string>;
+/**
+ * Resolves a chain's address family, or `'unknown'` when neither table lists it.
+ *
+ * `'unknown'` is deliberately not `'evm'`: see {@link NON_EVM_CHAIN_FAMILIES}.
+ * Callers must treat it as "cannot default the recipient", never as a family that
+ * happens to match the source.
+ */
+export declare function addressFamilyForChain(chainId: string, extraEvmChainIds?: ReadonlySet<string>): string;
 export declare const NATIVE_TOKEN_ADDRESSES: Set<string>;
 export declare const DEFAULT_ROUTER_CONTRACTS: {
     readonly '1': readonly [{

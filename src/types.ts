@@ -96,20 +96,6 @@ export interface ButterSwidgeExecutionOptions {
    * it here satisfies the cross-chain fail-closed requirement.
    */
   maxNativeFee?: number | bigint
-  /**
-   * Maximum source-token input, in base units. **Required for exact-out execution**
-   * (`toTokenAmount`), which fails closed without it.
-   *
-   * WDK's exact-out options name the output amount and carry no input cap, so
-   * nothing the caller supplies would otherwise bound the source spend — the only
-   * remaining candidate is Butter's self-reported `srcChain.totalAmountIn`, which
-   * would let the response validate itself. This cap is what the calldata's source
-   * amount is checked against, what the ERC-20 approval is set to, and what bounds
-   * the source-denominated fee-cap denominator.
-   *
-   * Ignored for exact-in, where `fromTokenAmount` already is the bound.
-   */
-  maxFromTokenAmount?: number | bigint
 }
 
 /** WDK swidge options plus Butter's provider-specific execution fields. */
@@ -248,8 +234,11 @@ export interface ButterWarning {
    * `protocol` fee group spans more than one token, so the WDK base class's legacy
    * `bridgeFee` scalar is summing across currencies. `no-fees-reported` — Butter
    * reported no fees at all, so `fees[]` carries a single zero-amount placeholder.
+   * `undeclared-integrator-fee` — the route's `feeConfig` charges an integrator fee
+   * that `swapFee` does not report, so the quoted `fees[]` understates what the
+   * Router will actually take (the cap check still counts it).
    */
-  code: 'mixed-currency-protocol-fees' | 'no-fees-reported'
+  code: 'mixed-currency-protocol-fees' | 'no-fees-reported' | 'undeclared-integrator-fee'
   message: string
   details?: unknown
 }
@@ -310,6 +299,17 @@ export interface ButterSwidgeProtocolConfig extends SwidgeProtocolConfig {
    * quote, so keep it side-effect free (log, count, forward).
    */
   onWarning?: (warning: ButterWarning) => void
+  /**
+   * Additional chain IDs to treat as EVM for the address-family check.
+   *
+   * `swidge` requires an explicit `recipient` whenever the destination chain's
+   * address family differs from the source's **or** is unrecognized, since WDK's
+   * "recipient defaults to the wallet address" only holds within one family. Butter
+   * adds chains faster than this package is republished, so use this to accept an
+   * EVM chain the built-in table does not list yet, instead of passing a recipient
+   * on every call.
+   */
+  evmChainIds?: Array<string | number>
   /**
    * Absolute ceiling (source-chain native base units) on the non-input native
    * value a `/swap` transaction may spend — the router protocol fee plus the

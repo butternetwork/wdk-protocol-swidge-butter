@@ -199,19 +199,35 @@ Everything else is a focused collaborator it composes:
   approval receipts. The `walletClient.account.address` is validated against the WDK account (no signer/
   initiator/allowance-owner split). There is no raw `evm.sendTransaction` and no `approvalAmount: 'max'`.
   The dual requirement merges only if WDK extends `Transaction` with `data`.
-- **Exact-out quotes freely, executes only under a cap**: `quoteSwidge` accepts
-  `toTokenAmount` unconditionally (a quote binds nothing), but `swidge` **fails closed** without
-  `options.maxFromTokenAmount` (`ButterConfigurationError`). WDK's exact-out options name the output
-  and carry no input cap, so that value is the only caller-supplied bound on the source spend — the
-  alternative would be trusting `route.srcChain.totalAmountIn`, i.e. the response validating itself.
-  The cap replaces `requestedAmountIn` in three places: the calldata source-amount check becomes
-  `amount <= cap` (`swap-data.ts: assertSourceAmountIn` — the **only** inequality there, and it must
-  stay inside the exact-out branch), the ERC20 approval is set to it, and `fees.ts: sourceDenominator`
-  uses `min(cap, route-reported input)`. The `tx.value` native-input lower bound uses the validated
-  calldata amount, not the cap, since needing less than the cap is normal; total native spend stays
-  bounded by `cap + maxNativeFee`. Legacy `swap()` cannot carry the cap, so exact-out **execution** is
-  unreachable through it by construction (quoting works). `ButterExactOutUnsupportedError` is
-  `@deprecated` and no longer thrown, but stays exported.
+- **Exact-in only**: exact-out (`toTokenAmount`) is rejected before any network request
+  (`ButterExactOutUnsupportedError`), including via the WDK base-class `swap()`/`quoteSwap()`
+  delegation path. Butter documents `type: exactOut`, but the default production endpoint answers
+  `errno 2000` ("Parameter error") while the same request succeeds as `exactIn`, and `/route` defines
+  `amount` only as "amount of source token" with no exactOut variant — so the denomination to send is
+  unspecified too. `npm run example:probe-exact-out` re-checks both against the live API. The
+  execution-side machinery is deliberately **retained and unit-tested** for re-enablement:
+  `swap-data.ts: maxAmountIn`/`assertSourceAmountIn` (calldata `amount <= cap` — the only inequality
+  in that check, and it must stay confined to the exact-out branch) and `fees.ts: sourceDenominator`'s
+  `min(cap, route-reported input)` fallback. Don't delete them, and don't re-enable exact-out on
+  documentation alone.
+- **Source-denominated fee caps never use a route-reported denominator**: this covers
+  `fees.ts: bridgeFeeComponentRatio` too — a bridge fee component charged in the source token must use
+  `sourceDenominator`, falling back to a route amount only for a genuinely cross-denominated component
+  and only when matched **by token**; no same-token denominator means `ButterFeeValuationError`, never
+  division by another currency. Cap enforcement also separates **absent** metadata from an explicit
+  zero: a missing `gasFee.amount` (network cap) or no bridge fee at all on a cross-chain route
+  (protocol cap) throws `ButterFeeValuationError`, since scoring an unreported fee as free lets any cap
+  be passed by omission.
+- **`bridgeFee` is priced per component, `feeConfig` is the authoritative integrator fee**:
+  `bridgeFeeComponents` emits `in` and `out` as separate `protocol` fees with their own tokens, using
+  the top-level `amount` only when neither exists (Butter's docs don't say whether the summary sums
+  them or mirrors `out`; preferring components is correct either way and never reports less —
+  `npm run example:probe-fee-model` settles it). For `maxProtocolFeeBps` the integrator fee comes from
+  `route.feeConfig`, which is what `validateFeeData` checks the calldata against: `feeType: 1` is bps
+  of the input, so its ratio is `rate / 10000` and needs **no** trusted route amount (preserve that);
+  `feeType: 0` is source-chain native base units; anything else fails closed. Take the **larger** of
+  the `feeConfig` and `swapFee` ratios, never the sum — they are two views of one charge. Counting only
+  `swapFee` was a cap bypass: declare a large `feeConfig`, omit `swapFee`, pass any cap.
 - **Fail closed on unvaluable fees**: if a configured fee cap can't be evaluated (missing USD
   metadata, zero gas fee, etc.), throw `ButterFeeValuationError` rather than skipping the check.
 - **Conservative status**: an unrecognized Butter state maps to `pending`, never a false terminal;

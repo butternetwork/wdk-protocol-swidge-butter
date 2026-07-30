@@ -20,6 +20,14 @@ export function toButterSlippage(slippage, options = {}) {
     if (!Number.isFinite(explicitBps) || explicitBps < 0 || explicitBps > 5000) {
         throw new ButterUnsupportedError('slippage must be a decimal between 0 and 0.5');
     }
+    // A positive request finer than one basis point cannot be expressed to Butter.
+    // Rejecting is the only option that neither exceeds the caller's stated maximum
+    // nor silently sends 0 bps, which would all but guarantee a revert.
+    if (slippage != null && slippage > 0 && explicitBps === 0) {
+        throw new ButterUnsupportedError('slippage below 0.0001 (1 basis point) cannot be expressed to Butter', {
+            slippage
+        });
+    }
     if (explicitBps < minimum) {
         throw new ButterActionRequiredError(`Butter requires at least ${minimum} bps slippage for this route`, {
             requestedBps: explicitBps,
@@ -37,23 +45,28 @@ export function minimumSlippageBps(options) {
 }
 /**
  * Converts a decimal slippage fraction (e.g. 0.0051 = 0.51%) to integer basis
- * points exactly, via its decimal string rather than `x * 10000` — floating
- * point makes `Math.ceil(0.0051 * 10000)` yield 52. Any precision finer than a
- * basis point rounds up, so the resulting slippage is never below what was
- * requested. Non-finite or negative inputs fall through to the range check in
- * {@link toButterSlippage}.
+ * points exactly, via its decimal string rather than `x * 10000` — floating point
+ * makes `0.0051 * 10000` yield 51.000000000000006.
+ *
+ * WDK defines `slippage` as the **maximum acceptable** slippage, so sub-basis-point
+ * precision truncates **down**: rounding up would authorize more slippage than the
+ * caller stated, letting them receive less than they agreed to. A request that is
+ * positive but floors to 0 bps cannot be honoured at Butter's 1 bp granularity, so
+ * {@link toButterSlippage} rejects it rather than silently widening it to 1 bp.
+ *
+ * Non-finite or negative inputs return `NaN`/negative and fall through to the range
+ * check in {@link toButterSlippage}.
  */
 function decimalToBps(value) {
     if (!Number.isFinite(value) || value < 0)
-        return Math.ceil(value * 10000);
+        return value * 10000;
     const text = value.toString();
-    // Scientific notation only occurs for tiny positive values here (< ~1e-6, so
-    // < 0.01 bp). Round any such non-zero slippage up to 1 bp — never down to 0.
+    // Scientific notation only occurs for tiny positive values here (< ~1e-6, i.e.
+    // < 0.01 bp), which floor to 0 and are rejected as unrepresentable.
     if (text.includes('e') || text.includes('E'))
-        return Math.ceil(value * 10000);
+        return 0;
     const [whole = '0', fraction = ''] = text.split('.');
-    const bps = Number(whole) * 10000 + Number(fraction.slice(0, 4).padEnd(4, '0'));
-    return /[1-9]/.test(fraction.slice(4)) ? bps + 1 : bps;
+    return Number(whole) * 10000 + Number(fraction.slice(0, 4).padEnd(4, '0'));
 }
 function normalizeId(id) {
     return id == null ? undefined : String(id).toLowerCase();

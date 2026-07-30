@@ -99,54 +99,27 @@ Both participate in the route cache key, so a route quoted under one affiliate i
 never reused after it changes. When unset, neither appears in the outgoing query
 nor in the cache key.
 
-### Exact-in and exact-out
+### Exact-in only
 
-Pass exactly one of `fromTokenAmount` (exact-in) or `toTokenAmount` (exact-out);
-passing both, or neither, throws `ButterUnsupportedError`.
+Pass `fromTokenAmount`. Exact-out (`toTokenAmount`) is rejected before any network
+request with `ButterExactOutUnsupportedError`, on both `quoteSwidge`/`swidge` and the
+legacy `quoteSwap`/`swap` delegation path.
 
-**Quoting exact-out needs nothing extra.** A quote is non-binding, so
-`quoteSwidge({ toTokenAmount })` simply asks Butter for an `exactOut` route and
-reports the input it estimates.
+Butter's `/route` documents `type: exactOut` as a valid value, but two things stop
+this package from offering it:
 
-**Executing exact-out requires `maxFromTokenAmount`**, a cap on the source tokens
-you are willing to spend, in base units:
+- The default production endpoint has been observed rejecting `type=exactOut` with
+  `errno 2000` ("Parameter error") while the identical `exactIn` request succeeds.
+- The `/route` documentation describes `amount` only as *"amount of source token"*,
+  with no variant for exactOut — so even against a working endpoint, which side the
+  amount denominates is unspecified, and guessing would misprice the trade.
 
-```ts
-const quote = await protocol.quoteSwidge({
-  fromToken: USDC,
-  toToken: USDT,
-  toChain: 137,
-  toTokenAmount: 100_000000n,   // exactly 100 USDT out
-  slippage: 0.01
-})
-
-const result = await protocol.swidge({
-  fromToken: USDC,
-  toToken: USDT,
-  toChain: 137,
-  toTokenAmount: 100_000000n,
-  slippage: 0.01,
-  maxNativeFee: 2_000_000_000_000_000n,
-  // Required: bound what the swap may spend. Size it from quote.fromTokenAmount
-  // plus your own tolerance.
-  maxFromTokenAmount: (quote.fromTokenAmount * 102n) / 100n
-})
-```
-
-Without it, execution throws `ButterConfigurationError` — the same fail-closed
-treatment as a missing cross-chain `maxNativeFee`, and for the same reason. WDK's
-exact-out options name the *output* amount and carry no input cap, so nothing you
-supplied would bound the source spend; the only remaining candidate is Butter's own
-`srcChain.totalAmountIn`, which would let the response validate itself. The cap is
-what the Router calldata's source amount is checked against (`amount <= cap`,
-the one place that check is an inequality rather than an equality), what the ERC-20
-approval is set to, and what bounds the denominator of the source-denominated fee
-caps.
-
-Exact-out execution is **not reachable through the legacy `swap()`**: WDK's
-`SwapOptions` has no field to carry the cap, so a legacy exact-out swap always
-throws. Quoting via `quoteSwap({ tokenOutAmount })` works; call `swidge` directly to
-execute one.
+`npm run example:probe-exact-out` re-checks both against the live API (read-only, no
+funded account, `exactIn` used as a control). If it reports exactOut accepted and
+settles the denomination, re-enabling is a small change: the execution-side
+machinery — the source-amount upper bound, and the `min(cap, route-reported input)`
+fee denominator that keeps an inflated route from understating a fee ratio — is
+retained and unit-tested.
 
 ## Behavior
 
@@ -176,9 +149,7 @@ execute one.
   unpinned execution is. Pins are held in the instance's in-memory
   route cache, so quote and execution must use the same protocol instance.
   Without `routeHash`, execution auto-re-quotes as before.
-- Exact-in and exact-out are both supported; see
-  [Exact-in and exact-out](#exact-in-and-exact-out) for the cap exact-out execution
-  requires.
+- Exact-in only; see [Exact-in only](#exact-in-only) for why exact-out is rejected.
 - `getSwidgeStatus(id)` calls
   `/api/queryBridgeInfoBySourceHash`; `{ byOrderId: true }` calls
   `/api/queryCrossInfoByOrderId`. The options type is exported as
@@ -247,11 +218,27 @@ is where each entry lands in the legacy `swap()`/`bridge()` scalars:
 
 | Butter field | `SwidgeFee.type` | Legacy field | Notes |
 | --- | --- | --- | --- |
-| `bridgeFee` | `protocol` | `bridgeFee` | cross-chain bridge fee, denominated in the bridge token |
+| `bridgeFee.in` | `protocol` | `bridgeFee` | inbound leg of the bridge fee, in **its own** token |
+| `bridgeFee.out` | `protocol` | `bridgeFee` | outbound leg of the bridge fee, in **its own** token |
+| `bridgeFee.amount` | `protocol` | `bridgeFee` | only used when neither `in` nor `out` is present |
 | `bridgeFee.affiliate` | `affiliate` | *(not visible)* | integrator/affiliate share |
 | `gasFee` | `network` | `fee` | source-chain gas; estimate, replaced by measured gas when the sender reports every send's fee |
 | `swapFee.nativeFee` | `protocol` | `bridgeFee` | native-denominated swap fee |
 | `swapFee.tokenFee` | `protocol` | `bridgeFee` | input-token-denominated swap fee |
+| `feeConfig` | — | — | not an entry in `fees[]` (a rate is not an amount), but **is** counted against `maxProtocolFeeBps` |
+
+`bridgeFee` is reported per component rather than as its top-level summary, because
+`in` and `out` carry their own tokens and can sit on different chains — a single
+entry would have to guess which token to name. Butter's docs do not say whether the
+summary is their sum or a restatement of `out`, so the components are preferred:
+that is correct under either reading and never reports less
+(`npm run example:probe-fee-model` settles it against live data).
+
+`feeConfig` is the integrator fee as it will actually be encoded in the Router
+calldata, and it is what `maxProtocolFeeBps` is checked against — `swapFee` merely
+reports it. Where both describe the same fee the larger is used, never the sum. When
+`feeConfig` charges a fee that `swapFee` does not report, `fees[]` cannot show it as
+an amount, so `onWarning` fires with `undeclared-integrator-fee`.
 
 `fees[]` is always populated: if Butter reports no fees at all, it carries a single
 zero-amount `network` entry rather than being empty (an empty array reads as "free").
@@ -273,6 +260,7 @@ const protocol = new ButterSwidgeProtocol(account, {
 })
 // -> 'mixed-currency-protocol-fees' when the protocol group spans several tokens
 // -> 'no-fees-reported'              when Butter reported none and fees[] is a placeholder
+// -> 'undeclared-integrator-fee'     when feeConfig charges a fee swapFee omits
 ```
 
 ## Safety Defaults
@@ -494,8 +482,14 @@ chain you expect to see but don't is usually this, not an outage.
   minimum sits in the nested bridge payload that this package trusts to Butter by
   design). WDK's field description calls it a guaranteed minimum, so the difference
   is worth knowing.
-- **Exact-out execution requires `maxFromTokenAmount`** and is unreachable through
-  the legacy `swap()` (see [Exact-in and exact-out](#exact-in-and-exact-out)).
+- **Exact-out is not supported** — see [Exact-in only](#exact-in-only). Butter
+  documents the mode, but the default production endpoint rejects it and the
+  denomination of `amount` for it is unspecified.
+- **A destination chain this package does not recognize requires an explicit
+  `recipient`.** The address-family table is best-effort and Butter adds chains
+  between releases, so an unrecognized chain is treated as "cannot default the
+  recipient" rather than assumed EVM. Add such a chain to `evmChainIds` once you
+  have confirmed it is EVM.
 - **`priceImpact` is not reported.** Butter only exposes it per route leg, with no
   documented unit or whole-operation aggregation, so picking one leg would
   misrepresent a multi-leg operation. The field is left `undefined` rather than
@@ -558,6 +552,7 @@ are available in [`examples/`](./examples/README.md).
 npm run example:discover
 npm run example:quote
 npm run example:decode-swap-data
+npm run example:probe-exact-out
 npm run example:status
 npm run example:swap
 ```

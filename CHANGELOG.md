@@ -130,6 +130,12 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
   (`<nickname>[:rate]`) precisely because an unusable value fails silently on
   Butter's side. Both participate in the route cache key; when unset, neither
   appears in the request, so an existing integrator's cache keys are unchanged.
+- Fix `getSupportedTokens` pagination, which compared the **filtered** token count
+  against Butter's advertised raw `count`. Because entries are dropped (unusable
+  decimals, duplicates), a filtered total could never reach `count`: the loop could
+  not terminate normally and threw "empty page before the advertised count" on the
+  final page, so a single dropped token broke discovery for the whole chain. A
+  separate raw counter now drives all three comparisons.
 - `getSupportedChains` now applies the same fail-closed rule as
   `getSupportedTokens`: a chain missing an `id`, `type`, or `nativeToken` symbol
   is dropped instead of being listed with a placeholder. WDK marks both fields
@@ -138,6 +144,56 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
   before the filter, so dropping a chain never relaxes its slippage floor.
   `npm run example:discover` now reports which chains the filter dropped and
   which field each was missing, so the cost is measurable on live data.
+- Count the route's **`feeConfig`** against `maxProtocolFeeBps`. The cap read only
+  `swapFee` and `bridgeFee`, while `validateFeeData` accepts calldata whose fee data
+  matches `feeConfig` exactly — so a route could declare a large proportional
+  `feeConfig`, omit `swapFee`, pass a 1 bps cap, and then execute calldata carrying
+  the fee. `feeType: 1` is a rate in basis points of the input, so its ratio is
+  `rate / 10000` and depends on no Butter-reported amount whatsoever; `feeType: 0` is
+  a fixed fee in source-chain native base units, valued like `swapFee.nativeFee`; any
+  other `feeType` raises `ButterFeeValuationError`. Where `feeConfig` and `swapFee`
+  describe the same charge the **larger** ratio is used rather than their sum, since
+  summing would double-count every ordinary route. When `feeConfig` charges a fee
+  `swapFee` does not report, `onWarning` fires with `undeclared-integrator-fee` —
+  `fees[]` cannot show it as an amount, because a rate is not an amount.
+- Price `bridgeFee` per **component**. Butter reports it as `in` and `out` parts,
+  each with its own amount and token, plus a top-level summary; this package read
+  only the summary and *guessed* its token from five candidates. `in` and `out` now
+  become separate `protocol` entries with their own tokens, and the summary is used
+  only when neither part exists. Butter's documentation does not say whether the
+  summary is their sum or a restatement of `out` — preferring the components is
+  correct under either reading and never reports less. Each component is also valued
+  against a route amount **in its own token**, or fails closed; the previous
+  candidate list could divide a fee by an amount in a different currency.
+- Value a **source-token bridge fee** against the caller's own input rather than a
+  route-reported amount. `bridgeFeeRatio` chose its denominator from three
+  route-supplied candidates, the last being `srcChain.totalAmountIn` — the exact
+  value `sourceDenominator` exists to avoid. A bridge fee charged in the source
+  token could therefore be pushed under `maxProtocolFeeBps` by inflating the
+  route's self-reported input (10 USDC of fee on a real 100 USDC input reports as
+  10 bps instead of 1000 if the route claims 10000 in). Route amounts are still
+  used for genuinely cross-denominated fees, where no caller-supplied amount
+  exists to divide by.
+- Distinguish **absent** fee metadata from an explicit zero when a cap is
+  configured. A missing `gasFee.amount` (network cap) or a missing
+  `bridgeFee.amount` on a cross-chain route (protocol cap) now raises
+  `ButterFeeValuationError`; previously both scored as zero, so omitting the field
+  was enough to pass any limit. An explicit `'0'` is a real answer and still passes.
+- Require an explicit `recipient` when the destination chain's address family is
+  **unrecognized**, not only when it differs from the source's. An unlisted chain
+  used to be assumed EVM; since Butter adds chains without this package being
+  republished, that silently reused a `0x` sender as the receiver on a newly added
+  non-EVM chain. Two unknown families no longer count as matching. The new
+  `evmChainIds` config accepts a not-yet-listed EVM chain without patching the
+  built-in table.
+- Truncate sub-basis-point slippage **down** instead of up. WDK defines `slippage`
+  as the maximum acceptable, so rounding `0.00505` up to 51 bps authorized more
+  slippage than the caller stated. A positive value that floors to 0 bps is now
+  rejected rather than silently widened to 1 bp.
+- Fix the placeholder fee's token: a `network` (gas) entry was labelled with the
+  **input** token for any non-native source, because `nativeTokenId(context) ??
+  context.sourceToken` collapses to `context.sourceToken` in both branches. It now
+  reports `'native'`.
 - Check the HTTP status **before** parsing the body. A failing gateway commonly
   returns HTML, so parsing first threw a raw `SyntaxError` and lost both the status
   code and this package's error typing on the single most common failure mode.
@@ -222,25 +278,20 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
   (`constants.ts: NON_EVM_CHAIN_FAMILIES`); unlisted chains are assumed EVM, so
   the table must be extended when Butter adds a non-EVM chain. `quoteSwidge` is
   unaffected and still prices a cross-VM route with no recipient.
-- Exact-out (`toTokenAmount`) is no longer rejected outright. `quoteSwidge` accepts
-  it unconditionally, and `swidge` requires the new `options.maxFromTokenAmount` —
-  raising `ButterConfigurationError` without it, the same fail-closed treatment as a
-  missing cross-chain `maxNativeFee`. WDK's exact-out options name the output and
-  carry no input cap, so that value is the only caller-supplied bound on the source
-  spend; the alternative would be trusting Butter's own `srcChain.totalAmountIn`,
-  i.e. letting the response validate itself. The cap is what the calldata's source
-  amount is checked against (`amount <= cap`), what the ERC-20 approval is set to,
-  and what bounds the source-denominated fee-cap denominator. Exact-out **execution**
-  is unreachable through the legacy `swap()`, whose options have nowhere to carry the
-  cap; quoting via `quoteSwap({ tokenOutAmount })` works.
-  `ButterExactOutUnsupportedError` is `@deprecated` and no longer thrown, but remains
-  exported so existing `catch` clauses compile.
+- `swidge` requires an explicit `recipient` for a destination chain whose address
+  family is unrecognized, in addition to one that differs from the source's. See
+  the Security section; `evmChainIds` is the escape hatch.
+- Sub-basis-point `slippage` now truncates down, and a positive value below 1 bp
+  throws `ButterUnsupportedError` instead of being widened to 1 bp.
+- Fee caps fail closed on absent (as opposed to explicitly zero) fee metadata, and
+  now also count `route.feeConfig`, so a route that previously slipped a large
+  proportional integrator fee past a cap is rejected.
+- `fees[]` reports `bridgeFee.in` and `bridgeFee.out` as separate entries instead of
+  one summary entry, so the array can be **longer** than before for a cross-chain
+  route and each entry names its own token.
 - `ButterSwidgeQuote` gains a required `destinationGuarantees` field
   (`'enforced' | 'quoted-only'`). Code that only reads quotes is unaffected; code
   that *constructs* the type must now supply it.
-- `assertQuoteOptions` rejects "both amounts" and "neither amount" with a single
-  message naming both modes, where it previously said only `fromTokenAmount is
-  required`.
 - `getSupportedChains` may return **fewer** chains than before: entries whose
   merged discovery metadata lacks a `type` or a `nativeToken` symbol are dropped.
   Consumers that relied on `type: 'unknown'` or `nativeToken: ''` appearing in the
@@ -264,7 +315,7 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
   package never produces an order ID (`SwidgeResult.id` is always the source hash), so
   the flag is for callers who obtained one from Butter separately.
 - Export `ButterWarning` and `ButterDestinationGuarantees`; add `config.onWarning`
-  and `options.maxFromTokenAmount`.
+  and `config.evmChainIds`.
 - Export `ButterPartialExecutionError` (extends `ButterActionRequiredError`) with a
   `transactions: readonly SwidgeTransaction[]` list and the underlying `cause`.
 - Export `ButterAdapterResult` and `ViemPublicClientLike`, and simplify
@@ -293,6 +344,18 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
   `config.onWarning` reports when a route is affected.
 
 ### Follow-ups
+- Whether `bridgeFee.amount` is the sum of `in` and `out` or a restatement of `out`
+  is undocumented, and Butter's published example (`in.amount: "0.0"`) cannot
+  distinguish them. Not a release gate — the components are priced and the summary
+  ignored, which cannot under-report either way — but settling it via
+  `npm run example:probe-fee-model` would let the summary fallback be removed.
+- Exact-out remains unsupported pending a live contract confirmation from Butter:
+  the default production `/route` rejects `type=exactOut` with `errno 2000`, and the
+  docs describe `amount` only as "amount of source token" with no exactOut variant,
+  leaving the denomination unspecified. `npm run example:probe-exact-out` re-checks
+  both (read-only, `exactIn` as a control). The execution-side machinery
+  (`maxAmountIn`, `assertSourceAmountIn`, the `min(cap, reported)` fee denominator)
+  is retained and unit-tested so re-enabling is small.
 - Testnet integration tests (per the WDK integration guide) are not yet included;
   the env-gated flows in `examples/` cover live checks in the meantime. Now also
   listed under "Known limitations" in the README so integrators see it, not just

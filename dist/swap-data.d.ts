@@ -34,6 +34,8 @@ export interface SwapValidationContext {
 }
 export declare function validateSwapTransactions(swapData: unknown, context: SwapValidationContext): ButterSwapTx[];
 export declare function validateSwapTransaction(value: unknown, context: SwapValidationContext): ButterSwapTx;
+/** True when the route's integrator fee config charges a non-zero fee. */
+export declare function feeConfigChargesFee(config: ButterFeeConfig | undefined): boolean;
 /**
  * Returns the Router V3 function a transaction's calldata calls, or undefined if
  * it is not decodable / not a recognized Router function. Used to classify a
