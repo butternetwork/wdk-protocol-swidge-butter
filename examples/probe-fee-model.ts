@@ -13,20 +13,21 @@
 // limitations under the License.
 
 /**
- * Read-only probe: is `bridgeFee.amount` the sum of `bridgeFee.in` and
- * `bridgeFee.out`, or just a restatement of `out`?
+ * Read-only probe for how Butter composes `bridgeFee`.
  *
- * Butter's `/route` documentation describes `in` and `out` only as "input/output
- * token details" and never says how they relate to the top-level `amount`. Its
- * published example has `in.amount: "0.0"` with `out.amount === amount`, which is
- * consistent with both readings.
+ * This package depends on **no** relationship between the top-level `amount` and the
+ * `in` / `out` / `affiliate` components. The summary is never priced, never
+ * reconstructed from, and never even compared against the components: it is one
+ * figure in one token describing a fee that can span three, so it is unattributable,
+ * and amounts in different tokens cannot be added in the first place. It serves only
+ * as a detector — a route reporting a summary with no components has the fee omitted
+ * from `fees[]`, and a configured `maxProtocolFeeBps` refuses.
  *
- * This is **not** a release gate. `fees.ts: bridgeFeeComponents` prices the
- * components and ignores the summary, which cannot under-report under either
- * reading: if the summary is a sum, `in + out` equals it; if it only mirrors `out`,
- * `in + out` is the more complete figure. Settling the question just lets the
- * summary fallback be deleted, and reveals whether Butter ever charges on both
- * sides at once in different tokens.
+ * What this script is for is seeing how a live route actually decomposes: which
+ * components Butter populates, whether they ever span multiple tokens (the case that
+ * makes any summary arithmetic meaningless), and how large the affiliate share is —
+ * that share is charged to the user whether or not you configure `affiliate`, and it
+ * counts toward `maxProtocolFeeBps`.
  *
  * Sends no transaction and needs no funded account. Prefer a cross-chain pair: a
  * same-chain route has no bridge leg and so no bridge fee to inspect.
@@ -49,21 +50,28 @@ interface RouteEnvelope {
 }
 
 /**
- * Compares `amount` with `in + out` as decimal strings scaled to a common power of
- * ten, so a float round-trip cannot decide the verdict.
+ * Checks `amount === in + out + affiliate`, comparing as integers scaled to a common
+ * power of ten so a float round-trip cannot decide the verdict.
  */
-function comparison (amount: string | undefined, inAmount: string | undefined, outAmount: string | undefined): string {
-  if (amount == null) return 'no top-level amount reported'
+function comparison (fee: { amount?: string, in?: FeePart, out?: FeePart, affiliate?: FeePart } | undefined): string {
+  if (fee?.amount == null) return 'no top-level amount reported'
+  const present = [fee.in, fee.out, fee.affiliate].filter((part) => part?.amount != null && Number(part.amount) !== 0)
+  if (present.length === 0) return 'summary only, no components — fees.ts omits this fee and refuses a configured cap'
+  // Amounts in different tokens are not addable. Summing them anyway is how an
+  // inconsistent response comes to look consistent, so refuse instead of guessing.
+  const tokens = new Set(present.map((part) => (part?.token?.address ?? part?.token?.symbol ?? '').toLowerCase()))
+  if (tokens.size > 1) {
+    return `components span ${tokens.size} tokens (${[...tokens].join(', ')}), so no sum against the single-token summary is meaningful — this is why fees.ts prices components individually and never the summary`
+  }
   const scale = (value: string): bigint => {
     const [whole = '0', fraction = ''] = value.trim().split('.')
     return BigInt(whole + fraction.padEnd(30, '0').slice(0, 30))
   }
   try {
-    const total = scale(amount)
-    const parts = scale(inAmount ?? '0') + scale(outAmount ?? '0')
-    if (total === parts) return 'amount === in + out (summary is a SUM)'
-    if (total === scale(outAmount ?? '0')) return 'amount === out (summary MIRRORS out; a non-zero `in` would be missed by any code reading only the summary)'
-    return `amount (${amount}) matches neither in + out nor out alone — inspect manually`
+    const total = scale(fee.amount)
+    const parts = scale(fee.in?.amount ?? '0') + scale(fee.out?.amount ?? '0') + scale(fee.affiliate?.amount ?? '0')
+    if (total === parts) return 'amount === in + out + affiliate (single token, so the sum is meaningful)'
+    return `amount (${fee.amount}) is not in + out + affiliate even though every component shares one token — worth reporting to Butter; fees.ts prices only the components, so this does not change what is charged`
   } catch {
     return 'amounts are not plain decimal strings — inspect manually'
   }
@@ -115,7 +123,7 @@ runExample(async () => {
     componentsShareOneToken: bridgeFee?.in?.token?.symbol == null || bridgeFee?.out?.token?.symbol == null
       ? 'only one component present'
       : String(bridgeFee.in.token.symbol === bridgeFee.out.token.symbol),
-    verdict: comparison(bridgeFee?.amount, bridgeFee?.in?.amount, bridgeFee?.out?.amount),
+    verdict: comparison(bridgeFee),
     // Shown because the protocol fee cap now values feeConfig directly: feeType 1
     // means rateOrNativeFee is bps of the input, feeType 0 means source-chain wei.
     feeConfig: route?.feeConfig,

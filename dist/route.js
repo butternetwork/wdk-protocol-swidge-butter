@@ -15,6 +15,7 @@ import { NATIVE_TOKEN_ADDRESSES, ROUTE_CACHE_MAX_ENTRIES, ROUTE_EXECUTION_MARGIN
 import { nativeDecimalsForChain } from './fees.js';
 import { ButterActionRequiredError, ButterApiError, ButterConfigurationError, ButterExactOutUnsupportedError, ButterNoRouteError } from './errors.js';
 import { assertBaseUnitAmount, formatTokenAmount, parseTokenAmount } from './amounts.js';
+import { normalizeTokenKey, sameIdentifier } from './identifiers.js';
 import { toButterSlippage } from './slippage.js';
 export class RouteManager {
     context;
@@ -29,7 +30,7 @@ export class RouteManager {
         return this.context.executionMarginSeconds ?? ROUTE_EXECUTION_MARGIN_SECONDS;
     }
     async getRoute(options, { forExecution = false, senderFallback } = {}) {
-        const request = await this.buildRouteRequest(options, senderFallback);
+        const { request, sourceDecimals } = await this.buildRouteRequest(options, senderFallback);
         const key = stableRouteKey(request, options);
         const cached = this.cache.get(key);
         // Execution needs a far larger margin than a quote: a route that is merely
@@ -61,6 +62,12 @@ export class RouteManager {
             key,
             route,
             slippageBps: Number(request.slippage),
+            // The decimals this package resolved for the source token and used to build
+            // the request — from config, /findToken, or the chain's native default. The
+            // route's own `srcChain.tokenIn.decimals` is NOT interchangeable with it: the
+            // route is untrusted, and a fee parsed with understated decimals shrinks by a
+            // power of ten against a denominator measured in real base units.
+            sourceDecimals,
             expiresAt: routeExpiresAt(route, this.context.now())
         };
         if (!forExecution) {
@@ -82,7 +89,7 @@ export class RouteManager {
      * execute a price the caller never saw. It is rejected instead.
      */
     async consumeRouteByHash(hash, options, senderFallback) {
-        const request = await this.buildRouteRequest(options, senderFallback);
+        const { request } = await this.buildRouteRequest(options, senderFallback);
         const key = stableRouteKey(request, options);
         const indexedKey = this.hashIndex.get(hash);
         const entry = indexedKey ? this.cache.get(indexedKey) : undefined;
@@ -123,6 +130,16 @@ export class RouteManager {
         if (this.hashIndex.get(entry.route.hash) === key)
             this.hashIndex.delete(entry.route.hash);
     }
+    /**
+     * Builds the `/route` query, and returns the source-token decimals it resolved
+     * alongside it.
+     *
+     * Those decimals are the trusted ones — from `config.tokenDecimals`, `/findToken`,
+     * or the chain's native default — and they are what converted the caller's base
+     * units into Butter's decimal `amount`. They are returned rather than recomputed
+     * so fee valuation can use exactly the same number instead of the route's own
+     * `srcChain.tokenIn.decimals`, which is untrusted.
+     */
     async buildRouteRequest(options, senderFallback) {
         const toChainId = normalizeId(options.toChain ?? this.context.sourceChainId);
         const isSolanaSource = this.context.sourceChainId === SOLANA_CHAIN_ID;
@@ -145,7 +162,8 @@ export class RouteManager {
         if (!('fromTokenAmount' in options) || options.fromTokenAmount == null) {
             throw new ButterExactOutUnsupportedError();
         }
-        const amount = formatTokenAmount(options.fromTokenAmount, await this.decimalsFor(options.fromToken));
+        const sourceDecimals = await this.decimalsFor(options.fromToken);
+        const amount = formatTokenAmount(options.fromTokenAmount, sourceDecimals);
         const strictChain = this.context.strictSlippageChainIds.has(this.context.sourceChainId) || this.context.strictSlippageChainIds.has(toChainId);
         const slippage = toButterSlippage(options.slippage, {
             crossChain: toChainId !== this.context.sourceChainId,
@@ -154,23 +172,26 @@ export class RouteManager {
             ...(strictChain ? { strictChainMinimum: STRICT_CHAIN_MIN_SLIPPAGE_BPS } : {})
         });
         return {
-            fromChainId: this.context.sourceChainId,
-            toChainId,
-            amount,
-            tokenInAddress: options.fromToken,
-            tokenOutAddress: options.toToken,
-            type: 'exactIn',
-            slippage,
-            // Only Solana needs the sender-derived fallback; other chains keep the
-            // explicit recipient (possibly undefined) so the cache key stays stable.
-            receiver: isSolanaSource ? solanaReceiver : options.recipient,
-            entrance: this.context.entrance,
-            // Spread conditionally so an unconfigured integrator's cache key (and the
-            // outgoing query) stay exactly as they were before these were added.
-            // Both participate in `stableRouteKey`, so changing the affiliate cannot
-            // hit a route cached under the previous one.
-            ...(this.context.affiliate ? { affiliate: this.context.affiliate } : {}),
-            ...(this.context.referrer ? { referrer: this.context.referrer } : {})
+            sourceDecimals,
+            request: {
+                fromChainId: this.context.sourceChainId,
+                toChainId,
+                amount,
+                tokenInAddress: options.fromToken,
+                tokenOutAddress: options.toToken,
+                type: 'exactIn',
+                slippage,
+                // Only Solana needs the sender-derived fallback; other chains keep the
+                // explicit recipient (possibly undefined) so the cache key stays stable.
+                receiver: isSolanaSource ? solanaReceiver : options.recipient,
+                entrance: this.context.entrance,
+                // Spread conditionally so an unconfigured integrator's cache key (and the
+                // outgoing query) stay exactly as they were before these were added.
+                // Both participate in `stableRouteKey`, so changing the affiliate cannot
+                // hit a route cached under the previous one.
+                ...(this.context.affiliate ? { affiliate: this.context.affiliate } : {}),
+                ...(this.context.referrer ? { referrer: this.context.referrer } : {})
+            }
         };
     }
     enforceMinAmountOut(options, route) {
@@ -190,12 +211,16 @@ export class RouteManager {
         }
     }
     async decimalsFor(token) {
-        const normalized = token.toLowerCase();
-        if (normalized === 'btc')
+        // The native/symbolic checks are against short lowercase words, so plain casing
+        // is right there. The configured lookup is by identifier, so it must not
+        // lowercase a Base58 mint into a different mint's entry.
+        const lowered = token.toLowerCase();
+        if (lowered === 'btc')
             return 8;
-        if (NATIVE_TOKEN_ADDRESSES.has(normalized))
+        if (NATIVE_TOKEN_ADDRESSES.has(lowered))
             return nativeDecimalsForChain(this.context.sourceChainId, this.context.nativeTokenDecimals);
-        const configured = this.context.tokenDecimals[token] ?? this.context.tokenDecimals[normalized];
+        // Same key function the map was built with — see `normalizedTokenDecimals`.
+        const configured = this.context.tokenDecimals.get(normalizeTokenKey(token));
         if (configured != null)
             return configured;
         const resolved = await this.context.lookupDecimals?.(token);
@@ -263,7 +288,14 @@ function stableRouteKey(request, options) {
 function normalizeId(id) {
     return id == null ? '' : String(id);
 }
+/**
+ * Token-intent comparison for `validateRouteMatchesRequest`.
+ *
+ * Format-aware: lowercasing both sides let a route satisfy the intent check with a
+ * token differing from the request only in case, which for a Base58 mint is a
+ * different token entirely.
+ */
 function sameToken(a, b) {
-    return a.toLowerCase() === b.toLowerCase();
+    return sameIdentifier(a, b);
 }
 //# sourceMappingURL=route.js.map
