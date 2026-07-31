@@ -3,3 +3,5 @@ dist/src/
 *.tgz
 .idea/
 examples/.env
+.env.e2e
+.e2e-results/
