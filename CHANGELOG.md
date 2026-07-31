@@ -8,6 +8,16 @@ and (once published) [Semantic Versioning](https://semver.org).
 
 Security hardening from multi-round expert review. **Breaking** changes are marked.
 
+### End-to-end testing
+- Add a no-broadcast live Butter API workflow for pull requests, scheduled runs,
+  and local checks. It exercises discovery, quoting, `/swap` assembly, and local
+  transaction validation without a private key or Butter credentials.
+- Add confirmation-gated funded scenarios for same-chain native, same-chain
+  ERC-20, and cross-chain native swaps. Each scenario requires explicit input,
+  native-fee, protocol-fee, and cumulative gas budgets before signing.
+- Add resumable status polling and redacted JSON result artifacts. Partial
+  execution hashes are recorded immediately and are never retried automatically.
+
 ### Security / correctness
 - Bound every Butter HTTP request, including response-body parsing, with the new
   `requestTimeoutMs` setting (default 10 seconds). Timeouts abort and surface as
