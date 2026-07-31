@@ -73,6 +73,18 @@ export declare const KNOWN_EVM_CHAIN_IDS: ReadonlySet<string>;
  */
 export declare function addressFamilyForChain(chainId: string, extraEvmChainIds?: ReadonlySet<string>): string;
 export declare const NATIVE_TOKEN_ADDRESSES: Set<string>;
+/**
+ * The subset of {@link NATIVE_TOKEN_ADDRESSES} that are **symbols rather than
+ * addresses** — i.e. every member except the two EVM native sentinels.
+ *
+ * These are the only source-token identifiers a fee component may be matched to by
+ * symbol. Any other identifier is an address of some kind (EVM hex, Solana mint,
+ * Tron base58), and matching those by symbol would let a response name the source
+ * token in its `symbol` field and be taken for it. Deliberately a closed set rather
+ * than a shape test: `0x`-prefix detection would treat a Solana mint as symbolic and
+ * reopen exactly that hole.
+ */
+export declare const SYMBOLIC_NATIVE_TOKEN_IDS: ReadonlySet<string>;
 export declare const DEFAULT_ROUTER_CONTRACTS: {
     readonly '1': readonly [{
         readonly address: "0xEE0319cF0BCa5d09333f9F6277743E8De31bD69A";

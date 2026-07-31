@@ -13,6 +13,7 @@
 // limitations under the License.
 
 import { ButterApiError } from './errors.js'
+import { sameTransactionHash } from './identifiers.js'
 import type { ButterSwidgeStatusOptions, EvmTransactionReceipt, SwidgeStatusResult } from './types.js'
 
 /**
@@ -61,7 +62,12 @@ export function mapStatusResponse (id: string, data: unknown, hints: ButterSwidg
   // Do not fabricate a source hash from `id`: for a byOrderId lookup `id` is an
   // order id, not a transaction hash. Only trust a hash Butter actually reports.
   const reportedSourceHash = stringValue(record.sourceHash ?? record.fromHash)
-  if (!hints.byOrderId && reportedSourceHash && reportedSourceHash.toLowerCase() !== id.toLowerCase()) {
+  // Format-aware, using the TRANSACTION HASH domain: EVM `0x` hex and bare 64-hex
+  // (Bitcoin, Tron) are case-insensitive, while a Solana signature is Base58 where
+  // two casings are two different signatures. Comparing hashes loosely reported one
+  // transaction's status for another; comparing them with the token-identifier rule
+  // rejected a BTC txid that merely differed in case.
+  if (!hints.byOrderId && reportedSourceHash && !sameTransactionHash(reportedSourceHash, id)) {
     throw new ButterApiError('Butter status sourceHash does not match requested id', data)
   }
   const fromChain = chainIdOf(record.fromChain) ?? stringValue(record.fromChainId)

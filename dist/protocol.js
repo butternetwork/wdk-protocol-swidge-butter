@@ -14,6 +14,7 @@
 import { SwidgeProtocol } from '@tetherto/wdk-wallet/protocols';
 import { addressFamilyForChain, DEFAULT_APP_BASE_URL, DEFAULT_ROUTER_BASE_URL, DEFAULT_TOKEN_BASE_URL, OPERATION_KIND_MAX_ENTRIES, ROUTE_TTL_SECONDS, SOLANA_CHAIN_ID, TRON_CHAIN_ID } from './constants.js';
 import { assertBaseUnitAmount } from './amounts.js';
+import { normalizeTokenKey, normalizeTransactionHash } from './identifiers.js';
 import { ButterHttpClient } from './http.js';
 import { RouteManager } from './route.js';
 import { enforceFeeLimits, resolveFeeLimits, routeNativeFee, validateFeeLimits } from './fees.js';
@@ -92,7 +93,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
             sourceChainId: this.sourceChainId,
             entrance: config.entrance,
             now: this.now,
-            tokenDecimals: config.tokenDecimals ?? {},
+            tokenDecimals: normalizedTokenDecimals(config.tokenDecimals),
             nativeTokenDecimals: config.nativeTokenDecimals ?? {},
             strictSlippageChainIds,
             ...(executionMarginSeconds != null ? { executionMarginSeconds } : {}),
@@ -119,7 +120,15 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
         const senderFallback = this.sourceChainId === SOLANA_CHAIN_ID ? await this.resolveSenderOrUndefined() : undefined;
         const cached = await this.routes.getRoute(options, { senderFallback });
         this.routes.enforceMinAmountOut(options, cached.route);
-        const quote = routeToQuote(cached.route, this.now, cached.expiresAt, this.feeContextFor(options.fromToken), options.fromTokenAmount);
+        // Carry the requested input into the quote's fee context too, so a proportional
+        // integrator fee (a rate, not an amount) can be rendered as an actual amount in
+        // `fees[]`. Caps are still not enforced here — quoting stays non-binding.
+        const quoteFeeContext = {
+            ...this.feeContextFor(options.fromToken),
+            sourceTokenDecimals: cached.sourceDecimals,
+            ...(options.fromTokenAmount != null ? { requestedAmountIn: BigInt(options.fromTokenAmount) } : {})
+        };
+        const quote = routeToQuote(cached.route, this.now, cached.expiresAt, quoteFeeContext, options.fromTokenAmount);
         return {
             ...quote,
             routeHash: cached.route.hash,
@@ -173,7 +182,11 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
         this.routes.enforceMinAmountOut(options, cached.route);
         // assertQuoteOptions guarantees a valid, positive exact-in amount.
         const requestedAmountIn = BigInt(options.fromTokenAmount);
-        const feeContext = { ...this.feeContextFor(options.fromToken), requestedAmountIn };
+        const feeContext = {
+            ...this.feeContextFor(options.fromToken),
+            sourceTokenDecimals: cached.sourceDecimals,
+            requestedAmountIn
+        };
         enforceFeeLimits(cached.route, feeContext, resolveFeeLimits(this.config, config));
         const quote = routeToQuote(cached.route, this.now, cached.expiresAt, feeContext, options.fromTokenAmount);
         const swapData = await this.http.router('/swap', {
@@ -306,7 +319,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
         if (!id.trim())
             throw new ButterApiError('A non-empty swidge id is required');
         if (!options.byOrderId) {
-            const recorded = this.operationKinds.get(id.toLowerCase());
+            const recorded = this.operationKinds.get(normalizeTransactionHash(id));
             if (recorded != null) {
                 // Recorded by this instance → trusted attribution; no re-verification.
                 if (recorded.fromChain === recorded.toChain)
@@ -366,7 +379,11 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
     }
     /** Records an executed operation's chain kind for later status routing, bounding memory. */
     rememberOperationKind(sourceHash, toChain) {
-        const key = sourceHash.toLowerCase();
+        // Must use the same normalizer as the lookup in getSwidgeStatus, and the
+        // transaction-hash one: lowercasing a Base58 signature would file two different
+        // transactions under one key, while the token-identifier rule would file one BTC
+        // txid under two.
+        const key = normalizeTransactionHash(sourceHash);
         this.operationKinds.delete(key);
         this.operationKinds.set(key, { fromChain: this.sourceChainId, toChain });
         while (this.operationKinds.size > OPERATION_KIND_MAX_ENTRIES) {
@@ -597,6 +614,32 @@ function withMeasuredNetworkFee(fees, measured, route) {
 }
 function sameRecipient(left, right) {
     return left.toLowerCase() === right.toLowerCase();
+}
+/**
+ * Indexes configured token decimals under the same key function the lookup uses.
+ *
+ * Normalizing only at query time left a checksummed configuration key unreachable by
+ * the equivalent lowercase request — both the raw and the normalized lookup missed —
+ * so configured decimals were reported as missing. That went unnoticed because a
+ * successful `/findToken` covers for it.
+ *
+ * Two entries that normalize together must agree: silently keeping one would make
+ * which decimals apply depend on object key order, and decimals decide amounts.
+ */
+function normalizedTokenDecimals(configured) {
+    const decimals = new Map();
+    for (const [token, value] of Object.entries(configured ?? {})) {
+        const key = normalizeTokenKey(token);
+        const existing = decimals.get(key);
+        if (existing != null && existing !== value) {
+            throw new ButterConfigurationError('tokenDecimals has conflicting entries for the same token', {
+                token,
+                decimals: [existing, value]
+            });
+        }
+        decimals.set(key, value);
+    }
+    return decimals;
 }
 /** Validates and normalizes the optional maxNativeFee cap to native base units. */
 function parseMaxNativeFee(value) {

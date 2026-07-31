@@ -73,11 +73,17 @@ npm run example:probe-fee-model
 Read-only, no funded account. Prints a live route's `bridgeFee` — the top-level
 `amount` alongside `in`, `out`, and `affiliate` — plus `feeConfig` and `swapFee`.
 
-It answers one question the documentation leaves open: whether `bridgeFee.amount` is
-the **sum** of `in` and `out` or merely a restatement of `out`. This is not a release
-gate — `mapRouteFees` prices the components and ignores the summary, which cannot
-under-report under either reading — but settling it lets the summary fallback be
-removed, and shows whether Butter ever charges on both sides in different tokens.
+This package relies on **no** relationship between the summary and its components.
+`fees.ts` prices `in`, `out` and `affiliate` individually and never the summary: one
+figure in one token cannot describe a fee spanning three, and amounts in different
+tokens cannot be added, so there is nothing safe to reconstruct or cross-check. A
+route reporting a summary with no components has the fee omitted from `fees[]` and a
+configured `maxProtocolFeeBps` refuses.
+
+What this script is for is seeing how a live route actually decomposes: which
+components Butter populates, whether they ever span multiple tokens, and how large the
+affiliate share is — that share is charged to your users whether or not you configure
+`affiliate`, and it counts toward `maxProtocolFeeBps`.
 
 Defaults to a cross-chain pair, since a same-chain route has no bridge leg and so no
 bridge fee to look at. Set `PROBE_AFFILIATE=<nickname>:<rate>` to make Butter

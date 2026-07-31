@@ -17,6 +17,17 @@ export interface FeeContext {
      * named the output instead of the input.
      */
     maxAmountIn?: bigint;
+    /**
+     * Source-token decimals this package resolved (config / `/findToken` / native
+     * default) and used to build the `/route` request.
+     *
+     * Required whenever a source-denominated fee is measured against
+     * {@link requestedAmountIn}: that denominator is in real base units, so parsing
+     * the numerator with the route's own `srcChain.tokenIn.decimals` lets an
+     * understated value shrink the fee by a power of ten and slip under a bps cap.
+     * The route only has its token *address* checked, never its decimals.
+     */
+    sourceTokenDecimals?: number;
     /** Receives non-fatal fee-mapping notices; see {@link ButterWarning}. */
     onWarning?: (warning: ButterWarning) => void;
 }

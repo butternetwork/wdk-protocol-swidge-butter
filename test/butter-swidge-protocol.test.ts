@@ -31,6 +31,7 @@ import ButterSwidgeProtocol, {
   toEvmPublicClient
 } from '../src/index.ts'
 import { assertBaseUnitAmount, parseIntegerAmount } from '../src/amounts.ts'
+import { normalizeIdentifier, sameIdentifier, sameTransactionHash } from '../src/identifiers.ts'
 import { SOLANA_CHAIN_ID } from '../src/constants.ts'
 import { routeNativeFee } from '../src/fees.ts'
 import { RouteManager } from '../src/route.ts'
@@ -303,7 +304,9 @@ describe('ButterSwidgeProtocol formal behavior', () => {
       sourceChainId: '56',
       entrance: 'wdk',
       now: () => 1000,
-      tokenDecimals: DEFAULT_TOKEN_DECIMALS,
+      // RouteManager takes decimals already indexed by `normalizeTokenKey`; the
+      // protocol builds that map so the key function is shared with the lookup.
+      tokenDecimals: new Map(Object.entries(DEFAULT_TOKEN_DECIMALS)),
       nativeTokenDecimals: {},
       strictSlippageChainIds: new Set<string>(),
       affiliate: 'first',
@@ -1145,6 +1148,98 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     })
 
     assert.equal(result.hash, 'btc-hash')
+  })
+
+  it('resolves configured decimals whatever case the address is written in', async () => {
+    // Only the query was normalized, never the configuration keys, so a checksummed
+    // entry was unreachable from the equivalent lowercase request and the decimals
+    // were reported missing. A successful /findToken had been covering for it.
+    const checksummed = '0xAbCdEf0123456789AbCdEf0123456789AbCdEf01'
+    const fetch = makeFetch({
+      '/route': async (url) => {
+        assert.equal(url.searchParams.get('amount'), '1.5')
+        return { errno: 0, message: 'success', data: [quoteRoute({
+          srcChain: {
+            chainId: '56',
+            tokenIn: { address: checksummed.toLowerCase(), decimals: 18, symbol: 'TKN' },
+            tokenOut: { address: '0xto', decimals: 6, symbol: 'USDT' },
+            totalAmountIn: '1.5',
+            totalAmountOut: '10.25'
+          },
+          dstChain: undefined
+        })] }
+      }
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch,
+      // Configured checksummed, requested lowercase, and no /findToken to fall back on.
+      tokenDecimals: { [checksummed]: 18, '0xto': 6 }
+    })
+
+    const quote = await protocol.quoteSwidge({
+      fromToken: checksummed.toLowerCase(),
+      toToken: '0xto',
+      fromTokenAmount: 1500000000000000000n
+    })
+
+    assert.equal(quote.toTokenAmount, 10250000n)
+  })
+
+  it('resolves a native token from nativeTokenDecimals, not tokenDecimals', async () => {
+    // Symbolic ids never reach the tokenDecimals map: decimalsFor answers them from
+    // NATIVE_TOKEN_ADDRESSES and nativeTokenDecimals first. This pins where a native
+    // token's decimals actually come from, so the unreachable branch is not
+    // reintroduced in normalizeTokenKey.
+    const fetch = makeFetch({
+      '/route': async (url) => {
+        assert.equal(url.searchParams.get('amount'), '1.5')
+        return { errno: 0, message: 'success', data: [quoteRoute({
+          srcChain: {
+            chainId: '56',
+            tokenIn: { address: 'sol', decimals: 9, symbol: 'SOL' },
+            tokenOut: { address: '0xto', decimals: 6, symbol: 'USDT' },
+            totalAmountIn: '1.5',
+            totalAmountOut: '10.25'
+          },
+          dstChain: undefined
+        })] }
+      }
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch,
+      // Deliberately conflicting: the tokenDecimals entry is ignored for a native id.
+      nativeTokenDecimals: { 56: 9 },
+      tokenDecimals: { sol: 18, '0xto': 6 }
+    })
+
+    const quote = await protocol.quoteSwidge({
+      fromToken: 'sol',
+      toToken: '0xto',
+      fromTokenAmount: 1500000000n
+    })
+
+    assert.equal(quote.toTokenAmount, 10250000n)
+  })
+
+  it('rejects conflicting tokenDecimals entries for one token', () => {
+    // Which decimals apply would otherwise depend on object key order, and decimals
+    // decide amounts.
+    assert.throws(
+      () => new ButterSwidgeProtocol(undefined, {
+        sourceChainId: 56,
+        entrance: 'wdk',
+        fetch: makeFetch({}),
+        tokenDecimals: {
+          '0xAbCdEf0123456789AbCdEf0123456789AbCdEf01': 18,
+          '0xabcdef0123456789abcdef0123456789abcdef01': 6
+        }
+      }),
+      ButterConfigurationError
+    )
   })
 
   it('quotes a legacy swap without an account', async () => {
@@ -3041,6 +3136,67 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     assert.equal(quote.fromTokenAmount, 1500000000000000000n)
   })
 
+  it('does not resolve decimals from a same-chain /findToken entry for another token', async () => {
+    // These decimals become FeeContext.sourceTokenDecimals, the value a
+    // source-denominated fee is parsed with against the caller's real base units. A
+    // `decimals: 0` answer for a different token understates a fee by orders of
+    // magnitude and slips it under a bps cap — the bypass trustedSourceDecimals
+    // exists to close, reached through /findToken instead.
+    let findTokenCalls = 0
+    const fetch = makeFetch({
+      '/findToken': async () => {
+        findTokenCalls++
+        return {
+          errno: 0,
+          message: 'success',
+          // Right chain, wrong token.
+          data: [{ chainId: 56, address: DEST_TOKEN, decimals: 0, symbol: 'OTHER' }]
+        }
+      }
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+    const options = { fromToken: ERC20_TOKEN, toToken: DEST_TOKEN, toChain: 137, fromTokenAmount: 100000000n, slippage: 0.02 }
+
+    await assert.rejects(protocol.quoteSwidge(options), ButterActionRequiredError)
+    // Inconclusive, not a confirmed miss: caching it would pin every later quote for
+    // this token to "configure tokenDecimals" for the life of the process.
+    await assert.rejects(protocol.quoteSwidge(options), ButterActionRequiredError)
+    assert.equal(findTokenCalls, 2)
+  })
+
+  it('matches a /findToken entry by exact case for a Base58 mint', async () => {
+    const mint = 'AbCdEfGhJkLmNpQrStUvWxYz123456789ABCDEFGHJK'
+    const fetch = makeFetch({
+      // Same chain, and the address differs only by case — which for Base58 is a
+      // different mint entirely.
+      '/findToken': async () => ({ errno: 0, message: 'success', data: [{ chainId: 56, address: mint.toLowerCase(), decimals: 0 }] })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+
+    await assert.rejects(
+      protocol.quoteSwidge({ fromToken: mint, toToken: DEST_TOKEN, toChain: 137, fromTokenAmount: 1n, slippage: 0.02 }),
+      ButterActionRequiredError
+    )
+  })
+
+  it('caches unusable decimals reported for the requested token', async () => {
+    // Conclusive: this IS our token, and its decimals cannot be used. Unlike an
+    // inconclusive response, that answer is worth remembering.
+    let findTokenCalls = 0
+    const fetch = makeFetch({
+      '/findToken': async () => {
+        findTokenCalls++
+        return { errno: 0, message: 'success', data: [{ chainId: 56, address: ERC20_TOKEN, decimals: 'not-a-number' }] }
+      }
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+    const options = { fromToken: ERC20_TOKEN, toToken: DEST_TOKEN, toChain: 137, fromTokenAmount: 1n, slippage: 0.02 }
+
+    await assert.rejects(protocol.quoteSwidge(options), ButterActionRequiredError)
+    await assert.rejects(protocol.quoteSwidge(options), ButterActionRequiredError)
+    assert.equal(findTokenCalls, 1)
+  })
+
   it('treats a /findToken result with no matching chain as an unknown token', async () => {
     const fetch = makeFetch({
       '/findToken': async () => ({ errno: 0, message: 'success', data: [{ chainId: 42161, address: ERC20_TOKEN, decimals: 6 }] })
@@ -3872,10 +4028,10 @@ describe('ButterSwidgeProtocol formal behavior', () => {
             count: 3,
             results: [
               { address: '0xaaa', decimals: 18, symbol: 'AAA' },
-              // Dropped: no usable decimals.
+              // Dropped by the filter: no usable decimals. Pagination must still
+              // count it, since Butter counted it.
               { address: '0xbbb', symbol: 'BBB' },
-              // Dropped: duplicate of the first.
-              { address: '0xaaa', decimals: 18, symbol: 'AAA' }
+              { address: '0xccc', decimals: 6, symbol: 'CCC' }
             ]
           }
         }
@@ -3886,9 +4042,219 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     const tokens = await protocol.getSupportedTokens({ fromChain: 56 })
 
     // All 3 raw records were consumed, so pagination stops after one page even
-    // though only 1 token survived.
-    assert.deepEqual(tokens.map(({ token }) => token), ['0xaaa'])
+    // though only 2 tokens survived the filter.
+    assert.deepEqual(tokens.map(({ token }) => token), ['0xaaa', '0xccc'])
     assert.equal(tokenRequests, 1)
+  })
+
+  it('keeps two Base58 mints that differ only by case', async () => {
+    // Lowercasing the dedupe key merged them, so only the first was ever returned —
+    // and the /findToken cache could then serve one mint's decimals for the other.
+    const upper = 'AbCdEfGhJkLmNpQrStUvWxYz123456789ABCDEFGHJK'
+    const lower = 'abcdefghjklmnpqrstuvwxyz123456789abcdefghjk'
+    const fetch = makeFetch({
+      '/supportedChainInfo': async () => ({ errno: 0, message: 'success', data: [{ id: '56', type: 'EVM', name: 'BNB', nativeToken: '{"symbol":"BNB"}' }] }),
+      '/api/queryChainList': async () => ({ code: 200, message: 'success', data: { chains: [{ chainId: '56', key: 'bsc' }] } }),
+      '/api/queryTokenList': async (url) => ({
+        code: 200,
+        message: 'success',
+        data: {
+          count: 2,
+          results: url.searchParams.get('pageNo') === '1'
+            ? [
+                { address: upper, decimals: 6, symbol: 'A' },
+                { address: lower, decimals: 9, symbol: 'B' }
+              ]
+            : []
+        }
+      })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+
+    const tokens = await protocol.getSupportedTokens({ fromChain: 56 })
+
+    assert.deepEqual(tokens.map(({ token }) => token), [upper, lower])
+    // Their decimals must not be conflated either.
+    assert.deepEqual(tokens.map(({ decimals }) => decimals), [6, 9])
+  })
+
+  it('accepts a Bitcoin txid that differs only by case', async () => {
+    // BTC and Tron txids are bare 64-hex with no 0x prefix. Treating them with the
+    // token-identifier rule made two casings of one txid look like two transactions.
+    const txid = 'AbCdEf0123456789'.repeat(4)
+    const fetch = makeFetch({
+      '/api/queryBridgeInfoBySourceHash': async () => ({
+        code: 200,
+        message: 'success',
+        data: { info: { state: 1, sourceHash: txid.toLowerCase(), toHash: '0xdesthash', fromChain: { chainId: '1360095883558913' }, toChain: { chainId: '137' } } }
+      })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: '1360095883558913', entrance: 'wdk', fetch })
+
+    const status = await protocol.getSwidgeStatus(txid)
+
+    assert.equal(status.status, 'completed')
+  })
+
+  it('does not treat a differently cased source hash as the same operation', async () => {
+    // Two Base58 signatures differing only in case are two transactions. Comparing
+    // them loosely reported one's status for the other and returned a hash the
+    // caller never asked about.
+    const requested = 'AbCdEfGhJkLmNpQrStUvWxYz123456789ABCDEFGHJK'
+    const reported = 'abcdefghjklmnpqrstuvwxyz123456789abcdefghjk'
+    const fetch = makeFetch({
+      '/api/queryBridgeInfoBySourceHash': async () => ({
+        code: 200,
+        message: 'success',
+        data: { info: { state: 1, sourceHash: reported, toHash: '0xdesthash', fromChain: { chainId: '56' }, toChain: { chainId: '137' } } }
+      })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+
+    await assert.rejects(
+      protocol.getSwidgeStatus(requested),
+      (error: unknown) => error instanceof ButterApiError && /sourceHash does not match/.test(error.message)
+    )
+  })
+
+  it('rejects an invalid advertised token count instead of stopping early', async () => {
+    // `count` is the termination bound, so a negative one satisfied `consumed >= count`
+    // after the very first page: the walk stopped with a partial list, made no further
+    // requests, and raised nothing.
+    let tokenRequests = 0
+    const fetch = makeFetch({
+      '/supportedChainInfo': async () => ({ errno: 0, message: 'success', data: [{ id: '56', type: 'EVM', name: 'BNB', nativeToken: '{"symbol":"BNB"}' }] }),
+      '/api/queryChainList': async () => ({ code: 200, message: 'success', data: { chains: [{ chainId: '56', key: 'bsc' }] } }),
+      '/api/queryTokenList': async () => {
+        tokenRequests++
+        return { code: 200, message: 'success', data: { count: -1, results: [{ address: '0xaaa', decimals: 18, symbol: 'A' }] } }
+      }
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+
+    await assert.rejects(
+      protocol.getSupportedTokens({ fromChain: 56 }),
+      (error: unknown) => error instanceof ButterApiError && /invalid record count/.test(error.message)
+    )
+    assert.equal(tokenRequests, 1)
+  })
+
+  it('rejects a non-array token results payload', async () => {
+    // `results` drives the loop; a non-array surfaced as a raw TypeError from for...of
+    // rather than as this package's own error.
+    const fetch = makeFetch({
+      '/supportedChainInfo': async () => ({ errno: 0, message: 'success', data: [{ id: '56', type: 'EVM', name: 'BNB', nativeToken: '{"symbol":"BNB"}' }] }),
+      '/api/queryChainList': async () => ({ code: 200, message: 'success', data: { chains: [{ chainId: '56', key: 'bsc' }] } }),
+      '/api/queryTokenList': async () => ({ code: 200, message: 'success', data: { count: 1, results: { address: '0xaaa' } } })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+
+    await assert.rejects(
+      protocol.getSupportedTokens({ fromChain: 56 }),
+      (error: unknown) => error instanceof ButterApiError && /non-array results/.test(error.message)
+    )
+  })
+
+  it('rejects a page that repeats a record from an earlier page', async () => {
+    // With count 4 and pages [A,B] then [B,C], counting raw rows reaches 4 and the
+    // walk stops without ever asking for D. The overlap itself is the signal — the
+    // server is either looping or the list shifted underneath the walk.
+    const pages: Record<string, Array<{ address: string, decimals: number, symbol: string }>> = {
+      1: [{ address: '0xaaa', decimals: 18, symbol: 'A' }, { address: '0xbbb', decimals: 18, symbol: 'B' }],
+      2: [{ address: '0xbbb', decimals: 18, symbol: 'B' }, { address: '0xccc', decimals: 18, symbol: 'C' }]
+    }
+    const fetch = makeFetch({
+      '/supportedChainInfo': async () => ({ errno: 0, message: 'success', data: [{ id: '56', type: 'EVM', name: 'BNB', nativeToken: '{"symbol":"BNB"}' }] }),
+      '/api/queryChainList': async () => ({ code: 200, message: 'success', data: { chains: [{ chainId: '56', key: 'bsc' }] } }),
+      '/api/queryTokenList': async (url) => ({
+        code: 200,
+        message: 'success',
+        data: { count: 4, results: pages[String(url.searchParams.get('pageNo'))] ?? [] }
+      })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+
+    await assert.rejects(
+      protocol.getSupportedTokens({ fromChain: 56 }),
+      (error: unknown) => error instanceof ButterApiError && /record from an earlier page/.test(error.message)
+    )
+  })
+
+  it('counts an in-page duplicate toward the advertised raw count', async () => {
+    // Butter's `count` counts raw rows, so a page listing the same token twice has
+    // consumed both slots. Counting distinct records instead left the walk short of
+    // `count` and aborted a perfectly legitimate response on the following empty page.
+    const fetch = makeFetch({
+      '/supportedChainInfo': async () => ({ errno: 0, message: 'success', data: [{ id: '56', type: 'EVM', name: 'BNB', nativeToken: '{"symbol":"BNB"}' }] }),
+      '/api/queryChainList': async () => ({ code: 200, message: 'success', data: { chains: [{ chainId: '56', key: 'bsc' }] } }),
+      '/api/queryTokenList': async (url) => ({
+        code: 200,
+        message: 'success',
+        data: {
+          count: 3,
+          results: url.searchParams.get('pageNo') === '1'
+            ? [
+                { address: '0xaaa', decimals: 18, symbol: 'A' },
+                { address: '0xaaa', decimals: 18, symbol: 'A' },
+                { address: '0xbbb', decimals: 6, symbol: 'B' }
+              ]
+            : []
+        }
+      })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+
+    const tokens = await protocol.getSupportedTokens({ fromChain: 56 })
+
+    // Three raw rows consumed, two distinct tokens surfaced.
+    assert.deepEqual(tokens.map(({ token }) => token), ['0xaaa', '0xbbb'])
+  })
+
+  it('rejects a repeated token page instead of returning partial results', async () => {
+    // A server replaying page 1 used to look like progress: `consumed` climbed by the
+    // page size until it reached `count`, and the walk ended silently with a
+    // deduplicated fraction of the list and no error.
+    const fetch = makeFetch({
+      '/supportedChainInfo': async () => ({ errno: 0, message: 'success', data: [{ id: '56', type: 'EVM', name: 'BNB', nativeToken: '{"symbol":"BNB"}' }] }),
+      '/api/queryChainList': async () => ({ code: 200, message: 'success', data: { chains: [{ chainId: '56', key: 'bsc' }] } }),
+      '/api/queryTokenList': async () => ({
+        code: 200,
+        message: 'success',
+        data: { count: 4, results: [{ address: '0xaaa', decimals: 18, symbol: 'AAA' }, { address: '0xbbb', decimals: 6, symbol: 'BBB' }] }
+      })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+
+    await assert.rejects(
+      protocol.getSupportedTokens({ fromChain: 56 }),
+      (error: unknown) => error instanceof ButterApiError && /record from an earlier page/.test(error.message)
+    )
+  })
+
+  it('rejects a token page whose advertised count changes mid-walk', async () => {
+    // Re-reading `count` every page let a later response shrink it, ending the walk
+    // early with a partial list and no error.
+    const fetch = makeFetch({
+      '/supportedChainInfo': async () => ({ errno: 0, message: 'success', data: [{ id: '56', type: 'EVM', name: 'BNB', nativeToken: '{"symbol":"BNB"}' }] }),
+      '/api/queryChainList': async () => ({ code: 200, message: 'success', data: { chains: [{ chainId: '56', key: 'bsc' }] } }),
+      '/api/queryTokenList': async (url) => {
+        const page = Number(url.searchParams.get('pageNo'))
+        return {
+          code: 200,
+          message: 'success',
+          data: {
+            count: page === 1 ? 4 : 2,
+            results: [{ address: `0x${String(page)}aa`, decimals: 18, symbol: 'AAA' }]
+          }
+        }
+      }
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+
+    await assert.rejects(
+      protocol.getSupportedTokens({ fromChain: 56 }),
+      (error: unknown) => error instanceof ButterApiError && /changed its advertised count/.test(error.message)
+    )
   })
 
   it('maps and validates source-hash status responses', async () => {
@@ -5148,6 +5514,60 @@ describe('helpers', () => {
       }),
       (error: unknown) => error instanceof ButterApiError && /not valid JSON/.test(error.message)
     )
+  })
+
+  /**
+   * Case-insensitivity is a property of EVM hex, not of identifiers. EIP-55 casing is
+   * a checksum over an address, so `0xAbCd…` and `0xabcd…` name one thing; Base58
+   * (Solana mints and signatures, Tron addresses) encodes information in the case of
+   * each character, so two casings are two different values.
+   */
+  const IDENTIFIER_MATRIX: Array<{ name: string, left: string, right: string, same: boolean }> = [
+    { name: 'EVM address, checksummed vs lowercase', left: '0xAbCdEf0123456789AbCdEf0123456789AbCdEf01', right: '0xabcdef0123456789abcdef0123456789abcdef01', same: true },
+    { name: 'EVM tx hash, mixed vs lowercase', left: `0x${'Ab'.repeat(32)}`, right: `0x${'ab'.repeat(32)}`, same: true },
+    { name: 'Solana mint differing only by case', left: 'AbCdEfGhJkLmNpQrStUvWxYz123456789ABCDEFGHJK', right: 'abcdefghjklmnpqrstuvwxyz123456789abcdefghjk', same: false },
+    { name: 'Solana mint, identical', left: 'AbCdEfGhJkLmNpQrStUvWxYz123456789ABCDEFGHJK', right: 'AbCdEfGhJkLmNpQrStUvWxYz123456789ABCDEFGHJK', same: true },
+    { name: 'Tron address differing only by case', left: 'TAbcDefGhJkLmNpQrStUvWxYz123456789', right: 'tabcdefghjklmnpqrstuvwxyz123456789', same: false },
+    // `0x`-prefixed but not hex, so not an EVM identifier and not normalized.
+    { name: 'non-hex 0x string differing by case', left: '0xZZzz', right: '0xzzzz', same: false }
+  ]
+
+  for (const { name, left, right, same } of IDENTIFIER_MATRIX) {
+    it(`compares identifiers: ${name}`, () => {
+      assert.equal(sameIdentifier(left, right), same)
+      assert.equal(normalizeIdentifier(left) === normalizeIdentifier(right), same)
+    })
+  }
+
+  /**
+   * Token identifiers and transaction hashes are different format spaces, so they get
+   * different rules. A bare 64-hex string is a Bitcoin or Tron txid and is
+   * case-insensitive like any hex; nothing in the token-identifier space takes that
+   * shape. Using one rule for both was wrong in both directions at once — it rejected
+   * a BTC txid differing only in case, and would normalize token identifiers it must
+   * leave alone.
+   */
+  const BARE_TX_HASH = 'AbCdEf0123456789'.repeat(4)
+
+  it('treats a bare 64-hex transaction id as case-insensitive', () => {
+    assert.equal(sameTransactionHash(BARE_TX_HASH, BARE_TX_HASH.toLowerCase()), true)
+    // ...but only in the hash domain. As a token identifier it stays opaque.
+    assert.equal(sameIdentifier(BARE_TX_HASH, BARE_TX_HASH.toLowerCase()), false)
+  })
+
+  it('keeps Base58 signatures exact in the transaction hash domain too', () => {
+    // 88 base58 characters: a Solana signature cannot be confused with 64-hex.
+    const signature = 'AbCdEfGhJkLmNpQrStUvWxYz'.repeat(3) + 'AbCdEfGhJkLmNpQr'
+    assert.equal(signature.length, 88)
+    assert.equal(sameTransactionHash(signature, signature.toLowerCase()), false)
+    assert.equal(sameTransactionHash(signature, signature), true)
+  })
+
+  it('never matches an absent or empty identifier, including against another', () => {
+    // "We do not know which token this is" is not evidence that two unknowns match.
+    assert.equal(sameIdentifier(undefined, undefined), false)
+    assert.equal(sameIdentifier('', ''), false)
+    assert.equal(sameIdentifier('   ', '0xabc'), false)
   })
 
   it('rejects a negative integer amount in every input form', () => {

@@ -203,8 +203,12 @@ export interface ButterWarning {
      * `undeclared-integrator-fee` — the route's `feeConfig` charges an integrator fee
      * that `swapFee` does not report, so the quoted `fees[]` understates what the
      * Router will actually take (the cap check still counts it).
+     * `bridge-fee-components-missing` — the bridge fee arrived as a top-level summary
+     * with no `in`, `out` or `affiliate` component. The summary is never priced (one
+     * figure in one token cannot describe a fee spanning three), so the bridge fee is
+     * omitted from `fees[]` and a configured protocol cap refuses.
      */
-    code: 'mixed-currency-protocol-fees' | 'no-fees-reported' | 'undeclared-integrator-fee';
+    code: 'mixed-currency-protocol-fees' | 'no-fees-reported' | 'undeclared-integrator-fee' | 'bridge-fee-components-missing';
     message: string;
     details?: unknown;
 }
@@ -438,6 +442,11 @@ export interface CachedRoute {
     key: string;
     route: ButterRoute;
     slippageBps: number;
+    /**
+     * Source-token decimals resolved by this package (config / `/findToken` / native
+     * default) and used to build the request — NOT the route's own reported value.
+     */
+    sourceDecimals: number;
     expiresAt: number;
 }
 //# sourceMappingURL=types.d.ts.map

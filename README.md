@@ -220,25 +220,36 @@ is where each entry lands in the legacy `swap()`/`bridge()` scalars:
 | --- | --- | --- | --- |
 | `bridgeFee.in` | `protocol` | `bridgeFee` | inbound leg of the bridge fee, in **its own** token |
 | `bridgeFee.out` | `protocol` | `bridgeFee` | outbound leg of the bridge fee, in **its own** token |
-| `bridgeFee.amount` | `protocol` | `bridgeFee` | only used when neither `in` nor `out` is present |
-| `bridgeFee.affiliate` | `affiliate` | *(not visible)* | integrator/affiliate share |
+| `bridgeFee.affiliate` | `affiliate` | *(not visible)* | integrator/affiliate share — **counted against `maxProtocolFeeBps`** |
+| `bridgeFee.amount` | — | — | never priced; used only to detect that a fee exists which no component describes |
 | `gasFee` | `network` | `fee` | source-chain gas; estimate, replaced by measured gas when the sender reports every send's fee |
 | `swapFee.nativeFee` | `protocol` | `bridgeFee` | native-denominated swap fee |
 | `swapFee.tokenFee` | `protocol` | `bridgeFee` | input-token-denominated swap fee |
-| `feeConfig` | — | — | not an entry in `fees[]` (a rate is not an amount), but **is** counted against `maxProtocolFeeBps` |
+| `feeConfig` | `protocol` | `bridgeFee` | the integrator fee, added **only** when `swapFee` does not already report it; a proportional rate needs `fromTokenAmount` to be shown as an amount |
 
-`bridgeFee` is reported per component rather than as its top-level summary, because
-`in` and `out` carry their own tokens and can sit on different chains — a single
-entry would have to guess which token to name. Butter's docs do not say whether the
-summary is their sum or a restatement of `out`, so the components are preferred:
-that is correct under either reading and never reports less
-(`npm run example:probe-fee-model` settles it against live data).
+`bridgeFee` is reported per component, and the top-level `bridgeFee.amount` summary is
+**never priced**. It is a single figure in a single token describing a fee that can
+span three tokens, so it is not attributable — and amounts in different tokens cannot
+be added, which rules out reconstructing a component from it or even checking it
+against the components' sum. When a route reports a summary but no `in`, `out` or
+`affiliate`, the fee is omitted from `fees[]` with a `bridge-fee-components-missing`
+warning and a configured protocol cap refuses outright, rather than measuring a number
+it cannot attribute. `npm run example:probe-fee-model` shows how a live route
+decomposes.
+
+**The affiliate share counts against `maxProtocolFeeBps`**, even though `fees[]`
+keeps WDK's `affiliate` type for it. This is a deliberate deviation: WDK has no
+affiliate cap, and leaving the share unbounded bites hardest when you do *not* set
+`affiliate` — Butter then substitutes its own wallet, so your users pay a cut you
+never chose. `maxProtocolFeeBps` is the only knob available to bound it.
 
 `feeConfig` is the integrator fee as it will actually be encoded in the Router
 calldata, and it is what `maxProtocolFeeBps` is checked against — `swapFee` merely
 reports it. Where both describe the same fee the larger is used, never the sum. When
-`feeConfig` charges a fee that `swapFee` does not report, `fees[]` cannot show it as
-an amount, so `onWarning` fires with `undeclared-integrator-fee`.
+`feeConfig` charges a fee that `swapFee` does not report, `onWarning` fires with
+`undeclared-integrator-fee` and the fee is added to `fees[]`: a fixed native fee
+directly, and a proportional rate as `fromTokenAmount × rate / 10000` — so it appears
+only when you supplied an input amount, since a rate on its own is not an amount.
 
 `fees[]` is always populated: if Butter reports no fees at all, it carries a single
 zero-amount `network` entry rather than being empty (an empty array reads as "free").
@@ -261,6 +272,8 @@ const protocol = new ButterSwidgeProtocol(account, {
 // -> 'mixed-currency-protocol-fees' when the protocol group spans several tokens
 // -> 'no-fees-reported'              when Butter reported none and fees[] is a placeholder
 // -> 'undeclared-integrator-fee'     when feeConfig charges a fee swapFee omits
+// -> 'bridge-fee-components-missing' when a bridge fee summary cannot be split
+//                                    from its affiliate share
 ```
 
 ## Safety Defaults

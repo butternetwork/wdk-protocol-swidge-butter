@@ -149,10 +149,17 @@ Everything else is a focused collaborator it composes:
   (`mappers.ts` emits `''`, never `'unknown'`, so the caller decides). Strict-slippage chain
   detection runs **before** the chain filter — dropping a chain from the listing must never
   relax its slippage floor, which is looked up by chain id whether or not the chain was listed.
-  `/findToken` results are cached (incl. confirmed misses) and used as a
-  fallback when `config.tokenDecimals` doesn't cover a token. `/findToken` matches by address only
-  and ignores the `chainId` param, so results are filtered by `token.chainId` — never trust
-  `data[0]`. Transport failures rethrow (not treated as "unknown token").
+  `/findToken` supplies decimals when `config.tokenDecimals` doesn't cover a token. An entry is
+  trusted only when **both its chain and its address match the request** (`sameIdentifier`, so a
+  Base58 mint is case-sensitive) — never `data[0]`, and never chain alone. Butter matching by address
+  and ignoring the `chainId` param describes its behaviour, not a guarantee about the response: an
+  earlier revision filtered on chain only, reasoning the address "must" already be right, and a
+  same-chain entry for a different token could then supply the decimals. Those decimals become
+  `FeeContext.sourceTokenDecimals`, so a wrong value reopens the fee-cap bypass
+  `trustedSourceDecimals` exists to close. Only **conclusive** outcomes are cached: an affirmative
+  not-found, or our token found with unusable decimals. A response that simply lacks the requested
+  token is inconclusive and must not be cached, or one bad response pins that token to "configure
+  tokenDecimals" for the process lifetime. Transport failures rethrow (not "unknown token").
 - **`status.ts`** — maps Butter's cross-state codes (`queryBridgeInfoBySourceHash` /
   `queryCrossInfoByOrderId`) to WDK's `SwidgeStatus`: authoritative codes are `0` crossing→`pending`,
   `1`→`completed`, `6` refund→`refunded` (there is no numeric `failed`). Unrecognized/intermediate
@@ -184,6 +191,25 @@ Everything else is a focused collaborator it composes:
 
 ### Key invariants to preserve
 
+- **Case-insensitivity is a property of EVM hex, not of identifiers — and normalization is per format
+  space**: `identifiers.ts` has two domains that are not interchangeable. `normalizeIdentifier` /
+  `sameIdentifier` (token identifiers) lowercase **only** confirmed `0x`-hex.
+  `normalizeTransactionHash` / `sameTransactionHash` also accept bare 64-hex, since BTC and Tron
+  txids have no `0x` prefix; length 64 keeps Base58 out (Solana signatures are 87–88 chars,
+  addresses 32–44). One rule for both is wrong in both directions — the token rule rejected a BTC
+  txid differing only in case. `normalizeTokenKey` exists so building and querying the `tokenDecimals`
+  map share one function; normalizing only the query made a checksummed config key unreachable from a
+  lowercase request, masked by `/findToken`. Conflicting entries throw at construction. `tokenDecimals`
+  never applies to native tokens — `decimalsFor` answers those from `NATIVE_TOKEN_ADDRESSES` and
+  `config.nativeTokenDecimals` first. Solana mints and signatures, Tron and TON addresses are Base58, where a
+  character's case is part of the value. A blanket `toLowerCase()` simultaneously let a fee in a
+  different mint pose as the source token (taking the caller's input as its denominator and passing a
+  cap), let a route satisfy the token-intent check with a differently cased token, merged two mints in
+  discovery into one entry sharing a decimals cache slot, and treated two Solana signatures as one
+  operation. Symbols, chain ids, chain type/name and status strings are human-readable and stay
+  plainly case-insensitive; `swap-data.ts`, `router-registry.ts` and the router/signer address checks
+  are EVM-only by construction and stay as they are.
+
 - **Middle-tier trust boundary** (the definitive statement is in `AGENTS.md`): Butter responses are
   partially trusted. Always keep the router allowlist, the single-transaction EVM rule, top-level
   intent checks, the `feeData`↔`feeConfig` check, the `tx.value` bounds, the `maxNativeFee` cap
@@ -210,6 +236,32 @@ Everything else is a focused collaborator it composes:
   in that check, and it must stay confined to the exact-out branch) and `fees.ts: sourceDenominator`'s
   `min(cap, route-reported input)` fallback. Don't delete them, and don't re-enable exact-out on
   documentation alone.
+- **Source-denominated fee caps fix both the denominator and the scale**: the numerator must be
+  parsed with `FeeContext.sourceTokenDecimals` — resolved by this package when building the `/route`
+  request and carried on `CachedRoute.sourceDecimals` — never with `route.srcChain.tokenIn.decimals`.
+  `route.ts` checks the source token's address but not its decimals, so a response claiming
+  `decimals: 0` shrinks a 10 USDC fee to `10n` and 1000 bps reads as 0.001. Declared decimals that
+  disagree with the resolved value are refused (`trustedSourceDecimals`). Recognizing a
+  source-token component (`isSourceTokenComponent`) follows one rule: **a symbol can only ever
+  confirm a symbolic identifier.** A declared address decides alone; the symbol is consulted only
+  when the component has no address *and* `sourceToken` is itself symbolic
+  (`SYMBOLIC_NATIVE_TOKEN_IDS`) — use that closed set, not a `0x` shape test, or a Solana mint counts
+  as symbolic. This has failed in three directions across three reviews (too strict; symbol beating a
+  declared address; an ungated fallback letting any component name the source address in its
+  `symbol`), so the full matrix is pinned by a table-driven test in `test/fees.test.ts` — **extend
+  the table, don't add another one-off case**. A trusted denominator is not automatically a
+  meaningful one.
+  Matching a component to a route **leg** (`sameTokenAddress`) requires an address on both sides,
+  because a symbol is not an identifier. Those two strictnesses are deliberately opposite; having
+  them the wrong way round was itself a bypass. Applies to any
+  source-denominated amount including a bridge component in the source token, and **in quoting as
+  well as capping** (`componentDecimals`, `swapFee.tokenFee` in `mapRouteFees`) — a quote needs no
+  cap configured for a caller to read an understated number and act on it. A cross-denominated
+  component keeps its own decimals, where numerator and denominator are both route-reported in the
+  same token and the scale cancels. `route.feeConfig` goes through one boundary parser
+  (`parseFeeConfig`): non-negative bigint rate, integer `feeType` in {0,1}, typed errors — a raw
+  `BigInt()` throw used to escape `quoteSwidge` as a `SyntaxError`, and a negative rate subtracted
+  from the cap total. `enforceLimit` rejects negative numerators too.
 - **Source-denominated fee caps never use a route-reported denominator**: this covers
   `fees.ts: bridgeFeeComponentRatio` too — a bridge fee component charged in the source token must use
   `sourceDenominator`, falling back to a route amount only for a genuinely cross-denominated component
@@ -219,10 +271,22 @@ Everything else is a focused collaborator it composes:
   (protocol cap) throws `ButterFeeValuationError`, since scoring an unreported fee as free lets any cap
   be passed by omission.
 - **`bridgeFee` is priced per component, `feeConfig` is the authoritative integrator fee**:
-  `bridgeFeeComponents` emits `in` and `out` as separate `protocol` fees with their own tokens, using
-  the top-level `amount` only when neither exists (Butter's docs don't say whether the summary sums
-  them or mirrors `out`; preferring components is correct either way and never reports less —
-  `npm run example:probe-fee-model` settles it). For `maxProtocolFeeBps` the integrator fee comes from
+  `bridgeFeeComponents` emits `in`, `out` and `affiliate` as separate entries with their own tokens
+  and a `role` that picks the matching route leg (`in` and `out` are usually the same token, so one
+  shared candidate order measured the outbound fee against the inbound amount). The top-level
+  `bridgeFee.amount` summary is **never priced** — not directly, not reconstructed as
+  `amount - affiliate`, not even compared against the components' sum, since amounts in different
+  tokens are not addable. One figure in one token cannot describe a fee spanning three, and an
+  untrusted response could omit the components and offer a small, conveniently-denominated summary
+  that satisfies any cap. It serves only as a detector: with no component present, `mapRouteFees`
+  warns `bridge-fee-components-missing` and omits the fee, and a configured cap throws. It is equally
+  unfit as **evidence** — `hasBridgeFeeComponents` counts only `in`/`out`/`affiliate` amounts, so an
+  explicit component `"0"` passes but a bare `{ amount: "0" }` does not; otherwise a response
+  satisfies `maxProtocolFeeBps: 0` with a summary it was never willing to stand behind.
+  `affiliate.amount` must be one of the counted fields. The
+  affiliate **is** aggregated into `maxProtocolFeeBps` while keeping its `affiliate` fee type: WDK has
+  no affiliate cap, and an unset `config.affiliate` means Butter takes the cut with its own wallet.
+  For `maxProtocolFeeBps` the integrator fee comes from
   `route.feeConfig`, which is what `validateFeeData` checks the calldata against: `feeType: 1` is bps
   of the input, so its ratio is `rate / 10000` and needs **no** trusted route amount (preserve that);
   `feeType: 0` is source-chain native base units; anything else fails closed. Take the **larger** of

@@ -3,7 +3,12 @@ export interface RouteRequestContext {
     sourceChainId: string;
     entrance: string;
     now: () => number;
-    tokenDecimals: Record<string, number>;
+    /**
+     * Configured decimals, indexed by `normalizeTokenKey`. A Map rather than a record
+     * so the key function that built it is the one the lookup uses; see
+     * `protocol.ts: normalizedTokenDecimals`.
+     */
+    tokenDecimals: ReadonlyMap<string, number>;
     nativeTokenDecimals: Record<string, number>;
     strictSlippageChainIds: Set<string>;
     /**
@@ -53,7 +58,20 @@ export declare class RouteManager {
      */
     private evictStaleRoutes;
     private evict;
-    buildRouteRequest(options: SwidgeOptions, senderFallback?: string): Promise<Record<string, unknown>>;
+    /**
+     * Builds the `/route` query, and returns the source-token decimals it resolved
+     * alongside it.
+     *
+     * Those decimals are the trusted ones — from `config.tokenDecimals`, `/findToken`,
+     * or the chain's native default — and they are what converted the caller's base
+     * units into Butter's decimal `amount`. They are returned rather than recomputed
+     * so fee valuation can use exactly the same number instead of the route's own
+     * `srcChain.tokenIn.decimals`, which is untrusted.
+     */
+    buildRouteRequest(options: SwidgeOptions, senderFallback?: string): Promise<{
+        request: Record<string, unknown>;
+        sourceDecimals: number;
+    }>;
     enforceMinAmountOut(options: SwidgeOptions, route: ButterRoute): void;
     private decimalsFor;
     private validateRouteMatchesRequest;
