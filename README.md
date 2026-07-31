@@ -27,12 +27,14 @@ import ButterSwidgeProtocol, {
 const protocol = new ButterSwidgeProtocol(account, {
   sourceChainId: 56,
   entrance: 'wdk',
+  requestTimeoutMs: 10_000, // complete Butter HTTP request, including body parsing
   apiKeyId: process.env.BUTTER_API_KEY_ID,
   apiSecret: process.env.BUTTER_API_SECRET,
   maxNativeFee: 20000000000000000n, // required for cross-chain (see Safety Defaults)
   evm: {
     walletClient: toEvmWalletClient(viemWalletClient),
-    publicClient: toEvmPublicClient(viemPublicClient) // enables allowance checks + status
+    publicClient: toEvmPublicClient(viemPublicClient), // enables allowance checks + status
+    approvalTimeoutMs: 10_000
   }
 })
 ```
@@ -137,8 +139,13 @@ retained and unit-tested.
   unpinned execution transparently re-quotes. The default deliberately does not
   assume an approval — when approvals are expected, raise
   `routeExecutionMarginSeconds` above `evm.approvalTimeoutMs / 1000` (which
-  defaults to 60s, i.e. set at least `60`). These two values are coupled; the
+  defaults to 10s). These two values are coupled; the
   margin is configurable rather than hardcoded so the coupling stays explicit.
+- Butter HTTP calls have a complete-request deadline: `requestTimeoutMs`
+  defaults to **10,000ms** and covers the fetch plus error-body or JSON-body
+  parsing. Timed-out requests abort and throw `ButterApiError`; they are not
+  retried automatically. ERC20 approval confirmation independently defaults to
+  **10,000ms** via `evm.approvalTimeoutMs` (`0` means immediate timeout).
 - Pinning a quote: pass `options.routeHash` (from a prior `quoteSwidge` result)
   to `swidge` to execute that exact quoted route. `swidge` accepts
   `ButterSwidgeOptions` (`SwidgeOptions & { routeHash? }`), so the field is part
@@ -284,8 +291,10 @@ const protocol = new ButterSwidgeProtocol(account, {
 - Explicit cross-chain slippage below Butter's documented floor is rejected.
   Defaults use the applicable minimum. BTC and TON routes use the stricter 300
   bps floor; additional IDs can be configured with `strictSlippageChainIds`.
-- `minAmountOut` is enforced locally because Butter's documented `/route` API
-  does not expose a separate request parameter for it.
+- `minAmountOut` is compared locally with the minimum returned by `/route`
+  because Butter's documented API does not expose a separate request parameter.
+  For cross-chain execution this remains a quote check, not calldata enforcement:
+  the destination minimum is inside the nested bridge payload trusted to Butter.
 - `refundAddress` is optional, and when you name one it is **verified rather
   than assumed**. Omit it to accept Butter's own default refund destination,
   trusted like the rest of the destination routing. Naming one asks for a
@@ -357,8 +366,9 @@ const protocol = new ButterSwidgeProtocol(account, {
   middle-tier trust boundary, not full calldata intent validation: a compromised
   or buggy `/swap` could route the destination output elsewhere. Only the bridge
   target (destination chain) is checked. Source-token exposure remains bounded
-  because the module approves only the exact input amount to the router. Set
-  `minAmountOut` for a locally-enforced destination minimum.
+  because the module approves only the exact input amount to the router. Setting
+  `minAmountOut` rejects an inadequate route, but does not upgrade this
+  cross-chain destination guarantee beyond `quoted-only`.
 - ERC20 approval only occurs after calldata validation and only targets a
   configured Butter router for the source chain. The approval is **always for the
   exact input amount** — there is no unbounded/`max` approval option — so a

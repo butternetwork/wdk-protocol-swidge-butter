@@ -9,6 +9,16 @@ and (once published) [Semantic Versioning](https://semver.org).
 Security hardening from multi-round expert review. **Breaking** changes are marked.
 
 ### Security / correctness
+- Bound every Butter HTTP request, including response-body parsing, with the new
+  `requestTimeoutMs` setting (default 10 seconds). Timeouts abort and surface as
+  typed `ButterApiError`s; requests are not retried automatically.
+- Change the default ERC-20 approval confirmation deadline from 60 seconds to 10
+  seconds. Both public-client waits and fallback receipt lookups are bounded by
+  the same deadline; `evm.approvalTimeoutMs` remains configurable and accepts `0`
+  for an immediate timeout.
+- Validate route token identifiers and required output amounts before quoting,
+  normalize blank recipients as absent, validate string-form source decimals,
+  and type malformed discovery envelopes while dropping malformed individual rows.
 - Enforce fee-cap ratios against the caller's `fromTokenAmount`, not the
   Butter-reported `srcChain.totalAmountIn` (an inflated route could otherwise slip
   an over-cap fee past `maxNetworkFeeBps`/`maxProtocolFeeBps`).
@@ -106,7 +116,7 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
   inverted: quoting demanded ≥15s of remaining route lifetime while execution
   accepted any route that had not literally expired — even though execution still
   has to complete a `/swap` round-trip, an optional ERC-20 approval (whose receipt
-  wait defaults to 60s), and the swap send. A route with a second left could pass
+  wait defaults to 10s), and the swap send. A route with a second left could pass
   `/swap` and then land on-chain long after its quote went stale, leaving only
   `minAmount` as protection. Inside the margin, unpinned execution now re-quotes;
   a pinned `routeHash` is rejected with `ButterActionRequiredError` rather than
@@ -161,11 +171,15 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
   `trustedSourceDecimals` exists to close, reached through `/findToken` instead. Entries
   are now matched on chain **and** address, format-aware so a Base58 mint stays
   case-sensitive.
-- Cache only **conclusive** `/findToken` outcomes: an affirmative not-found, or the
-  requested token found with unusable decimals. A response that simply does not contain
-  the requested token is inconclusive and is no longer cached — with address validation
-  added, that path became reachable, and caching it would have pinned every later quote
-  for that token to "configure tokenDecimals" for the lifetime of the process.
+- Harden `/findToken` parsing and cache only valid, useful outcomes. Matching decimals
+  must be an integer from 0 through 255 (base-10 digit strings are accepted), and the
+  `decimals` / `decimal` aliases and duplicate matching records must agree; malformed or
+  conflicting metadata now raises a typed `ButterApiError` and is never cached. Malformed
+  unrelated array entries are
+  ignored, while a malformed top-level payload is rejected. An affirmative not-found is
+  cached for 300 seconds before retrying, a response that simply lacks the requested
+  token remains inconclusive and uncached, and the whole decimals cache is now a
+  256-entry LRU so a long-lived process cannot grow it without bound.
 - Normalize **transaction hashes in their own format space**, separate from token
   identifiers. Bitcoin and Tron txids are bare 64-character hex with no `0x` prefix,
   and hex is case-insensitive, so the token-identifier rule rejected a BTC txid that

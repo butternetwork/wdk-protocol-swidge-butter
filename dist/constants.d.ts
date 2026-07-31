@@ -12,7 +12,7 @@ export declare const ROUTE_EXPIRY_MARGIN_SECONDS = 15;
  * Freshness margin required to use a route on the **execution** path.
  *
  * Execution still has to complete a `/swap` round-trip, an optional ERC-20
- * approval (whose receipt wait defaults to 60s), and the swap send before the
+ * approval (whose receipt wait defaults to 10s), and the swap send before the
  * quote has to still be good on-chain — so it needs a far larger margin than a
  * quote does. Configurable via `routeExecutionMarginSeconds`, which should
  * exceed `evm.approvalTimeoutMs / 1000` when approvals are expected.
@@ -20,6 +20,14 @@ export declare const ROUTE_EXPIRY_MARGIN_SECONDS = 15;
 export declare const ROUTE_EXECUTION_MARGIN_SECONDS = 45;
 /** Maximum number of cached routes retained by a long-lived instance. */
 export declare const ROUTE_CACHE_MAX_ENTRIES = 256;
+/** Default deadline for a complete Butter HTTP request, including body parsing. */
+export declare const REQUEST_TIMEOUT_MS = 10000;
+/** Default deadline for confirming an already-broadcast ERC20 approval. */
+export declare const APPROVAL_TIMEOUT_MS = 10000;
+/** Maximum number of token-decimals lookups retained by a long-lived instance. */
+export declare const TOKEN_DECIMALS_CACHE_MAX_ENTRIES = 256;
+/** Seconds before a cached `/findToken` not-found result is retried. */
+export declare const TOKEN_DECIMALS_NOT_FOUND_TTL_SECONDS = 300;
 /** Maximum number of executed operation kinds remembered for status routing. */
 export declare const OPERATION_KIND_MAX_ENTRIES = 1024;
 /** Butter router `errno` returned by `/findToken` when a token is unknown. */

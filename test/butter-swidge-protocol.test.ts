@@ -49,6 +49,10 @@ function jsonResponse (body: unknown, ok = true, status = 200) {
   }
 }
 
+function failAfter<T> (ms: number): Promise<T> {
+  return new Promise((_, reject) => setTimeout(() => reject(new Error(`test deadline exceeded after ${ms}ms`)), ms))
+}
+
 function makeFetch (routes: Record<string, (url: URL, init: { headers?: Record<string, string> }) => Promise<unknown> | unknown>) {
   const calls: Array<{ url: URL, init: { headers?: Record<string, string> } }> = []
   const fetch = async (url: string, init: { headers?: Record<string, string> } = {}) => {
@@ -617,6 +621,90 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     }), ButterApiError)
   })
 
+  for (const [name, overrides, toChain] of [
+    ['source token address', { srcChain: { chainId: '56', tokenIn: { address: '   ', decimals: 18 }, totalAmountIn: '1.5', totalAmountOut: '1.5' } }, 137],
+    ['cross-chain destination token address', { dstChain: { chainId: '137', tokenOut: { address: '   ', decimals: 6 }, totalAmountOut: '10.25' } }, 137],
+    ['same-chain destination token address', { dstChain: undefined, srcChain: { chainId: '56', tokenIn: { address: '0xfrom', decimals: 18 }, tokenOut: { address: '   ', decimals: 6 }, totalAmountIn: '1.5', totalAmountOut: '10.25' } }, 56]
+  ] as const) {
+    it(`rejects a route with a missing ${name}`, async () => {
+      const fetch = makeFetch({
+        '/route': async () => ({ errno: 0, message: 'success', data: [quoteRoute(overrides)] })
+      })
+      const protocol = new ButterSwidgeProtocol(undefined, {
+        sourceChainId: 56,
+        entrance: 'wdk',
+        fetch,
+        tokenDecimals: DEFAULT_TOKEN_DECIMALS
+      })
+
+      await assert.rejects(protocol.quoteSwidge({
+        fromToken: '0xfrom',
+        toToken: '0xto',
+        toChain,
+        fromTokenAmount: 1500000000000000000n,
+        slippage: 0.02
+      }), ButterApiError)
+    })
+  }
+
+  it('does not accept a source-leg tokenOut for a cross-chain destination', async () => {
+    const fetch = makeFetch({
+      '/route': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [quoteRoute({
+          srcChain: {
+            chainId: '56',
+            tokenIn: { address: '0xfrom', decimals: 18 },
+            tokenOut: { address: '0xto', decimals: 6 },
+            totalAmountIn: '1.5',
+            totalAmountOut: '10.25'
+          },
+          dstChain: { chainId: '137', totalAmountOut: '10.25' }
+        })]
+      })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch,
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS
+    })
+
+    await assert.rejects(protocol.quoteSwidge({
+      fromToken: '0xfrom',
+      toToken: '0xto',
+      toChain: 137,
+      fromTokenAmount: 1500000000000000000n,
+      slippage: 0.02
+    }), ButterApiError)
+  })
+
+  for (const [name, overrides] of [
+    ['minimum output', { minAmountOut: undefined, amountOutMin: undefined }],
+    ['destination total output', { dstChain: { chainId: '137', tokenOut: { address: '0xto', decimals: 6 }, totalAmountOut: undefined }, totalAmountOut: undefined }]
+  ] as const) {
+    it(`rejects a route that omits ${name}`, async () => {
+      const fetch = makeFetch({
+        '/route': async () => ({ errno: 0, message: 'success', data: [quoteRoute(overrides)] })
+      })
+      const protocol = new ButterSwidgeProtocol(undefined, {
+        sourceChainId: 56,
+        entrance: 'wdk',
+        fetch,
+        tokenDecimals: DEFAULT_TOKEN_DECIMALS
+      })
+
+      await assert.rejects(protocol.quoteSwidge({
+        fromToken: '0xfrom',
+        toToken: '0xto',
+        toChain: 137,
+        fromTokenAmount: 1500000000000000000n,
+        slippage: 0.02
+      }), (error: unknown) => error instanceof ButterApiError && /amount/i.test(error.message))
+    })
+  }
+
   it('uses an earlier Butter route timestamp without allowing it to extend the local TTL', async () => {
     const fetch = makeFetch({
       '/route': async () => ({
@@ -884,31 +972,34 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     await assert.rejects(protocol.swidge(nativeFeeOptions()), ButterTransactionValidationError)
   })
 
-  it('rejects a cross-VM swidge without an explicit recipient', async () => {
-    // The WDK default (recipient = the account address) would send an EVM address
-    // as the Solana destination receiver. `makeFetch` throws on any request, so
-    // this also proves the rejection happens before /route.
-    const fetch = makeFetch({})
-    const protocol = new ButterSwidgeProtocol(account, {
-      sourceChainId: 56,
-      entrance: 'wdk',
-      fetch,
-      maxNativeFee: 0n,
-      evm: { walletClient: evmWallet(async () => '0xsourcehash') }
-    })
+  for (const recipient of [undefined, '', '   '] as const) {
+    it(`rejects a cross-VM swidge with recipient ${JSON.stringify(recipient)}`, async () => {
+      // The WDK default (recipient = the account address) would send an EVM address
+      // as the Solana destination receiver. `makeFetch` throws on any request, so
+      // this also proves the rejection happens before /route.
+      const fetch = makeFetch({})
+      const protocol = new ButterSwidgeProtocol(account, {
+        sourceChainId: 56,
+        entrance: 'wdk',
+        fetch,
+        maxNativeFee: 0n,
+        evm: { walletClient: evmWallet(async () => '0xsourcehash') }
+      })
 
-    await assert.rejects(
-      protocol.swidge({
-        fromToken: NATIVE_TOKEN,
-        toToken: 'So11111111111111111111111111111111111111112',
-        toChain: SOLANA_CHAIN_ID,
-        fromTokenAmount: 1500000000000000000n,
-        slippage: 0.02
-      }),
-      ButterActionRequiredError
-    )
-    assert.equal(fetch.calls.length, 0)
-  })
+      await assert.rejects(
+        protocol.swidge({
+          fromToken: NATIVE_TOKEN,
+          toToken: 'So11111111111111111111111111111111111111112',
+          toChain: SOLANA_CHAIN_ID,
+          ...(recipient !== undefined ? { recipient } : {}),
+          fromTokenAmount: 1500000000000000000n,
+          slippage: 0.02
+        }),
+        ButterActionRequiredError
+      )
+      assert.equal(fetch.calls.length, 0)
+    })
+  }
 
   it('rejects a swidge to an unrecognized chain without an explicit recipient', async () => {
     // Butter adds chains between releases of this package. An unlisted chain must
@@ -997,6 +1088,30 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     })
 
     assert.equal(result.id, '0xsourcehash')
+  })
+
+  it('treats a blank same-family recipient as absent', async () => {
+    const fetch = makeFetch({
+      '/route': async (url) => {
+        assert.equal(url.searchParams.get('receiver'), null)
+        return { errno: 0, message: 'success', data: [quoteRoute()] }
+      }
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch,
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS
+    })
+
+    await protocol.quoteSwidge({
+      fromToken: '0xfrom',
+      toToken: '0xto',
+      toChain: 137,
+      recipient: '   ',
+      fromTokenAmount: 1500000000000000000n,
+      slippage: 0.02
+    })
   })
 
   it('quotes a cross-VM route without requiring a recipient', async () => {
@@ -1986,7 +2101,13 @@ describe('ButterSwidgeProtocol formal behavior', () => {
           gasFee: { amount: '1', symbol: 'BNB', inUSD: '1' },
           swapFee: { nativeFee: '0', tokenFee: '0' },
           bridgeFee: undefined,
-          srcChain: { chainId: '56', tokenIn: { address: NATIVE_TOKEN, decimals: 18, symbol: 'BNB' }, totalAmountIn: '100', totalAmountOut: '100' },
+          srcChain: {
+            chainId: '56',
+            tokenIn: { address: NATIVE_TOKEN, decimals: 18, symbol: 'BNB' },
+            tokenOut: { address: DEST_TOKEN, decimals: 6, symbol: 'USDT' },
+            totalAmountIn: '100',
+            totalAmountOut: '100'
+          },
           dstChain: undefined,
           totalAmountInUSD: '100'
         })]
@@ -2192,6 +2313,31 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     assert.doesNotThrow(() => new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch: makeFetch({}), maxNativeFee: 100000000000000000n }))
   })
 
+  it('rejects invalid HTTP and approval timeout configuration at construction time', () => {
+    for (const requestTimeoutMs of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      assert.throws(
+        () => new ButterSwidgeProtocol(undefined, {
+          sourceChainId: 56,
+          entrance: 'wdk',
+          fetch: makeFetch({}),
+          requestTimeoutMs
+        }),
+        (error: unknown) => error instanceof ButterConfigurationError && /requestTimeoutMs/.test(error.message)
+      )
+    }
+    for (const approvalTimeoutMs of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      assert.throws(
+        () => new ButterSwidgeProtocol(undefined, {
+          sourceChainId: 56,
+          entrance: 'wdk',
+          fetch: makeFetch({}),
+          evm: { approvalTimeoutMs }
+        }),
+        (error: unknown) => error instanceof ButterConfigurationError && /approvalTimeoutMs/.test(error.message)
+      )
+    }
+  })
+
   it('checks ERC20 allowance, approves exact amount, waits, then swaps', async () => {
     const fetch = makeFetch({
       '/route': async () => ({
@@ -2235,6 +2381,7 @@ describe('ButterSwidgeProtocol formal behavior', () => {
           async readContract () { return 0n },
           async waitForTransactionReceipt (args) {
             assert.equal(args.hash, '0xapproval')
+            assert.equal(args.timeout, 10_000)
             return { status: 'success' }
           }
         },
@@ -2958,6 +3105,64 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     })
   })
 
+  it('bounds a public-client approval wait and reports the broadcast hash', async () => {
+    const protocol = new ButterSwidgeProtocol({
+      async getAddress () { return VALID_SENDER },
+      async sendTransaction () { throw new Error('account.sendTransaction must not carry EVM calldata') }
+    }, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch: sameChainErc20Fetch(),
+      tokenDecimals: ERC20_TOKEN_DECIMALS,
+      evm: {
+        approvalTimeoutMs: 5,
+        walletClient: evmWallet(async () => '0xapproval'),
+        publicClient: {
+          async readContract () { return 0n },
+          async waitForTransactionReceipt (args) {
+            assert.equal(args.timeout, 5)
+            return await new Promise(() => {})
+          }
+        }
+      }
+    })
+
+    await assert.rejects(Promise.race([protocol.swidge(sameChainErc20Options), failAfter(100)]), (error: unknown) => {
+      assert.ok(error instanceof ButterPartialExecutionError)
+      assert.deepEqual(error.transactions, [{ hash: '0xapproval', chain: '56', type: 'approval' }])
+      assert.equal(error.failedType, 'approval')
+      assert.ok(error.cause instanceof ButterConfigurationError)
+      assert.match(error.cause.message, /Timed out/)
+      return true
+    })
+  })
+
+  it('bounds a single fallback receipt lookup and reports the broadcast hash', async () => {
+    const protocol = new ButterSwidgeProtocol({
+      async getAddress () { return VALID_SENDER },
+      async sendTransaction () { throw new Error('account.sendTransaction must not carry EVM calldata') },
+      async getTransactionReceipt () { return await new Promise(() => {}) }
+    }, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch: sameChainErc20Fetch(),
+      tokenDecimals: ERC20_TOKEN_DECIMALS,
+      evm: {
+        approvalTimeoutMs: 5,
+        walletClient: evmWallet(async () => '0xapproval')
+      }
+    })
+
+    await assert.rejects(Promise.race([protocol.swidge(sameChainErc20Options), failAfter(100)]), (error: unknown) => {
+      assert.ok(error instanceof ButterPartialExecutionError)
+      assert.deepEqual(error.transactions, [{ hash: '0xapproval', chain: '56', type: 'approval' }])
+      assert.equal(error.failedType, 'approval')
+      assert.ok(error.cause instanceof ButterConfigurationError)
+      assert.match(error.cause.message, /Timed out/)
+      return true
+    })
+  })
+
   it('does not send the swap when the approval receipt has an unknown status (fail-closed)', async () => {
     const fetch = makeFetch({
       '/route': async () => ({
@@ -3179,22 +3384,191 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     )
   })
 
-  it('caches unusable decimals reported for the requested token', async () => {
-    // Conclusive: this IS our token, and its decimals cannot be used. Unlike an
-    // inconclusive response, that answer is worth remembering.
+  it('ignores malformed /findToken siblings and accepts consistent matching entries', async () => {
+    const fetch = makeFetch({
+      '/findToken': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [
+          null,
+          42,
+          { chainId: 56, address: false, decimals: 0 },
+          { chainId: 56, address: ERC20_TOKEN, decimals: '18' },
+          { chainId: '56', token: ERC20_TOKEN, decimal: 18 }
+        ]
+      }),
+      '/route': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [quoteRoute({
+          srcChain: sourceChainWithToken(ERC20_TOKEN),
+          dstChain: { chainId: '137', tokenOut: { address: DEST_TOKEN, decimals: 6, symbol: 'USDT' }, totalAmountOut: '10.25' }
+        })]
+      })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+
+    const quote = await protocol.quoteSwidge({ fromToken: ERC20_TOKEN, toToken: DEST_TOKEN, toChain: 137, fromTokenAmount: 1n, slippage: 0.02 })
+
+    assert.equal(quote.fromTokenAmount, 1n)
+  })
+
+  it('rejects a primitive /findToken payload as a typed API error', async () => {
+    const fetch = makeFetch({
+      '/findToken': async () => ({ errno: 0, message: 'success', data: 'not-a-token-record' })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+
+    await assert.rejects(
+      protocol.quoteSwidge({ fromToken: ERC20_TOKEN, toToken: DEST_TOKEN, toChain: 137, fromTokenAmount: 1n, slippage: 0.02 }),
+      (error: unknown) => error instanceof ButterApiError && /payload/.test(error.message)
+    )
+  })
+
+  it('rejects malformed matching decimals without caching them', async () => {
     let findTokenCalls = 0
     const fetch = makeFetch({
       '/findToken': async () => {
         findTokenCalls++
-        return { errno: 0, message: 'success', data: [{ chainId: 56, address: ERC20_TOKEN, decimals: 'not-a-number' }] }
-      }
+        return {
+          errno: 0,
+          message: 'success',
+          data: [{ chainId: 56, address: ERC20_TOKEN, decimals: findTokenCalls === 1 ? 'not-a-number' : 18 }]
+        }
+      },
+      '/route': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [quoteRoute({
+          srcChain: sourceChainWithToken(ERC20_TOKEN),
+          dstChain: { chainId: '137', tokenOut: { address: DEST_TOKEN, decimals: 6, symbol: 'USDT' }, totalAmountOut: '10.25' }
+        })]
+      })
     })
     const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
     const options = { fromToken: ERC20_TOKEN, toToken: DEST_TOKEN, toChain: 137, fromTokenAmount: 1n, slippage: 0.02 }
 
+    await assert.rejects(
+      protocol.quoteSwidge(options),
+      (error: unknown) => error instanceof ButterApiError && /decimals/.test(error.message)
+    )
+    const quote = await protocol.quoteSwidge(options)
+    assert.equal(quote.fromTokenAmount, 1n)
+    assert.equal(findTokenCalls, 2)
+  })
+
+  for (const invalidDecimals of ['', ' ', false, -1, 1.5, 256, {}, '1e2']) {
+    it(`rejects invalid /findToken decimals ${JSON.stringify(invalidDecimals)}`, async () => {
+      const fetch = makeFetch({
+        '/findToken': async () => ({
+          errno: 0,
+          message: 'success',
+          data: [{ chainId: 56, address: ERC20_TOKEN, decimals: invalidDecimals }]
+        })
+      })
+      const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+
+      await assert.rejects(
+        protocol.quoteSwidge({ fromToken: ERC20_TOKEN, toToken: DEST_TOKEN, toChain: 137, fromTokenAmount: 1n, slippage: 0.02 }),
+        (error: unknown) => error instanceof ButterApiError && /decimals/.test(error.message)
+      )
+    })
+  }
+
+  it('rejects conflicting decimals for duplicate matching /findToken entries', async () => {
+    const fetch = makeFetch({
+      '/findToken': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [
+          { chainId: 56, address: ERC20_TOKEN, decimals: 6 },
+          { chainId: '56', address: ERC20_TOKEN, decimals: 18 }
+        ]
+      })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+
+    await assert.rejects(
+      protocol.quoteSwidge({ fromToken: ERC20_TOKEN, toToken: DEST_TOKEN, toChain: 137, fromTokenAmount: 1n, slippage: 0.02 }),
+      (error: unknown) => error instanceof ButterApiError && /conflicting decimals/.test(error.message)
+    )
+  })
+
+  it('rejects conflicting decimals aliases in one matching /findToken entry', async () => {
+    const fetch = makeFetch({
+      '/findToken': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [{ chainId: 56, address: ERC20_TOKEN, decimals: 6, decimal: 18 }]
+      })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+
+    await assert.rejects(
+      protocol.quoteSwidge({ fromToken: ERC20_TOKEN, toToken: DEST_TOKEN, toChain: 137, fromTokenAmount: 1n, slippage: 0.02 }),
+      (error: unknown) => error instanceof ButterApiError && /conflicting decimals/.test(error.message)
+    )
+  })
+
+  it('expires a /findToken not-found cache entry after five minutes', async () => {
+    let now = 1000
+    let findTokenCalls = 0
+    const fetch = makeFetch({
+      '/findToken': async () => {
+        findTokenCalls++
+        return findTokenCalls === 1
+          ? { errno: 2002, message: 'The Token not found' }
+          : { errno: 0, message: 'success', data: [{ chainId: 56, address: ERC20_TOKEN, decimals: 18 }] }
+      },
+      '/route': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [quoteRoute({
+          srcChain: sourceChainWithToken(ERC20_TOKEN),
+          dstChain: { chainId: '137', tokenOut: { address: DEST_TOKEN, decimals: 6, symbol: 'USDT' }, totalAmountOut: '10.25' }
+        })]
+      })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch, now: () => now })
+    const options = { fromToken: ERC20_TOKEN, toToken: DEST_TOKEN, toChain: 137, fromTokenAmount: 1n, slippage: 0.02 }
+
     await assert.rejects(protocol.quoteSwidge(options), ButterActionRequiredError)
+    now = 1299
     await assert.rejects(protocol.quoteSwidge(options), ButterActionRequiredError)
     assert.equal(findTokenCalls, 1)
+
+    now = 1300
+    const quote = await protocol.quoteSwidge(options)
+    assert.equal(quote.fromTokenAmount, 1n)
+    assert.equal(findTokenCalls, 2)
+  })
+
+  it('bounds the /findToken cache and promotes cache hits in LRU order', async () => {
+    const calls = new Map<string, number>()
+    const fetch = makeFetch({
+      '/findToken': async (url) => {
+        const token = String(url.searchParams.get('address'))
+        calls.set(token, (calls.get(token) ?? 0) + 1)
+        return { errno: 2002, message: 'The Token not found' }
+      }
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+
+    const quoteUnknown = async (fromToken: string) => {
+      await assert.rejects(
+        protocol.quoteSwidge({ fromToken, toToken: DEST_TOKEN, toChain: 137, fromTokenAmount: 1n, slippage: 0.02 }),
+        ButterActionRequiredError
+      )
+    }
+    for (let index = 0; index < 256; index++) await quoteUnknown(`token-${index}`)
+    await quoteUnknown('token-0') // Promote the oldest entry to most recently used.
+    await quoteUnknown('token-256') // Evicts token-1, not token-0.
+    await quoteUnknown('token-0')
+    await quoteUnknown('token-1')
+
+    assert.equal(calls.get('token-0'), 1)
+    assert.equal(calls.get('token-1'), 2)
+    assert.equal(calls.get('token-256'), 1)
   })
 
   it('treats a /findToken result with no matching chain as an unknown token', async () => {
@@ -3920,6 +4294,42 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     assert.deepEqual(chains.map((chain) => chain.id), ['56'])
   })
 
+  for (const [name, routerPayload, tokenPayload] of [
+    ['router chain collection', {}, { chains: [] }],
+    ['token chain envelope', [], null],
+    ['token chain collection', [], { chains: {} }]
+  ] as const) {
+    it(`rejects a malformed ${name} with a Butter API error`, async () => {
+      const fetch = makeFetch({
+        '/supportedChainInfo': async () => ({ errno: 0, message: 'success', data: routerPayload }),
+        '/api/queryChainList': async () => ({ code: 200, message: 'success', data: tokenPayload })
+      })
+      const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+
+      await assert.rejects(protocol.getSupportedChains(), ButterApiError)
+    })
+  }
+
+  it('drops malformed chain rows without discarding valid rows', async () => {
+    const fetch = makeFetch({
+      '/supportedChainInfo': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [null, 7, { id: '56', type: 'EVM', name: 'BNB Chain', nativeToken: '{"symbol":"BNB"}' }]
+      }),
+      '/api/queryChainList': async () => ({
+        code: 200,
+        message: 'success',
+        data: { chains: [null, 'invalid', { chainId: '56', key: 'bsc' }] }
+      })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+
+    const chains = await protocol.getSupportedChains()
+
+    assert.deepEqual(chains.map(({ id }) => id), ['56'])
+  })
+
   it('still applies the strict slippage floor for a dropped BTC-like chain', async () => {
     const fetch = makeFetch({
       // Bitcoin-like by name — so the 300 bps floor applies — but missing
@@ -4153,6 +4563,39 @@ describe('ButterSwidgeProtocol formal behavior', () => {
       protocol.getSupportedTokens({ fromChain: 56 }),
       (error: unknown) => error instanceof ButterApiError && /non-array results/.test(error.message)
     )
+  })
+
+  it('rejects a malformed token-list envelope with a Butter API error', async () => {
+    const fetch = makeFetch({
+      '/supportedChainInfo': async () => ({ errno: 0, message: 'success', data: [{ id: '56', type: 'EVM', name: 'BNB', nativeToken: '{"symbol":"BNB"}' }] }),
+      '/api/queryChainList': async () => ({ code: 200, message: 'success', data: { chains: [{ chainId: '56', key: 'bsc' }] } }),
+      '/api/queryTokenList': async () => ({ code: 200, message: 'success', data: null })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+
+    await assert.rejects(protocol.getSupportedTokens({ fromChain: 56 }), ButterApiError)
+  })
+
+  it('drops malformed token rows while counting every raw pagination row', async () => {
+    let tokenRequests = 0
+    const fetch = makeFetch({
+      '/supportedChainInfo': async () => ({ errno: 0, message: 'success', data: [{ id: '56', type: 'EVM', name: 'BNB', nativeToken: '{"symbol":"BNB"}' }] }),
+      '/api/queryChainList': async () => ({ code: 200, message: 'success', data: { chains: [{ chainId: '56', key: 'bsc' }] } }),
+      '/api/queryTokenList': async () => {
+        tokenRequests++
+        return {
+          code: 200,
+          message: 'success',
+          data: { count: 3, results: [null, 7, { address: '0xaaa', decimals: 18, symbol: 'AAA' }] }
+        }
+      }
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+
+    const tokens = await protocol.getSupportedTokens({ fromChain: 56 })
+
+    assert.deepEqual(tokens.map(({ token }) => token), ['0xaaa'])
+    assert.equal(tokenRequests, 1)
   })
 
   it('rejects a page that repeats a record from an earlier page', async () => {
@@ -5488,6 +5931,63 @@ describe('helpers', () => {
         assert.match((error.details as { body?: string }).body ?? '', /502 Bad Gateway/)
         return true
       }
+    )
+  })
+
+  it('aborts and types a Butter request whose fetch never settles', async () => {
+    let signal: AbortSignal | undefined
+    const protocol = new ButterSwidgeProtocol(undefined, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      requestTimeoutMs: 5,
+      fetch: async (_url, init) => {
+        signal = init?.signal
+        return await new Promise(() => {})
+      },
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS
+    })
+
+    await assert.rejects(
+      Promise.race([
+        protocol.quoteSwidge({
+          fromToken: '0xfrom',
+          toToken: '0xto',
+          toChain: 137,
+          fromTokenAmount: 1500000000000000000n,
+          slippage: 0.02
+        }),
+        failAfter(100)
+      ]),
+      (error: unknown) => error instanceof ButterApiError && /timed out/.test(error.message)
+    )
+    assert.equal(signal?.aborted, true)
+  })
+
+  it('bounds a Butter response body that never settles', async () => {
+    const protocol = new ButterSwidgeProtocol(undefined, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      requestTimeoutMs: 5,
+      fetch: async () => ({
+        ok: true,
+        status: 200,
+        async json () { return await new Promise(() => {}) }
+      }),
+      tokenDecimals: DEFAULT_TOKEN_DECIMALS
+    })
+
+    await assert.rejects(
+      Promise.race([
+        protocol.quoteSwidge({
+          fromToken: '0xfrom',
+          toToken: '0xto',
+          toChain: 137,
+          fromTokenAmount: 1500000000000000000n,
+          slippage: 0.02
+        }),
+        failAfter(100)
+      ]),
+      (error: unknown) => error instanceof ButterApiError && /timed out/.test(error.message)
     )
   })
 

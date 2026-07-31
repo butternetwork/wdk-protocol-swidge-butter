@@ -57,6 +57,17 @@ export function parseTokenAmount (
   return losesPrecision && rounding === 'ceil' ? truncated + 1n : truncated
 }
 
+/** Parses a token amount from Butter while rejecting an omitted required field. */
+export function parseRequiredTokenAmount (
+  amount: string | number | bigint | undefined | null,
+  label: string,
+  decimals = 18,
+  options: ParseTokenAmountOptions = {}
+): bigint {
+  if (amount == null) throw new ButterApiError(`Butter route is missing ${label}`)
+  return parseTokenAmount(amount, decimals, options)
+}
+
 /** Formats integer base units as a decimal token amount without floating point conversion. */
 export function formatTokenAmount (amount: bigint | number | string, decimals = 18): string {
   assertDecimals(decimals)

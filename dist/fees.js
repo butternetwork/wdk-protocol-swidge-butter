@@ -667,9 +667,19 @@ function trustedSourceDecimals(context, declared, label) {
     if (trusted == null) {
         throw new ButterFeeValuationError(`Cannot value the Butter ${label} without trusted source token decimals`);
     }
-    if (declared != null && Number.isInteger(declared) && declared !== trusted) {
+    let parsedDeclared;
+    if (declared != null) {
+        const normalized = typeof declared === 'string'
+            ? (/^\d+$/.test(declared.trim()) ? Number(declared.trim()) : Number.NaN)
+            : declared;
+        if (!Number.isInteger(normalized) || normalized < 0 || normalized > 255) {
+            throw new ButterFeeValuationError(`Butter route reports invalid source token decimals; refusing to value the ${label}`, { declared });
+        }
+        parsedDeclared = normalized;
+    }
+    if (parsedDeclared != null && parsedDeclared !== trusted) {
         throw new ButterFeeValuationError(`Butter route reports source token decimals that disagree with the resolved value; refusing to value the ${label}`, {
-            declared,
+            declared: parsedDeclared,
             trusted
         });
     }

@@ -135,7 +135,7 @@ export interface ButterFetchResponse {
 }
 
 /** Fetch-compatible function used for dependency injection and testing. */
-export type ButterFetch = (url: string, init?: { method?: string, headers?: Record<string, string> }) => Promise<ButterFetchResponse>
+export type ButterFetch = (url: string, init?: { method?: string, headers?: Record<string, string>, signal?: AbortSignal }) => Promise<ButterFetchResponse>
 
 /** Minimal EVM transaction receipt shape used for success/status checks. */
 export interface EvmTransactionReceipt {
@@ -263,6 +263,8 @@ export interface ButterSwidgeProtocolConfig extends SwidgeProtocolConfig {
   routerBaseUrl?: string
   tokenBaseUrl?: string
   appBaseUrl?: string
+  /** Complete Butter HTTP request deadline in milliseconds (default 10,000). */
+  requestTimeoutMs?: number
   fetch?: ButterFetch
   now?: () => number
   routerContracts?: Partial<Record<number, readonly ButterRouterDeployment[]>>
@@ -352,6 +354,7 @@ export interface ButterSwidgeProtocolConfig extends SwidgeProtocolConfig {
      */
     walletClient?: EvmWalletClient
     approvalConfirmations?: number
+    /** Approval confirmation deadline in milliseconds (default 10,000). Zero means immediate timeout. */
     approvalTimeoutMs?: number
   }
 }

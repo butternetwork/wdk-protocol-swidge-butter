@@ -11,6 +11,8 @@ export interface ParseTokenAmountOptions {
 }
 /** Converts a non-negative decimal token amount into integer base units. */
 export declare function parseTokenAmount(amount: string | number | bigint | undefined | null, decimals?: number, options?: ParseTokenAmountOptions): bigint;
+/** Parses a token amount from Butter while rejecting an omitted required field. */
+export declare function parseRequiredTokenAmount(amount: string | number | bigint | undefined | null, label: string, decimals?: number, options?: ParseTokenAmountOptions): bigint;
 /** Formats integer base units as a decimal token amount without floating point conversion. */
 export declare function formatTokenAmount(amount: bigint | number | string, decimals?: number): string;
 /**

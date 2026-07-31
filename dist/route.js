@@ -14,7 +14,7 @@
 import { NATIVE_TOKEN_ADDRESSES, ROUTE_CACHE_MAX_ENTRIES, ROUTE_EXECUTION_MARGIN_SECONDS, ROUTE_EXPIRY_MARGIN_SECONDS, ROUTE_TTL_SECONDS, SOLANA_CHAIN_ID, STRICT_CHAIN_MIN_SLIPPAGE_BPS } from './constants.js';
 import { nativeDecimalsForChain } from './fees.js';
 import { ButterActionRequiredError, ButterApiError, ButterConfigurationError, ButterExactOutUnsupportedError, ButterNoRouteError } from './errors.js';
-import { assertBaseUnitAmount, formatTokenAmount, parseTokenAmount } from './amounts.js';
+import { assertBaseUnitAmount, formatTokenAmount, parseRequiredTokenAmount } from './amounts.js';
 import { normalizeTokenKey, sameIdentifier } from './identifiers.js';
 import { toButterSlippage } from './slippage.js';
 export class RouteManager {
@@ -202,7 +202,7 @@ export class RouteManager {
         // meaningful request here ("no minimum"), unlike an input amount.
         const requested = assertBaseUnitAmount(options.minAmountOut, 'minAmountOut', { allowZero: true });
         const destinationDecimals = decimalsOf(route.dstChain?.tokenOut ?? route.srcChain?.tokenOut, 'destination token');
-        const routeMinimum = parseTokenAmount(route.minAmountOut?.amount ?? route.amountOutMin, destinationDecimals);
+        const routeMinimum = parseRequiredTokenAmount(route.minAmountOut?.amount ?? route.amountOutMin, 'minimum output amount', destinationDecimals);
         if (routeMinimum < requested) {
             throw new ButterActionRequiredError('Butter route minimum output is below requested minAmountOut', {
                 requestedMinAmountOut: String(requested),
@@ -244,11 +244,19 @@ export class RouteManager {
         if (route.dstChain && normalizeId(route.dstChain.chainId) !== normalizeId(request.toChainId)) {
             throw new ButterApiError('Butter route destination chain does not match request', { route, request });
         }
-        if (route.srcChain?.tokenIn?.address && !sameToken(route.srcChain.tokenIn.address, String(request.tokenInAddress))) {
+        const sourceToken = route.srcChain?.tokenIn?.address?.trim();
+        if (!sourceToken) {
+            throw new ButterApiError('Butter route is missing source token address', { route, request });
+        }
+        if (!sameToken(sourceToken, String(request.tokenInAddress))) {
             throw new ButterApiError('Butter route source token does not match request', { route, request });
         }
-        const outputToken = route.dstChain?.tokenOut ?? route.srcChain?.tokenOut;
-        if (outputToken?.address && !sameToken(outputToken.address, String(request.tokenOutAddress))) {
+        const outputToken = crossChain ? route.dstChain?.tokenOut : route.srcChain?.tokenOut;
+        const outputTokenAddress = outputToken?.address?.trim();
+        if (!outputTokenAddress) {
+            throw new ButterApiError('Butter route is missing destination token address', { route, request });
+        }
+        if (!sameToken(outputTokenAddress, String(request.tokenOutAddress))) {
             throw new ButterApiError('Butter route destination token does not match request', { route, request });
         }
     }

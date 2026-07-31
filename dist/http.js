@@ -72,24 +72,63 @@ export class ButterHttpClient {
             if (value != null)
                 url.searchParams.set(key, String(value));
         }
-        const response = await this.options.fetch(url.toString(), {
-            method: 'GET',
-            headers: this.headers()
+        const controller = new AbortController();
+        let phase = 'fetch';
+        let timer;
+        const timedOut = () => new ButterApiError('Butter HTTP request timed out', {
+            url: url.toString(),
+            phase,
+            timeoutMs: this.options.requestTimeoutMs
         });
-        // Check the status BEFORE parsing. A failing gateway commonly returns HTML, so
-        // parsing first threw a raw SyntaxError and lost both the status code and this
-        // package's error typing on the most common failure mode there is.
-        if (!response.ok) {
-            throw new ButterApiError(`Butter HTTP request failed with ${response.status}`, {
-                status: response.status,
-                body: await readErrorBody(response)
-            });
-        }
+        const timeout = new Promise((_, reject) => {
+            timer = setTimeout(() => {
+                controller.abort();
+                reject(timedOut());
+            }, this.options.requestTimeoutMs);
+        });
+        const request = (async () => {
+            let response;
+            try {
+                response = await this.options.fetch(url.toString(), {
+                    method: 'GET',
+                    headers: this.headers(),
+                    signal: controller.signal
+                });
+            }
+            catch (cause) {
+                if (controller.signal.aborted)
+                    throw timedOut();
+                throw cause;
+            }
+            // Check the status BEFORE parsing. A failing gateway commonly returns HTML, so
+            // parsing first threw a raw SyntaxError and lost both the status code and this
+            // package's error typing on the most common failure mode there is.
+            if (!response.ok) {
+                phase = 'error-body';
+                const body = await readErrorBody(response);
+                if (controller.signal.aborted)
+                    throw timedOut();
+                throw new ButterApiError(`Butter HTTP request failed with ${response.status}`, {
+                    status: response.status,
+                    body
+                });
+            }
+            phase = 'json-body';
+            try {
+                return await response.json();
+            }
+            catch (cause) {
+                if (controller.signal.aborted)
+                    throw timedOut();
+                throw new ButterApiError('Butter response body is not valid JSON', { status: response.status, cause });
+            }
+        })();
         try {
-            return await response.json();
+            return await Promise.race([request, timeout]);
         }
-        catch (cause) {
-            throw new ButterApiError('Butter response body is not valid JSON', { status: response.status, cause });
+        finally {
+            if (timer != null)
+                clearTimeout(timer);
         }
     }
     headers() {

@@ -39,6 +39,12 @@ export function parseTokenAmount(amount, decimals = 18, options = {}) {
     const truncated = BigInt(whole) * 10n ** BigInt(decimals) + BigInt(normalizedFraction || '0');
     return losesPrecision && rounding === 'ceil' ? truncated + 1n : truncated;
 }
+/** Parses a token amount from Butter while rejecting an omitted required field. */
+export function parseRequiredTokenAmount(amount, label, decimals = 18, options = {}) {
+    if (amount == null)
+        throw new ButterApiError(`Butter route is missing ${label}`);
+    return parseTokenAmount(amount, decimals, options);
+}
 /** Formats integer base units as a decimal token amount without floating point conversion. */
 export function formatTokenAmount(amount, decimals = 18) {
     assertDecimals(decimals);
