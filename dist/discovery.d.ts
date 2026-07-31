@@ -28,16 +28,18 @@ export declare class DiscoveryService {
      * — the same bypass `trustedSourceDecimals` exists to close, reached through this
      * door instead.
      *
-     * Only **conclusive** outcomes are cached: an affirmative not-found from Butter, or
-     * our token found with unusable decimals. A response that simply does not contain
-     * the requested token is inconclusive and is not cached, so one bad response
-     * cannot pin every later quote for that token to "configure tokenDecimals" for the
-     * lifetime of the process.
+     * Successful resolutions are cached until LRU eviction. An affirmative not-found
+     * is cached briefly to avoid hammering Butter, then retried; malformed metadata is
+     * never cached. A response that simply does not contain the requested token is
+     * inconclusive and is not cached either.
      *
      * Transport/auth failures rethrow so a network blip is not misreported as an
      * unknown token.
      */
     findTokenDecimals(chainId: string, address: string): Promise<number | undefined>;
+    private now;
+    private touchTokenDecimalsCache;
+    private setTokenDecimalsCache;
     getSupportedTokens(chainId: string): Promise<SwidgeSupportedToken[]>;
     private networkKeyForChain;
 }

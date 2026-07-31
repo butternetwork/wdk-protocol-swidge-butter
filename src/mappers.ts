@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { parseTokenAmount } from './amounts.js'
+import { parseRequiredTokenAmount, parseTokenAmount } from './amounts.js'
 import { mapRouteFees, type FeeContext } from './fees.js'
 import { decimalsOf } from './route.js'
 import type {
@@ -35,13 +35,17 @@ import type {
  */
 export function routeToQuote (route: ButterRoute, now: () => number, expiry: number | undefined, feeContext: FeeContext, requestedAmountIn?: number | bigint): SwidgeQuote {
   const destinationDecimals = decimalsOf(route.dstChain?.tokenOut ?? route.srcChain?.tokenOut, 'destination token')
-  const toTokenAmountMin = parseTokenAmount(route.minAmountOut?.amount ?? route.amountOutMin, destinationDecimals)
+  const toTokenAmountMin = parseRequiredTokenAmount(route.minAmountOut?.amount ?? route.amountOutMin, 'minimum output amount', destinationDecimals)
   const fromTokenAmount = requestedAmountIn != null
     ? BigInt(requestedAmountIn)
     : parseTokenAmount(route.srcChain?.totalAmountIn ?? route.totalAmountIn, decimalsOf(route.srcChain?.tokenIn, 'source token'))
   return {
     fromTokenAmount,
-    toTokenAmount: parseTokenAmount(route.dstChain?.totalAmountOut ?? route.srcChain?.totalAmountOut ?? route.totalAmountOut, destinationDecimals),
+    toTokenAmount: parseRequiredTokenAmount(
+      route.dstChain != null ? route.dstChain.totalAmountOut : route.srcChain?.totalAmountOut,
+      'destination total output amount',
+      destinationDecimals
+    ),
     toTokenAmountMin,
     fees: mapRouteFees(route, feeContext),
     estimatedDuration: finiteOrUndefined(route.timeEstimated ?? route.estimatedTime),

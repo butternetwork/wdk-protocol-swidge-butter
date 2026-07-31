@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import { encodeFunctionData, erc20Abi, TransactionNotFoundError, TransactionReceiptNotFoundError } from 'viem'
-import { NATIVE_TOKEN_ADDRESSES } from './constants.js'
+import { APPROVAL_TIMEOUT_MS, NATIVE_TOKEN_ADDRESSES } from './constants.js'
 import { parseIntegerAmount } from './amounts.js'
 import { ButterApiError, ButterConfigurationError, ButterPartialExecutionError } from './errors.js'
 import { classifyReceiptStatus } from './status.js'
@@ -98,7 +98,6 @@ export function toEvmPublicClient (client: ViemPublicClientLike): EvmPublicClien
   }
 }
 
-const DEFAULT_APPROVAL_TIMEOUT_MS = 60_000
 const APPROVAL_POLL_INTERVAL_MS = 2_000
 
 /** Returns true when the token identifier denotes a chain's native asset. */
@@ -280,16 +279,17 @@ async function waitForApproval (context: {
   account: ButterAccount | undefined
   config: ButterSwidgeProtocolConfig
 }, hash: string): Promise<void> {
+  const timeoutMs = context.config.evm?.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS
+  const deadline = Date.now() + timeoutMs
   const publicClient = context.config.evm?.publicClient
   if (publicClient?.waitForTransactionReceipt) {
     const receiptArgs: { hash: string, confirmations?: number, timeout?: number } = {
       hash,
-      confirmations: context.config.evm?.approvalConfirmations ?? 1
+      confirmations: context.config.evm?.approvalConfirmations ?? 1,
+      timeout: timeoutMs
     }
-    if (context.config.evm?.approvalTimeoutMs != null) {
-      receiptArgs.timeout = context.config.evm.approvalTimeoutMs
-    }
-    const kind = classifyReceiptStatus(await publicClient.waitForTransactionReceipt(receiptArgs))
+    const receipt = await beforeApprovalDeadline(() => publicClient.waitForTransactionReceipt!(receiptArgs), deadline, hash, timeoutMs)
+    const kind = classifyReceiptStatus(receipt)
     if (kind === 'reverted') throw new ButterConfigurationError('ERC20 approval transaction reverted', { hash })
     if (kind === 'unknown') throw new ButterConfigurationError('Could not confirm the ERC20 approval: unrecognized receipt status', { hash })
     return
@@ -303,10 +303,8 @@ async function waitForApproval (context: {
       { hash }
     )
   }
-  const timeoutMs = context.config.evm?.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS
-  const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    const receipt = await getReceipt(hash)
+    const receipt = await beforeApprovalDeadline(() => getReceipt(hash), deadline, hash, timeoutMs)
     if (receipt != null) {
       const kind = classifyReceiptStatus(receipt as EvmTransactionReceipt)
       if (kind === 'success') return
@@ -315,7 +313,27 @@ async function waitForApproval (context: {
     }
     await sleep(Math.min(APPROVAL_POLL_INTERVAL_MS, Math.max(deadline - Date.now(), 0)))
   }
-  throw new ButterConfigurationError('Timed out waiting for the ERC20 approval to confirm', { hash, timeoutMs })
+  throw approvalTimeoutError(hash, timeoutMs)
+}
+
+async function beforeApprovalDeadline<T> (operation: () => Promise<T>, deadline: number, hash: string, timeoutMs: number): Promise<T> {
+  const remaining = Math.max(deadline - Date.now(), 0)
+  if (remaining === 0) throw approvalTimeoutError(hash, timeoutMs)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      operation(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(approvalTimeoutError(hash, timeoutMs)), remaining)
+      })
+    ])
+  } finally {
+    if (timer != null) clearTimeout(timer)
+  }
+}
+
+function approvalTimeoutError (hash: string, timeoutMs: number): ButterConfigurationError {
+  return new ButterConfigurationError('Timed out waiting for the ERC20 approval to confirm', { hash, timeoutMs })
 }
 
 /**

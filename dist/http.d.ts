@@ -4,6 +4,7 @@ export interface ButterHttpClientOptions {
     tokenBaseUrl: string;
     appBaseUrl: string;
     fetch: ButterFetch;
+    requestTimeoutMs: number;
     apiKeyId?: string | undefined;
     apiSecret?: string | undefined;
     authMode: 'required' | 'optional';

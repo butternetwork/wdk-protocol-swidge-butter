@@ -649,6 +649,30 @@ describe('Butter fee handling', () => {
     assert.doesNotThrow(() => enforceFeeLimits(honest, context, { maxProtocolFeeBps: 1000n }))
   })
 
+  it('validates source token decimals returned as JSON strings', () => {
+    const matching = feeRoute({
+      srcChain: {
+        chainId: '56',
+        tokenIn: { address: SOURCE_TOKEN, decimals: '6', symbol: 'USDC' },
+        tokenOut: { address: BRIDGE_TOKEN, decimals: 18, symbol: 'WETH' },
+        totalAmountIn: '100',
+        totalAmountOut: '100'
+      }
+    })
+    const mismatched = feeRoute({
+      srcChain: {
+        chainId: '56',
+        tokenIn: { address: SOURCE_TOKEN, decimals: '0', symbol: 'USDC' },
+        tokenOut: { address: BRIDGE_TOKEN, decimals: 18, symbol: 'WETH' },
+        totalAmountIn: '100',
+        totalAmountOut: '100'
+      }
+    })
+
+    assert.doesNotThrow(() => mapRouteFees(matching, context))
+    assert.throws(() => mapRouteFees(mismatched, context), ButterFeeValuationError)
+  })
+
   it('rejects a malformed or negative feeConfig instead of leaking a raw error', () => {
     const malformed = feeRoute({ feeConfig: { feeType: 1, referrer: '0x0000000000000000000000000000000000000111', rateOrNativeFee: '12abc' } })
     const negative = feeRoute({ feeConfig: { feeType: 1, referrer: '0x0000000000000000000000000000000000000111', rateOrNativeFee: -100 } })

@@ -183,7 +183,7 @@ export function mapRouteFees (route: ButterRoute, context: FeeContext): SwidgeFe
       // Trusted decimals, not the route's: a quote is where an understated scale does
       // its damage silently, since no cap has to be configured for a caller to read
       // the number and act on it.
-      amount: parseTokenAmount(route.swapFee?.tokenFee, trustedSourceDecimals(context, sourceToken?.decimals as number | undefined, 'token protocol fee'), DISPLAY_ROUNDING),
+      amount: parseTokenAmount(route.swapFee?.tokenFee, trustedSourceDecimals(context, sourceToken?.decimals, 'token protocol fee'), DISPLAY_ROUNDING),
       token: requiredTokenId(sourceToken?.address ?? context.sourceToken ?? route.swapFee?.tokenSymbol, 'token protocol fee'),
       chain: context.sourceChainId,
       included: true,
@@ -285,7 +285,7 @@ function protocolFeeRatios (route: ButterRoute, context: FeeContext): Ratio[] {
   const sourceToken = route.srcChain?.tokenIn
   // Trusted, not route-reported: this number scales a numerator whose denominator
   // is the caller's real base units.
-  const sourceDecimals = trustedSourceDecimals(context, sourceToken?.decimals as number | undefined, 'source token fee')
+  const sourceDecimals = trustedSourceDecimals(context, sourceToken?.decimals, 'source token fee')
   const nativeDecimals = nativeDecimalsForChain(context.sourceChainId, context.nativeTokenDecimals)
   // A cross-chain route always carries a bridge fee (route.ts rejects a cross-chain
   // response without dstChain, so its presence is the reliable cross-chain signal).
@@ -773,14 +773,24 @@ function parseUsd (value: string | undefined, label: string): bigint {
  * `decimals: 0` and shrink a 10 USDC fee from `10000000n` to `10n` — a
  * thousand-basis-point charge measured as one hundredth of one.
  */
-function trustedSourceDecimals (context: FeeContext, declared: number | undefined, label: string): number {
+function trustedSourceDecimals (context: FeeContext, declared: string | number | undefined, label: string): number {
   const trusted = context.sourceTokenDecimals
   if (trusted == null) {
     throw new ButterFeeValuationError(`Cannot value the Butter ${label} without trusted source token decimals`)
   }
-  if (declared != null && Number.isInteger(declared) && declared !== trusted) {
+  let parsedDeclared: number | undefined
+  if (declared != null) {
+    const normalized = typeof declared === 'string'
+      ? (/^\d+$/.test(declared.trim()) ? Number(declared.trim()) : Number.NaN)
+      : declared
+    if (!Number.isInteger(normalized) || normalized < 0 || normalized > 255) {
+      throw new ButterFeeValuationError(`Butter route reports invalid source token decimals; refusing to value the ${label}`, { declared })
+    }
+    parsedDeclared = normalized
+  }
+  if (parsedDeclared != null && parsedDeclared !== trusted) {
     throw new ButterFeeValuationError(`Butter route reports source token decimals that disagree with the resolved value; refusing to value the ${label}`, {
-      declared,
+      declared: parsedDeclared,
       trusted
     })
   }

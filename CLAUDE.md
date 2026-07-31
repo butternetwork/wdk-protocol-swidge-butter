@@ -64,7 +64,7 @@ Everything else is a focused collaborator it composes:
   `constants.ts`. The **execution** margin (`ROUTE_EXECUTION_MARGIN_SECONDS`, 45s, overridable via
   `config.routeExecutionMarginSeconds`) is deliberately much larger than the **quote** margin
   (`ROUTE_EXPIRY_MARGIN_SECONDS`, 15s): execution still owes a `/swap` round-trip, an optional
-  approval (60s receipt wait by default), and the swap send, whereas a quote is non-binding. Don't
+  approval (10s receipt wait by default), and the swap send, whereas a quote is non-binding. Don't
   re-invert these. Inside the margin `getRoute` re-quotes, but `consumeRouteByHash` **throws**
   (`ButterActionRequiredError`) — a pin is a price the caller approved, so it is never silently
   re-fetched at a different price.
@@ -156,10 +156,11 @@ Everything else is a focused collaborator it composes:
   earlier revision filtered on chain only, reasoning the address "must" already be right, and a
   same-chain entry for a different token could then supply the decimals. Those decimals become
   `FeeContext.sourceTokenDecimals`, so a wrong value reopens the fee-cap bypass
-  `trustedSourceDecimals` exists to close. Only **conclusive** outcomes are cached: an affirmative
-  not-found, or our token found with unusable decimals. A response that simply lacks the requested
-  token is inconclusive and must not be cached, or one bad response pins that token to "configure
-  tokenDecimals" for the process lifetime. Transport failures rethrow (not "unknown token").
+  `trustedSourceDecimals` exists to close. Matching decimals must be an integer from 0 through 255,
+  and both decimals aliases and duplicate matching entries must agree; malformed/conflicting metadata
+  throws a typed error and is never cached. An affirmative not-found is cached for 300 seconds, while a response that simply
+  lacks the requested token is inconclusive and uncached. Successful lookups and short-lived misses
+  share a 256-entry LRU. Transport failures rethrow (not "unknown token").
 - **`status.ts`** — maps Butter's cross-state codes (`queryBridgeInfoBySourceHash` /
   `queryCrossInfoByOrderId`) to WDK's `SwidgeStatus`: authoritative codes are `0` crossing→`pending`,
   `1`→`completed`, `6` refund→`refunded` (there is no numeric `failed`). Unrecognized/intermediate

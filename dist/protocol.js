@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 import { SwidgeProtocol } from '@tetherto/wdk-wallet/protocols';
-import { addressFamilyForChain, DEFAULT_APP_BASE_URL, DEFAULT_ROUTER_BASE_URL, DEFAULT_TOKEN_BASE_URL, OPERATION_KIND_MAX_ENTRIES, ROUTE_TTL_SECONDS, SOLANA_CHAIN_ID, TRON_CHAIN_ID } from './constants.js';
+import { addressFamilyForChain, DEFAULT_APP_BASE_URL, DEFAULT_ROUTER_BASE_URL, DEFAULT_TOKEN_BASE_URL, OPERATION_KIND_MAX_ENTRIES, REQUEST_TIMEOUT_MS, ROUTE_TTL_SECONDS, SOLANA_CHAIN_ID, TRON_CHAIN_ID } from './constants.js';
 import { assertBaseUnitAmount } from './amounts.js';
 import { normalizeTokenKey, normalizeTransactionHash } from './identifiers.js';
 import { ButterHttpClient } from './http.js';
@@ -56,6 +56,8 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
         validateFeeLimits(config);
         const maxNativeFee = parseMaxNativeFee(config.maxNativeFee);
         const executionMarginSeconds = parseExecutionMarginSeconds(config.routeExecutionMarginSeconds);
+        const requestTimeoutMs = parseTimeoutMs(config.requestTimeoutMs, 'requestTimeoutMs', false) ?? REQUEST_TIMEOUT_MS;
+        parseTimeoutMs(config.evm?.approvalTimeoutMs, 'approvalTimeoutMs', true);
         const affiliate = parseAffiliate(config.affiliate);
         const referrer = normalizeOptionalText(config.referrer);
         const fetchImpl = config.fetch ?? globalThis.fetch;
@@ -83,6 +85,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
             tokenBaseUrl: config.tokenBaseUrl ?? DEFAULT_TOKEN_BASE_URL,
             appBaseUrl: config.appBaseUrl ?? DEFAULT_APP_BASE_URL,
             fetch: fetchImpl,
+            requestTimeoutMs,
             apiKeyId: config.apiKeyId,
             apiSecret: config.apiSecret,
             authMode: config.authMode ?? 'optional'
@@ -114,6 +117,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
      * to {@link swidge} to pin this exact route instead of auto-re-quoting.
      */
     async quoteSwidge(options) {
+        options = normalizeRecipient(options);
         this.assertQuoteOptions(options);
         // The sender fallback is only used to default the receiver for a Solana
         // source; avoid an unnecessary getAddress() call for every other chain.
@@ -147,6 +151,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
     }
     /** Executes an exact-in operation after validating route fees and transaction intent. */
     async swidge(options, config = {}) {
+        options = normalizeRecipient(options);
         this.assertQuoteOptions(options);
         this.assertExecutionCapability();
         const sender = await this.getSender();
@@ -662,12 +667,30 @@ function parseExecutionMarginSeconds(value) {
     }
     return value;
 }
+/** Validates a millisecond deadline supplied by an integrator. */
+function parseTimeoutMs(value, label, allowZero) {
+    if (value == null)
+        return undefined;
+    const minimum = allowZero ? 0 : 1;
+    if (!Number.isSafeInteger(value) || value < minimum) {
+        throw new ButterConfigurationError(`${label} must be ${allowZero ? 'a non-negative' : 'a positive'} integer number of milliseconds`);
+    }
+    return value;
+}
 /** Treats a blank or whitespace-only configuration string as absent. */
 function normalizeOptionalText(value) {
     if (value == null)
         return undefined;
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : undefined;
+}
+/** Normalizes recipient once so route keys, requests, and execution share its semantics. */
+function normalizeRecipient(options) {
+    const recipient = normalizeOptionalText(options.recipient);
+    if (recipient === options.recipient)
+        return options;
+    const { recipient: _discarded, ...rest } = options;
+    return (recipient == null ? rest : { ...rest, recipient });
 }
 /**
  * Validates the optional Butter affiliate, documented as `<nickname>[:rate]`.
