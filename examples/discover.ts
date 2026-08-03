@@ -47,7 +47,7 @@ runExample(async () => {
   })
 
   const chains = await protocol.getSupportedChains()
-  const tokens = await protocol.getSupportedTokens({ fromChain: tokenChainId })
+  const advertisedTokens = await protocol.getSupportedTokens({ fromChain: tokenChainId })
 
   const listed = new Set(chains.map((chain) => chain.id))
   const dropped = rawChains
@@ -73,7 +73,7 @@ runExample(async () => {
       dropped
     },
     tokenChainId,
-    tokenCount: tokens.length,
-    tokens
+    advertisedTokenCount: advertisedTokens.length,
+    advertisedTokens
   })
 })

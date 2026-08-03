@@ -9,6 +9,10 @@ and (once published) [Semantic Versioning](https://semver.org).
 Security hardening from multi-round expert review. **Breaking** changes are marked.
 
 ### End-to-end testing
+- Raise the read-only BSC-to-Polygon default input from 0.001 BNB to 0.01 BNB.
+  Butter's fixed protocol fee exceeded the existing 1000 bps safety cap on the
+  smaller quote; the larger no-broadcast input keeps the cap intact while making
+  the production API check viable.
 - Add a no-broadcast live Butter API workflow for pull requests, scheduled runs,
   and local checks. It exercises discovery, quoting, `/swap` assembly, and local
   transaction validation without a private key or Butter credentials.
@@ -19,12 +23,25 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
   execution hashes are recorded immediately and are never retried automatically.
 
 ### Discovery
+- Clarify that `getSupportedTokens` returns Butter's advertised, non-exhaustive
+  token catalog rather than a route allowlist. Quotes and swaps continue to let
+  `/route` determine whether tokens omitted from the catalog are routeable.
 - Move `getSupportedTokens` from the token API's paginated
   `/api/queryTokenList` flow to Router's `/supportedTokenList?chainId=<id>`.
   The response must contain exactly one matching chain group and a token array;
   malformed or wrong-chain token rows remain fail-closed and are dropped.
+- Reuse validated `/supportedTokenList` decimals for later quotes. Canonical-equal
+  rows with conflicting decimals now fail closed instead of depending on response
+  order.
 
 ### Security / correctness
+- Compare token identifiers in their source or destination chain's format space.
+  Tron Base58Check, `41`-hex, and Butter `0x` forms now resolve to one account;
+  Solana mints remain case-sensitive, while `sol`/`So111…`, `trx`/`T9yD…`, and
+  `btc`/zero-address resolve as chain-scoped native aliases.
+- Recognize Butter's canonical Solana and Tron native addresses during fee
+  enforcement, so a zero USD estimate cannot route a real native gas fee through
+  the cross-token valuation path and bypass `maxNetworkFeeBps`.
 - Bound every Butter HTTP request, including response-body parsing, with the new
   `requestTimeoutMs` setting (default 10 seconds). Timeouts abort and surface as
   typed `ButterApiError`s; requests are not retried automatically.

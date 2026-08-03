@@ -584,6 +584,16 @@ describe('E2E result serialization', () => {
 })
 
 describe('E2E command and CI safety', () => {
+  it('uses a viable default amount without relaxing the protocol fee cap', async () => {
+    const runner = await readFile(join(process.cwd(), 'test/e2e/read-only.test.ts'), 'utf8')
+    const example = await readFile(join(process.cwd(), '.env.e2e.example'), 'utf8')
+
+    assert.match(runner, /withDefault\('E2E_READ_AMOUNT', '10000000000000000'\)/)
+    assert.match(example, /^E2E_READ_AMOUNT=10000000000000000$/m)
+    assert.match(runner, /withDefault\('E2E_READ_MAX_PROTOCOL_FEE_BPS', '1000'\)/)
+    assert.match(example, /^E2E_READ_MAX_PROTOCOL_FEE_BPS=1000$/m)
+  })
+
   it('keeps the pull-request workflow read-only and secret-free', async () => {
     const workflow = await readFile(join(process.cwd(), '.github/workflows/e2e.yml'), 'utf8')
 

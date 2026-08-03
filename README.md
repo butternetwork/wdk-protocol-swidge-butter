@@ -201,10 +201,22 @@ retained and unit-tested.
 - `getSupportedTokens(options)` calls Router
   `/supportedTokenList?chainId=<id>`. Chain selection uses `fromChain`, then
   `toChain`, then the instance's source chain; route-scoped `fromToken`
-  filtering is not available from Butter Router's per-chain listing.
+  filtering is not available from Butter Router's per-chain listing. The result
+  is Butter's **advertised, non-exhaustive catalog**, not a route allowlist:
+  source- and destination-chain swaps can make additional tokens routeable.
+  `quoteSwidge` and `swidge` therefore never require catalog membership; `/route`
+  determines whether the requested token pair is currently routeable.
 - Token decimals resolve from `tokenDecimals` config first, then automatically
-  through Butter's `/findToken` API (cached per token). Configure
-  `tokenDecimals` only for tokens Butter cannot resolve.
+  through Butter's `/findToken` API (cached per chain and canonical token). An
+  explicit `getSupportedTokens()` call also seeds this cache from its validated
+  catalog. Configure `tokenDecimals` only for tokens Butter cannot resolve. Tron
+  Base58Check and Butter hex forms share one cache key; Solana Base58 mints remain
+  case-sensitive.
+- Native aliases are resolved per chain before calling Butter: `sol` maps to
+  Solana's `So11111111111111111111111111111111111111112`, `trx` maps to Tron's
+  `T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb`, and `btc` maps to the zero-address token
+  identifier. The canonical addresses and the generic `native` sentinel are also
+  accepted.
 
 ## Status & fee mapping
 
@@ -288,7 +300,7 @@ const protocol = new ButterSwidgeProtocol(account, {
 - Exact-out, zero inputs, unsafe JavaScript numbers, and amount conversions that
   would discard decimal precision are rejected.
 - Explicit cross-chain slippage below Butter's documented floor is rejected.
-  Defaults use the applicable minimum. BTC and TON routes use the stricter 300
+  Defaults use the applicable minimum. BTC routes use the stricter 300
   bps floor; additional IDs can be configured with `strictSlippageChainIds`.
 - `minAmountOut` is compared locally with the minimum returned by `/route`
   because Butter's documented API does not expose a separate request parameter.
@@ -351,7 +363,7 @@ const protocol = new ButterSwidgeProtocol(account, {
   satisfies the cross-chain fail-closed requirement.
 - Cross-VM destinations require an **explicit `recipient`** on `swidge`. WDK
   defaults the recipient to the account address, which is only meaningful while
-  the destination chain uses the same address format; bridging EVM→Solana/BTC/TON
+  the destination chain uses the same address format; bridging EVM→Solana/BTC
   without one would otherwise forward a `0x` address as the destination receiver.
   Address families are resolved from a best-effort table of Butter's non-EVM chain
   ids (`constants.ts: NON_EVM_CHAIN_FAMILIES`) — unlisted chains are treated as
@@ -382,7 +394,7 @@ const protocol = new ButterSwidgeProtocol(account, {
 - Quotes and discovery do not require a signer or local transaction adapter.
   Execution without a send-capable account or configured signer fails before a
   route request.
-- Tron, Solana, BTC, and TON require explicit `transactionAdapters`; Tron is not
+- Tron, Solana, and BTC require explicit `transactionAdapters`; Tron is not
   treated as viem-compatible EVM execution. Adapter execution bypasses the
   Router V3 calldata validation performed on the built-in EVM path — only chain
   ID and required transaction fields are checked, so adapters carry their own
@@ -482,14 +494,16 @@ DEFAULT_ROUTER_CONTRACTS`), i.e. `native` out of the box:
 
 This is a curated subset of Butter's deployments, not the full set — see
 [Router Registry](#router-registry) for adding others. Non-EVM chains Butter
-supports (Solana, Bitcoin, TON, Tron) are `quote-only` until you supply an adapter;
+supports (Solana, Bitcoin, Tron) are `quote-only` until you supply an adapter;
 Tron is always `adapter`-or-`quote-only` and never uses the built-in EVM path.
 
-**Tokens are discovered at runtime**, not listed here — call
-`getSupportedTokens({ chain })`. Both listings are fail-closed on missing required
-metadata: a token without usable decimals, and a chain without an `id`, `type`, or
-`nativeToken` symbol, are **dropped** rather than returned with a placeholder. A
-chain you expect to see but don't is usually this, not an outage.
+**Butter's advertised token catalog is discovered at runtime**, not listed here —
+call `getSupportedTokens({ fromChain })`. It is useful for recommended-token UIs
+and cache prewarming, but it is intentionally non-exhaustive and must not be used
+to reject a quote. Both discovery listings are fail-closed on missing required
+metadata: a catalog token without usable decimals, and a chain without an `id`,
+`type`, or `nativeToken` symbol, are **dropped** rather than returned with a
+placeholder. A chain you expect to see but don't is usually this, not an outage.
 
 ## Known limitations
 

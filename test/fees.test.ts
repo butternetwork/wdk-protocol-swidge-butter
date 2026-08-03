@@ -279,6 +279,7 @@ describe('Butter fee handling', () => {
    */
   const SOURCE_TOKEN_MATRIX: Array<{
     name: string
+    sourceChainId: string
     sourceToken: string
     component: { address?: string, symbol?: string }
     expect: 'sourceDenominated' | 'routeDenominated' | 'refused'
@@ -286,26 +287,29 @@ describe('Butter fee handling', () => {
     // Base58 encodes information in each character's case, so two casings of a
     // Solana mint are two different tokens. Lowercasing both merged them, handing a
     // fee in an unrelated mint the caller's own input as its denominator.
-    { name: 'Base58 source, same mint', sourceToken: 'AbCdEfGhJkLmNpQrStUvWxYz123456789ABCDEFGHJK', component: { address: 'AbCdEfGhJkLmNpQrStUvWxYz123456789ABCDEFGHJK', symbol: 'SOL' }, expect: 'sourceDenominated' },
+    { name: 'Base58 source, same mint', sourceChainId: '1360108768460801', sourceToken: 'AbCdEfGhJkLmNpQrStUvWxYz123456789ABCDEFGHJK', component: { address: 'AbCdEfGhJkLmNpQrStUvWxYz123456789ABCDEFGHJK', symbol: 'SOL' }, expect: 'sourceDenominated' },
     // Not the source token, and no leg carries that address either, so it is refused
     // rather than silently valued against the caller's input.
-    { name: 'Base58 source, mint differing only by case', sourceToken: 'AbCdEfGhJkLmNpQrStUvWxYz123456789ABCDEFGHJK', component: { address: 'abcdefghjklmnpqrstuvwxyz123456789abcdefghjk', symbol: 'SOL' }, expect: 'refused' },
+    { name: 'Base58 source, mint differing only by case', sourceChainId: '1360108768460801', sourceToken: 'AbCdEfGhJkLmNpQrStUvWxYz123456789ABCDEFGHJK', component: { address: 'abcdefghjklmnpqrstuvwxyz123456789abcdefghjk', symbol: 'SOL' }, expect: 'refused' },
     // An EVM source is identified by address, so only an address can match it.
-    { name: 'EVM source, address differing only by case', sourceToken: SOURCE_TOKEN, component: { address: SOURCE_TOKEN.toUpperCase().replace('0X', '0x'), symbol: 'USDC' }, expect: 'sourceDenominated' },
-    { name: 'EVM source, same address', sourceToken: SOURCE_TOKEN, component: { address: SOURCE_TOKEN, symbol: 'USDC' }, expect: 'sourceDenominated' },
-    { name: 'EVM source, different address', sourceToken: SOURCE_TOKEN, component: { address: BRIDGE_TOKEN, symbol: 'WETH' }, expect: 'routeDenominated' },
-    { name: 'EVM source, address hidden in symbol', sourceToken: SOURCE_TOKEN, component: { symbol: SOURCE_TOKEN }, expect: 'refused' },
-    { name: 'EVM source, unrelated symbol only', sourceToken: SOURCE_TOKEN, component: { symbol: 'USDC' }, expect: 'refused' },
+    { name: 'EVM source, address differing only by case', sourceChainId: '56', sourceToken: SOURCE_TOKEN, component: { address: SOURCE_TOKEN.toUpperCase().replace('0X', '0x'), symbol: 'USDC' }, expect: 'sourceDenominated' },
+    { name: 'EVM source, same address', sourceChainId: '56', sourceToken: SOURCE_TOKEN, component: { address: SOURCE_TOKEN, symbol: 'USDC' }, expect: 'sourceDenominated' },
+    { name: 'EVM source, different address', sourceChainId: '56', sourceToken: SOURCE_TOKEN, component: { address: BRIDGE_TOKEN, symbol: 'WETH' }, expect: 'routeDenominated' },
+    { name: 'EVM source, address hidden in symbol', sourceChainId: '56', sourceToken: SOURCE_TOKEN, component: { symbol: SOURCE_TOKEN }, expect: 'refused' },
+    { name: 'EVM source, unrelated symbol only', sourceChainId: '56', sourceToken: SOURCE_TOKEN, component: { symbol: 'USDC' }, expect: 'refused' },
     // A symbolic source ('btc') has no address to compare, so a symbol may confirm it.
-    { name: 'symbolic source, matching symbol only', sourceToken: 'btc', component: { symbol: 'BTC' }, expect: 'sourceDenominated' },
-    { name: 'symbolic source, declared foreign address', sourceToken: 'btc', component: { address: BRIDGE_TOKEN, symbol: 'BTC' }, expect: 'routeDenominated' },
-    { name: 'symbolic source, no identifier at all', sourceToken: 'btc', component: { decimals: 8 } as { symbol?: string }, expect: 'refused' }
+    { name: 'symbolic source, matching symbol only', sourceChainId: '1360095883558913', sourceToken: 'btc', component: { symbol: 'BTC' }, expect: 'sourceDenominated' },
+    { name: 'symbolic source, declared foreign address', sourceChainId: '1360095883558913', sourceToken: 'btc', component: { address: BRIDGE_TOKEN, symbol: 'BTC' }, expect: 'routeDenominated' },
+    { name: 'symbolic source, no identifier at all', sourceChainId: '1360095883558913', sourceToken: 'btc', component: { decimals: 8 } as { symbol?: string }, expect: 'refused' },
+    // Native symbols are chain-scoped: `sol` on BSC is an opaque token identifier,
+    // so a symbol-only component cannot claim the caller's trusted denominator.
+    { name: 'wrong-chain native symbol', sourceChainId: '56', sourceToken: 'sol', component: { symbol: 'SOL' }, expect: 'refused' }
   ]
 
-  for (const { name, sourceToken, component, expect } of SOURCE_TOKEN_MATRIX) {
+  for (const { name, sourceChainId, sourceToken, component, expect } of SOURCE_TOKEN_MATRIX) {
     it(`identifies a bridge fee component: ${name}`, () => {
       const token = { ...component, decimals: 6 }
-      const matrixContext = { ...context, sourceToken, sourceTokenDecimals: 6 }
+      const matrixContext = { ...context, sourceChainId, sourceToken, sourceTokenDecimals: 6 }
       const route = feeRoute({
         // The only leg that can serve as a route denominator, matched by address.
         bridgeChain: {

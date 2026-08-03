@@ -14,14 +14,14 @@
 import { SwidgeProtocol } from '@tetherto/wdk-wallet/protocols';
 import { addressFamilyForChain, DEFAULT_APP_BASE_URL, DEFAULT_ROUTER_BASE_URL, DEFAULT_TOKEN_BASE_URL, OPERATION_KIND_MAX_ENTRIES, REQUEST_TIMEOUT_MS, ROUTE_TTL_SECONDS, SOLANA_CHAIN_ID, TRON_CHAIN_ID } from './constants.js';
 import { assertBaseUnitAmount } from './amounts.js';
-import { normalizeTokenKey, normalizeTransactionHash } from './identifiers.js';
+import { isNativeTokenIdentifier, normalizeTokenKey, normalizeTransactionHash } from './identifiers.js';
 import { ButterHttpClient } from './http.js';
 import { RouteManager } from './route.js';
 import { enforceFeeLimits, resolveFeeLimits, routeNativeFee, validateFeeLimits } from './fees.js';
 import { routeToQuote } from './mappers.js';
 import { DiscoveryService } from './discovery.js';
 import { routerFunctionName, validateSwapTransactions } from './swap-data.js';
-import { assertGasFee, assertTransactionHash, executeEvmSwap, isNativeToken } from './evm.js';
+import { assertGasFee, assertTransactionHash, executeEvmSwap } from './evm.js';
 import { mapReceiptStatus, mapStatusResponse } from './status.js';
 import { createRouterRegistry, routerDeploymentsForChain } from './router-registry.js';
 import { ButterActionRequiredError, ButterApiError, ButterConfigurationError, ButterExactOutUnsupportedError, ButterPartialExecutionError, ButterReadOnlyAccountError, ButterUnsupportedError } from './errors.js';
@@ -96,7 +96,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
             sourceChainId: this.sourceChainId,
             entrance: config.entrance,
             now: this.now,
-            tokenDecimals: normalizedTokenDecimals(config.tokenDecimals),
+            tokenDecimals: normalizedTokenDecimals(this.sourceChainId, config.tokenDecimals),
             nativeTokenDecimals: config.nativeTokenDecimals ?? {},
             strictSlippageChainIds,
             ...(executionMarginSeconds != null ? { executionMarginSeconds } : {}),
@@ -196,7 +196,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
             from: sender,
             receiver
         });
-        const nativeSource = isNativeToken(options.fromToken);
+        const nativeSource = isNativeTokenIdentifier(this.sourceChainId, options.fromToken);
         const swapValidationContext = {
             sourceChainId: this.sourceChainId,
             destinationChainId,
@@ -447,11 +447,12 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
         return this.discovery.getSupportedChains();
     }
     /**
-     * Lists all Butter-supported tokens for the selected chain.
+     * Lists the non-exhaustive token catalog currently advertised by Butter Router.
      *
-     * Chain selection uses `fromChain`, then `toChain`, then the instance's
-     * source chain. Route-scoped `fromToken` filtering is not implemented:
-     * Butter Router only supports per-chain listing.
+     * Catalog membership is not a route capability check: Butter can route tokens
+     * omitted here by swapping on the source and destination chains. Chain selection
+     * uses `fromChain`, then `toChain`, then the instance's source chain. Route-scoped
+     * `fromToken` filtering is unavailable from Butter Router's per-chain listing.
      */
     async getSupportedTokens(options = {}) {
         const chainId = String(options.fromChain ?? options.toChain ?? this.sourceChainId);
@@ -627,10 +628,10 @@ function sameRecipient(left, right) {
  * Two entries that normalize together must agree: silently keeping one would make
  * which decimals apply depend on object key order, and decimals decide amounts.
  */
-function normalizedTokenDecimals(configured) {
+function normalizedTokenDecimals(chainId, configured) {
     const decimals = new Map();
     for (const [token, value] of Object.entries(configured ?? {})) {
-        const key = normalizeTokenKey(token);
+        const key = normalizeTokenKey(chainId, token);
         const existing = decimals.get(key);
         if (existing != null && existing !== value) {
             throw new ButterConfigurationError('tokenDecimals has conflicting entries for the same token', {

@@ -21,7 +21,10 @@ npm run example:discover
 ```
 
 `SOURCE_CHAIN_ID` defaults to BNB Smart Chain. Set `TOKEN_CHAIN_ID` to choose
-which chain's complete token list is returned.
+which chain's advertised token catalog is returned. The
+`advertisedTokens`/`advertisedTokenCount` fields are intentionally non-exhaustive:
+catalog membership is not a route capability check, and `/route` may quote tokens
+that are absent from this listing.
 
 The output includes a `chainCoverage` section listing the chains Butter reported
 but `getSupportedChains()` dropped for missing WDK-required metadata (`type`,

@@ -19,7 +19,7 @@ import {
   TRON_CHAIN_ID
 } from './constants.js'
 import { ButterApiError } from './errors.js'
-import { normalizeIdentifier, sameIdentifier } from './identifiers.js'
+import { normalizeTokenKey, sameTokenIdentifier } from './identifiers.js'
 import { chainToSupportedChain, normalizeId, tokenToSupportedToken } from './mappers.js'
 import { routerDeploymentsForChain, type ButterRouterRegistry } from './router-registry.js'
 import type { ButterChainExecution, ButterChainInfo, ButterTokenInfo, ButterSupportedChain, ButterSwidgeProtocolConfig, SwidgeSupportedToken } from './types.js'
@@ -98,9 +98,9 @@ export class DiscoveryService {
    * unknown token.
    */
   async findTokenDecimals (chainId: string, address: string): Promise<number | undefined> {
-    // Lowercasing the whole key merged two Base58 mints differing only in case, so
-    // one mint's decimals could be served for the other.
-    const key = `${chainId}:${normalizeIdentifier(address)}`
+    // The key is chain-aware: Solana Base58 stays exact, while valid equivalent
+    // Tron Base58Check/hex representations share one cache entry.
+    const key = `${chainId}:${normalizeTokenKey(chainId, address)}`
     const cached = this.tokenDecimalsCache.get(key)
     if (cached) {
       if (cached.kind === 'not-found' && cached.expiresAt <= this.now()) {
@@ -129,10 +129,9 @@ export class DiscoveryService {
       const candidateChain = scalarChainId(entry.chainId)
       const candidateAddress = tokenIdentifier(entry)
       if (candidateChain == null || candidateAddress == null) continue
-      // Chain AND address. `sameIdentifier` rather than a lowercase compare because
-      // /findToken is exactly where a Base58 Solana mint arrives, and two casings of
-      // one are two different mints.
-      if (normalizeId(candidateChain) !== normalizeId(chainId) || !sameIdentifier(candidateAddress, address)) continue
+      // Chain AND token identity. Solana Base58 remains exact; Tron is compared only
+      // after checksum/length-validated conversion to its 20-byte account id.
+      if (normalizeId(candidateChain) !== normalizeId(chainId) || !sameTokenIdentifier(chainId, candidateAddress, address)) continue
       const decimals = parseDiscoveryDecimals(entry.decimals ?? entry.decimal)
       const aliasDecimals = entry.decimals != null && entry.decimal != null
         ? parseDiscoveryDecimals(entry.decimal)
@@ -208,18 +207,31 @@ export class DiscoveryService {
       })
     }
     const results = recordArray(group.tokens, 'Butter Router supported-token entries')
-    const tokens: SwidgeSupportedToken[] = []
-    const seen = new Set<string>()
+    const tokens = new Map<string, SwidgeSupportedToken>()
     for (const item of results) {
       const token = tokenToSupportedToken(item as ButterTokenInfo, chainId)
       if (!token.token || !Number.isInteger(token.decimals) || token.decimals < 0 || token.decimals > 255) continue
       if (token.chain !== chainId) continue
-      const key = `${token.chain}:${normalizeIdentifier(token.token)}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      tokens.push(token)
+      const key = `${token.chain}:${normalizeTokenKey(token.chain, token.token)}`
+      const existing = tokens.get(key)
+      if (existing != null) {
+        if (existing.decimals !== token.decimals) {
+          throw new ButterApiError('Butter supported-token list returned conflicting decimals for the same token', {
+            chainId,
+            token: token.token,
+            decimals: [existing.decimals, token.decimals]
+          })
+        }
+        continue
+      }
+      tokens.set(key, token)
     }
-    return tokens
+    // Seed only after the whole response is validated. A later canonical duplicate
+    // with conflicting decimals must not leave an earlier value cached.
+    for (const [key, token] of tokens) {
+      this.setTokenDecimalsCache(key, { kind: 'resolved', decimals: token.decimals })
+    }
+    return [...tokens.values()]
   }
 
 }

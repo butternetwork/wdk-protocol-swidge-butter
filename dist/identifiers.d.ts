@@ -17,6 +17,27 @@ export declare function normalizeIdentifier(value: string): string;
  */
 export declare function sameIdentifier(left: string | undefined, right: string | undefined): boolean;
 /**
+ * Normalizes a token identifier inside one chain's format space.
+ *
+ * Ordinary Solana/Base58 identifiers remain exact. Tron is the exceptional chain:
+ * Butter mixes Base58Check, Tron `41`-prefixed hex, and an EVM-shaped `0x` form for
+ * the same account, so valid representations are reduced to the 20-byte account id.
+ * Native aliases are also reduced to a chain-scoped key, preventing `sol` on an EVM
+ * chain (or `btc` on Solana) from being mistaken for that chain's native asset.
+ */
+export declare function normalizeTokenIdentifier(chainId: string | number, value: string): string;
+/** True when two token identifiers denote the same token on the named chain. */
+export declare function sameTokenIdentifier(chainId: string | number, left: string | undefined, right: string | undefined): boolean;
+/** True when the identifier denotes the named chain's native asset. */
+export declare function isNativeTokenIdentifier(chainId: string | number, token: string): boolean;
+/**
+ * True only for a textual native alias, never for an address-shaped sentinel.
+ * Fee-component symbol fallback uses this narrower rule by design.
+ */
+export declare function isSymbolicNativeTokenIdentifier(chainId: string | number, token: string): boolean;
+/** Returns the representation Butter expects when the caller used a native alias. */
+export declare function toButterTokenIdentifier(chainId: string | number, token: string): string;
+/**
  * Normalizes a **transaction hash**, which is a different format space from a token
  * identifier and so needs its own rule.
  *
@@ -34,17 +55,18 @@ export declare function normalizeTransactionHash(value: string): string;
 /** True when two transaction hashes denote the same transaction. */
 export declare function sameTransactionHash(left: string | undefined, right: string | undefined): boolean;
 /**
- * Key for a `tokenDecimals` entry, used for BOTH building the map and querying it.
+ * Chain-scoped key for a `tokenDecimals` entry, used for BOTH building the map and
+ * querying it.
  *
  * Sharing one named function is the whole point: normalizing only the query left a
  * checksummed configuration key unreachable by the equivalent lowercase request, so
  * configured decimals were reported missing. It follows the identifier rule, so an
  * EVM address is case-insensitive and a Base58 mint is not.
  *
- * There is deliberately no case for the symbolic native ids (`btc`, `sol`, …): those
- * never reach a `tokenDecimals` lookup, because `route.ts: decimalsFor` answers them
- * from `NATIVE_TOKEN_ADDRESSES` and `config.nativeTokenDecimals` first. Configure a
- * native token's decimals there, not here.
+ * Symbolic native ids never reach a `tokenDecimals` lookup, because
+ * `route.ts: decimalsFor` answers chain-valid aliases from
+ * `config.nativeTokenDecimals` first. Configure a native token's decimals there,
+ * not here.
  */
-export declare function normalizeTokenKey(token: string): string;
+export declare function normalizeTokenKey(chainId: string | number, token: string): string;
 //# sourceMappingURL=identifiers.d.ts.map
