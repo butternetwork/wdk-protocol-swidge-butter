@@ -673,19 +673,19 @@ describe('Butter fee handling', () => {
     assert.throws(() => mapRouteFees(mismatched, context), ButterFeeValuationError)
   })
 
-  it('rejects a malformed or negative feeConfig instead of leaking a raw error', () => {
-    const malformed = feeRoute({ feeConfig: { feeType: 1, referrer: '0x0000000000000000000000000000000000000111', rateOrNativeFee: '12abc' } })
-    const negative = feeRoute({ feeConfig: { feeType: 1, referrer: '0x0000000000000000000000000000000000000111', rateOrNativeFee: -100 } })
+  it('ignores malformed feeConfig values when mapping and capping swap fees', () => {
+    const route = feeRoute({
+      feeConfig: { feeType: 1, referrer: '0x0000000000000000000000000000000000000111', rateOrNativeFee: '12abc' },
+      swapFee: { nativeFee: '0', tokenFee: '1', tokenSymbol: 'USDC' },
+      bridgeFee: ZERO_BRIDGE_FEE,
+      gasFee: { amount: '0', symbol: 'BNB', inUSD: '0' }
+    })
 
-    // BigInt('12abc') used to escape quoteSwidge as a raw SyntaxError, and a negative
-    // rate produced a negative SwidgeFee.amount plus a cap numerator that subtracted
-    // from the total, letting a genuine fee through.
-    assert.throws(() => mapRouteFees(malformed, context), ButterFeeValuationError)
-    assert.throws(() => mapRouteFees(negative, context), ButterFeeValuationError)
-    assert.throws(
-      () => enforceFeeLimits(negative, context, { maxProtocolFeeBps: 10000n }),
-      ButterFeeValuationError
+    assert.deepEqual(
+      mapRouteFees(route, context).map(({ type, amount, token }) => ({ type, amount, token })),
+      [{ type: 'protocol', amount: 1000000n, token: SOURCE_TOKEN }]
     )
+    assert.doesNotThrow(() => enforceFeeLimits(route, context, { maxProtocolFeeBps: 100n }))
   })
 
   it('fails closed when a bridge fee component matches no route leg in its token', () => {
@@ -708,10 +708,8 @@ describe('Butter fee handling', () => {
     )
   })
 
-  it('counts a proportional feeConfig rate toward the protocol fee cap', () => {
-    // The bypass: declare a fat proportional feeConfig, report no swapFee, pass any
-    // cap, then execute calldata carrying the fee — validateFeeData accepts it
-    // precisely because it matches the feeConfig.
+  it('ignores feeConfig when swapFee reports zero fees', () => {
+    const warnings: ButterWarning[] = []
     const route = feeRoute({
       feeConfig: { feeType: 1, referrer: '0x0000000000000000000000000000000000000111', rateOrNativeFee: 5000 },
       swapFee: { nativeFee: '0', tokenFee: '0', tokenSymbol: 'USDC' },
@@ -719,37 +717,16 @@ describe('Butter fee handling', () => {
       gasFee: { amount: '0', symbol: 'BNB', inUSD: '0' }
     })
 
-    assert.throws(
-      () => enforceFeeLimits(route, context, { maxProtocolFeeBps: 1n }),
-      ButterFeeLimitExceededError
-    )
-    // 5000 bps is exactly the declared rate, so the cap is pinning the valuation
-    // rather than rejecting unconditionally. Note this needs no route-reported
-    // amount at all: a bps rate of the input is its own ratio.
-    assert.doesNotThrow(() => enforceFeeLimits(route, context, { maxProtocolFeeBps: 5000n }))
+    const fees = mapRouteFees(route, { ...context, onWarning: (warning) => warnings.push(warning) })
+
+    assert.deepEqual(fees.map(({ type, amount }) => ({ type, amount })), [{ type: 'network', amount: 0n }])
+    assert.deepEqual(warnings.map(({ code }) => code), ['no-fees-reported'])
+    assert.doesNotThrow(() => enforceFeeLimits(route, context, { maxProtocolFeeBps: 0n }))
   })
 
-  it('counts a fixed native feeConfig fee toward the protocol fee cap', () => {
-    // feeType 0 is a fixed fee in source-chain native base units, valued exactly
-    // like swapFee.nativeFee. 0.002 native against this fixture is 200 bps.
+  it('uses swapFee rather than a larger feeConfig value for the protocol fee cap', () => {
     const route = feeRoute({
-      feeConfig: { feeType: 0, referrer: '0x0000000000000000000000000000000000000111', rateOrNativeFee: '2000000000000000' },
-      swapFee: { nativeFee: '0', tokenFee: '0', tokenSymbol: 'USDC' },
-      bridgeFee: ZERO_BRIDGE_FEE
-    })
-
-    assert.throws(
-      () => enforceFeeLimits(route, context, { maxProtocolFeeBps: 199n }),
-      ButterFeeLimitExceededError
-    )
-    assert.doesNotThrow(() => enforceFeeLimits(route, context, { maxProtocolFeeBps: 200n }))
-  })
-
-  it('does not double count a feeConfig fee that swapFee already reports', () => {
-    // feeConfig and swapFee are two views of one fee: 1 USDC of 100 is 100 bps, and
-    // so is a 100 bps rate. Summing them would report 200.
-    const route = feeRoute({
-      feeConfig: { feeType: 1, referrer: '0x0000000000000000000000000000000000000111', rateOrNativeFee: 100 },
+      feeConfig: { feeType: 1, referrer: '0x0000000000000000000000000000000000000111', rateOrNativeFee: 5000 },
       swapFee: { nativeFee: '0', tokenFee: '1', tokenSymbol: 'USDC' },
       bridgeFee: ZERO_BRIDGE_FEE,
       gasFee: { amount: '0', symbol: 'BNB', inUSD: '0' }
@@ -762,53 +739,29 @@ describe('Butter fee handling', () => {
     )
   })
 
-  it('fails closed on a feeConfig feeType it does not model', () => {
+  it('ignores unsupported feeConfig types during fee calculation', () => {
     const route = feeRoute({
-      feeConfig: { feeType: 7, referrer: '0x0000000000000000000000000000000000000111', rateOrNativeFee: 5 }
+      feeConfig: { feeType: 7, referrer: '0x0000000000000000000000000000000000000111', rateOrNativeFee: 5 },
+      swapFee: { nativeFee: '0', tokenFee: '1', tokenSymbol: 'USDC' },
+      bridgeFee: ZERO_BRIDGE_FEE,
+      gasFee: { amount: '0', symbol: 'BNB', inUSD: '0' }
     })
+
+    assert.doesNotThrow(() => mapRouteFees(route, context))
+    assert.doesNotThrow(() => enforceFeeLimits(route, context, { maxProtocolFeeBps: 100n }))
+  })
+
+  it('fails closed when a protocol cap is configured but swapFee is absent', () => {
+    const route = feeRoute({
+      bridgeFee: ZERO_BRIDGE_FEE,
+      gasFee: { amount: '0', symbol: 'BNB', inUSD: '0' }
+    })
+    delete route.swapFee
 
     assert.throws(
       () => enforceFeeLimits(route, context, { maxProtocolFeeBps: 10000n }),
       ButterFeeValuationError
     )
-  })
-
-  it('warns when feeConfig charges a fee swapFee does not report', () => {
-    const warnings: ButterWarning[] = []
-    const route = feeRoute({
-      feeConfig: { feeType: 1, referrer: '0x0000000000000000000000000000000000000111', rateOrNativeFee: 50 },
-      swapFee: { nativeFee: '0', tokenFee: '0', tokenSymbol: 'USDC' }
-    })
-
-    // Fires from the fee MAPPING, so every quote sees it — not only an execution
-    // that happens to have configured a cap.
-    const fees = mapRouteFees(route, { ...context, onWarning: (warning) => warnings.push(warning) })
-
-    // Also warns about mixed currencies, since the integrator fee is in USDC while
-    // the bridge fee is in WETH.
-    assert.ok(warnings.some(({ code }) => code === 'undeclared-integrator-fee'))
-    // And the fee is shown as a real amount: 50 bps of the caller's 100 USDC input.
-    assert.deepEqual(
-      fees.filter(({ description }) => description?.startsWith('Butter integrator fee'))
-        .map(({ amount, token }) => ({ amount, token })),
-      [{ amount: 500000n, token: SOURCE_TOKEN }]
-    )
-  })
-
-  it('omits the integrator fee amount but still warns without a requested input', () => {
-    const warnings: ButterWarning[] = []
-    const route = feeRoute({
-      feeConfig: { feeType: 1, referrer: '0x0000000000000000000000000000000000000111', rateOrNativeFee: 50 },
-      swapFee: { nativeFee: '0', tokenFee: '0', tokenSymbol: 'USDC' }
-    })
-    const { requestedAmountIn: _omitted, ...noInput } = context
-
-    // A rate is not an amount: without the input there is nothing to multiply, so
-    // the warning carries the signal on its own.
-    const fees = mapRouteFees(route, { ...noInput, onWarning: (warning) => warnings.push(warning) })
-
-    assert.deepEqual(warnings.map(({ code }) => code), ['undeclared-integrator-fee'])
-    assert.ok(!fees.some(({ description }) => description?.startsWith('Butter integrator fee')))
   })
 
   it('values a source-token bridge fee against the caller input, not the route', () => {

@@ -201,15 +201,12 @@ export interface ButterWarning {
      * `protocol` fee group spans more than one token, so the WDK base class's legacy
      * `bridgeFee` scalar is summing across currencies. `no-fees-reported` — Butter
      * reported no fees at all, so `fees[]` carries a single zero-amount placeholder.
-     * `undeclared-integrator-fee` — the route's `feeConfig` charges an integrator fee
-     * that `swapFee` does not report, so the quoted `fees[]` understates what the
-     * Router will actually take (the cap check still counts it).
      * `bridge-fee-components-missing` — the bridge fee arrived as a top-level summary
      * with no `in`, `out` or `affiliate` component. The summary is never priced (one
      * figure in one token cannot describe a fee spanning three), so the bridge fee is
      * omitted from `fees[]` and a configured protocol cap refuses.
      */
-    code: 'mixed-currency-protocol-fees' | 'no-fees-reported' | 'undeclared-integrator-fee' | 'bridge-fee-components-missing';
+    code: 'mixed-currency-protocol-fees' | 'no-fees-reported' | 'bridge-fee-components-missing';
     message: string;
     details?: unknown;
 }
@@ -361,7 +358,7 @@ export interface ButterRoute {
         nativeSymbol?: string;
         tokenSymbol?: string;
     };
-    /** Integrator/affiliate fee config mirrored into the `/swap` calldata feeData. */
+    /** Referrer fee config mirrored into `/swap` feeData; its charge is already included in `swapFee`. */
     feeConfig?: ButterFeeConfig;
     minAmountOut?: {
         amount?: string;
@@ -376,7 +373,7 @@ export interface ButterRoute {
     totalAmountInUSD?: string;
     totalAmountOutUSD?: string;
 }
-/** Butter `/route` integrator fee configuration, encoded on-chain as `feeData`. */
+/** Butter `/route` referrer fee configuration, encoded on-chain as `feeData`. */
 export interface ButterFeeConfig {
     feeType?: number | string;
     referrer?: string;

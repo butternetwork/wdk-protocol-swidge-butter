@@ -230,9 +230,9 @@ is where each entry lands in the legacy `swap()`/`bridge()` scalars:
 | `bridgeFee.affiliate` | `affiliate` | *(not visible)* | integrator/affiliate share — **counted against `maxProtocolFeeBps`** |
 | `bridgeFee.amount` | — | — | never priced; used only to detect that a fee exists which no component describes |
 | `gasFee` | `network` | `fee` | source-chain gas; estimate, replaced by measured gas when the sender reports every send's fee |
-| `swapFee.nativeFee` | `protocol` | `bridgeFee` | native-denominated swap fee |
-| `swapFee.tokenFee` | `protocol` | `bridgeFee` | input-token-denominated swap fee |
-| `feeConfig` | `protocol` | `bridgeFee` | the integrator fee, added **only** when `swapFee` does not already report it; a proportional rate needs `fromTokenAmount` to be shown as an amount |
+| `swapFee.nativeFee` | `protocol` | `bridgeFee` | native-denominated actual swap fee, including any charge configured by `feeConfig` |
+| `swapFee.tokenFee` | `protocol` | `bridgeFee` | input-token-denominated actual swap fee, including any charge configured by `feeConfig` |
+| `feeConfig` | — | — | referrer fee configuration used to validate `/swap` calldata; never added as a separate fee |
 
 `bridgeFee` is reported per component, and the top-level `bridgeFee.amount` summary is
 **never priced**. It is a single figure in a single token describing a fee that can
@@ -250,13 +250,13 @@ affiliate cap, and leaving the share unbounded bites hardest when you do *not* s
 `affiliate` — Butter then substitutes its own wallet, so your users pay a cut you
 never chose. `maxProtocolFeeBps` is the only knob available to bound it.
 
-`feeConfig` is the integrator fee as it will actually be encoded in the Router
-calldata, and it is what `maxProtocolFeeBps` is checked against — `swapFee` merely
-reports it. Where both describe the same fee the larger is used, never the sum. When
-`feeConfig` charges a fee that `swapFee` does not report, `onWarning` fires with
-`undeclared-integrator-fee` and the fee is added to `fees[]`: a fixed native fee
-directly, and a proportional rate as `fromTokenAmount × rate / 10000` — so it appears
-only when you supplied an input amount, since a rate on its own is not an amount.
+`swapFee` is Butter's authoritative actual fee result and already includes the fee
+configured by `feeConfig`. Fee mapping and `maxProtocolFeeBps` therefore read only
+`swapFee`; `feeConfig` is never added, used as a fallback, or compared with it. The
+configuration remains security-sensitive during execution: `/swap` calldata must
+encode the same `(feeType, referrer, rateOrNativeFee)` tuple returned by `/route`.
+When a protocol cap is configured, missing `swapFee` amounts fail closed while
+explicit zero amounts are accepted.
 
 `fees[]` is always populated: if Butter reports no fees at all, it carries a single
 zero-amount `network` entry rather than being empty (an empty array reads as "free").
@@ -278,7 +278,6 @@ const protocol = new ButterSwidgeProtocol(account, {
 })
 // -> 'mixed-currency-protocol-fees' when the protocol group spans several tokens
 // -> 'no-fees-reported'              when Butter reported none and fees[] is a placeholder
-// -> 'undeclared-integrator-fee'     when feeConfig charges a fee swapFee omits
 // -> 'bridge-fee-components-missing' when a bridge fee summary cannot be split
 //                                    from its affiliate share
 ```
@@ -311,7 +310,7 @@ const protocol = new ButterSwidgeProtocol(account, {
 - EVM Router V3 calldata is validated at a deliberate middle tier. Always
   enforced: the target must be an allowlisted router (and match the route's
   `contract`); the top-level intent — initiator, source token, source amount,
-  and empty permit data — must match the request; the integrator `feeData` must
+  and empty permit data — must match the request; the referrer `feeData` must
   match the route's quoted `feeConfig` as a full `(feeType, referrer,
   rateOrNativeFee)` tuple — empty `feeData` is rejected when the route quoted a
   non-zero fee, and a non-empty `feeData` requires the quoted tuple to be

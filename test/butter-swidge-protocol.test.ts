@@ -5579,7 +5579,7 @@ describe('helpers', () => {
     assert.throws(() => validateSwapTransaction(swap(encodeFeeData(0, referrer, 0n)), context), ButterTransactionValidationError)
   })
 
-  it('rejects empty feeData when the route quoted a non-zero integrator fee', () => {
+  it('rejects empty feeData when the route quoted a non-zero referrer fee', () => {
     const referrer = '0x51C700e5bE790C91F14D42F85ca90aed9f2D142e'
     const context = {
       ...validationContext(),
@@ -5592,7 +5592,7 @@ describe('helpers', () => {
       }),
       feeConfig: { feeType: 1, referrer, rateOrNativeFee: 50 }
     }
-    // Empty feeData would silently drop the quoted 50-bps integrator fee.
+    // Empty feeData would silently drop the quoted 50-bps referrer fee.
     assert.throws(
       () => validateSwapTransaction({ to: ROUTER, value: '10', chainId: '56', data: crossChainSwapData(ERC20_TOKEN, 1000n, { nativeFee: 10n }) }, context),
       ButterTransactionValidationError
@@ -5647,6 +5647,65 @@ describe('helpers', () => {
     // The complete, matching tuple is still accepted.
     assert.doesNotThrow(
       () => validateSwapTransaction(swap, { ...base, feeConfig: { feeType: 1, referrer, rateOrNativeFee: 50 } })
+    )
+  })
+
+  it('rejects malformed or unsupported feeConfig values at the calldata validation boundary', () => {
+    const referrer = '0x51C700e5bE790C91F14D42F85ca90aed9f2D142e'
+    const base = {
+      ...validationContext(),
+      destinationChainId: '137',
+      maxNativeFee: 100n,
+      route: quoteRoute({
+        srcChain: { chainId: '56', tokenIn: { address: ERC20_TOKEN, decimals: 18 }, tokenOut: { address: DEST_TOKEN, decimals: 6 } },
+        dstChain: undefined
+      })
+    }
+    const proportionalSwap = {
+      to: ROUTER,
+      value: '10',
+      chainId: '56',
+      data: crossChainSwapData(ERC20_TOKEN, 1000n, { nativeFee: 10n, feeData: encodeFeeData(1, referrer, 50n) })
+    }
+    const unsupportedSwap = {
+      ...proportionalSwap,
+      data: crossChainSwapData(ERC20_TOKEN, 1000n, { nativeFee: 10n, feeData: encodeFeeData(7, referrer, 50n) })
+    }
+
+    assert.throws(
+      () => validateSwapTransaction(proportionalSwap, { ...base, feeConfig: { feeType: 1, referrer, rateOrNativeFee: '12abc' } }),
+      ButterTransactionValidationError
+    )
+    assert.throws(
+      () => validateSwapTransaction(unsupportedSwap, { ...base, feeConfig: { feeType: 7, referrer, rateOrNativeFee: 50 } }),
+      ButterTransactionValidationError
+    )
+  })
+
+  it('allows empty feeData for a zero-rate feeConfig without validating unused tuple fields', () => {
+    const base = {
+      ...validationContext(),
+      destinationChainId: '137',
+      maxNativeFee: 100n,
+      route: quoteRoute({
+        srcChain: { chainId: '56', tokenIn: { address: ERC20_TOKEN, decimals: 18 }, tokenOut: { address: DEST_TOKEN, decimals: 6 } },
+        dstChain: undefined
+      })
+    }
+    const swap = {
+      to: ROUTER,
+      value: '10',
+      chainId: '56',
+      data: crossChainSwapData(ERC20_TOKEN, 1000n, { nativeFee: 10n, feeData: '0x' })
+    }
+
+    // With no encoded referrer fee, feeType and referrer are unused. Only the
+    // zero rate matters when deciding whether empty feeData silently drops a fee.
+    assert.doesNotThrow(
+      () => validateSwapTransaction(swap, { ...base, feeConfig: { feeType: 7, rateOrNativeFee: 0 } })
+    )
+    assert.doesNotThrow(
+      () => validateSwapTransaction(swap, { ...base, feeConfig: { rateOrNativeFee: '0' } })
     )
   })
 

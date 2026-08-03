@@ -183,13 +183,9 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
     const senderFallback = this.sourceChainId === SOLANA_CHAIN_ID ? await this.resolveSenderOrUndefined() : undefined
     const cached = await this.routes.getRoute(options, { senderFallback })
     this.routes.enforceMinAmountOut(options, cached.route)
-    // Carry the requested input into the quote's fee context too, so a proportional
-    // integrator fee (a rate, not an amount) can be rendered as an actual amount in
-    // `fees[]`. Caps are still not enforced here — quoting stays non-binding.
     const quoteFeeContext: FeeContext = {
       ...this.feeContextFor(options.fromToken),
-      sourceTokenDecimals: cached.sourceDecimals,
-      ...(options.fromTokenAmount != null ? { requestedAmountIn: BigInt(options.fromTokenAmount) } : {})
+      sourceTokenDecimals: cached.sourceDecimals
     }
     const quote = routeToQuote(cached.route, this.now, cached.expiresAt, quoteFeeContext, options.fromTokenAmount)
     return {

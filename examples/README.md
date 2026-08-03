@@ -87,9 +87,10 @@ affiliate share is — that share is charged to your users whether or not you co
 
 Defaults to a cross-chain pair, since a same-chain route has no bridge leg and so no
 bridge fee to look at. Set `PROBE_AFFILIATE=<nickname>:<rate>` to make Butter
-populate a non-zero `feeConfig`, which the protocol fee cap now values directly
-(`feeType: 1` → `rateOrNativeFee` in bps of the input; `feeType: 0` → source-chain
-native base units). Other overrides: `PROBE_FROM_CHAIN`, `PROBE_TO_CHAIN`,
+populate a non-zero `feeConfig`. The probe prints it next to `swapFee` so you can
+compare the referrer configuration with Butter's actual fee result; fee mapping and
+the protocol fee cap use only `swapFee`, which already includes that charge. Other
+overrides: `PROBE_FROM_CHAIN`, `PROBE_TO_CHAIN`,
 `PROBE_TOKEN_IN`, `PROBE_TOKEN_OUT`, `PROBE_AMOUNT`, `PROBE_SLIPPAGE`.
 
 ## Request an exact-in quote
