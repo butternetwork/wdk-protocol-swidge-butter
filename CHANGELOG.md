@@ -18,6 +18,12 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
 - Add resumable status polling and redacted JSON result artifacts. Partial
   execution hashes are recorded immediately and are never retried automatically.
 
+### Discovery
+- Move `getSupportedTokens` from the token API's paginated
+  `/api/queryTokenList` flow to Router's `/supportedTokenList?chainId=<id>`.
+  The response must contain exactly one matching chain group and a token array;
+  malformed or wrong-chain token rows remain fail-closed and are dropped.
+
 ### Security / correctness
 - Bound every Butter HTTP request, including response-body parsing, with the new
   `requestTimeoutMs` setting (default 10 seconds). Timeouts abort and surface as
@@ -150,18 +156,6 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
   (`<nickname>[:rate]`) precisely because an unusable value fails silently on
   Butter's side. Both participate in the route cache key; when unset, neither
   appears in the request, so an existing integrator's cache keys are unchanged.
-- Detect a **replayed** token page. `count` was re-read every page, so a later
-  response could shrink it and end the walk early; and any non-empty page counted as
-  progress, so a server replaying page 1 drove `consumed` to `count` and returned a
-  deduplicated fraction of the list with no error at all. `count` is now pinned to
-  the first page (a later change is an error) and a page contributing no
-  previously-unseen raw record is rejected.
-- Fix `getSupportedTokens` pagination, which compared the **filtered** token count
-  against Butter's advertised raw `count`. Because entries are dropped (unusable
-  decimals, duplicates), a filtered total could never reach `count`: the loop could
-  not terminate normally and threw "empty page before the advertised count" on the
-  final page, so a single dropped token broke discovery for the whole chain. A
-  separate raw counter now drives all three comparisons.
 - `getSupportedChains` now applies the same fail-closed rule as
   `getSupportedTokens`: a chain missing an `id`, `type`, or `nativeToken` symbol
   is dropped instead of being listed with a placeholder. WDK marks both fields

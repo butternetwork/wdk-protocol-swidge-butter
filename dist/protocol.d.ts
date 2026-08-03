@@ -89,7 +89,7 @@ export declare class ButterSwidgeProtocol extends SwidgeProtocol {
      *
      * Chain selection uses `fromChain`, then `toChain`, then the instance's
      * source chain. Route-scoped `fromToken` filtering is not implemented:
-     * Butter's token API only supports per-chain listing.
+     * Butter Router only supports per-chain listing.
      */
     getSupportedTokens(options?: SwidgeSupportedTokensOptions): Promise<SwidgeSupportedToken[]>;
     private assertQuoteOptions;

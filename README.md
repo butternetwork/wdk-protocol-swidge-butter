@@ -198,10 +198,10 @@ retained and unit-tested.
   listing, and a dropped chain keeps any strict slippage floor it qualifies
   for. Run `npm run example:discover` to see which chains this costs you on
   live data (the output reports the dropped ids and their missing fields).
-- `getSupportedTokens(options)` resolves the chain `key` from
-  `/api/queryChainList` and paginates `/api/queryTokenList`. Chain selection
-  uses `fromChain`, then `toChain`, then the instance's source chain;
-  route-scoped `fromToken` filtering is not available from Butter's token API.
+- `getSupportedTokens(options)` calls Router
+  `/supportedTokenList?chainId=<id>`. Chain selection uses `fromChain`, then
+  `toChain`, then the instance's source chain; route-scoped `fromToken`
+  filtering is not available from Butter Router's per-chain listing.
 - Token decimals resolve from `tokenDecimals` config first, then automatically
   through Butter's `/findToken` API (cached per token). Configure
   `tokenDecimals` only for tokens Butter cannot resolve.
