@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
+import { generatePrivateKey, privateKeyToAddress } from 'viem/accounts'
 
 export const FUNDED_EXECUTION_CONFIRMATION = 'I_UNDERSTAND_THIS_SENDS_REAL_FUNDS'
 
@@ -79,6 +80,10 @@ export class ReadOnlySendBlockedError extends Error {
     super('E2E read-only sender blocked transaction broadcast')
     this.name = 'ReadOnlySendBlockedError'
   }
+}
+
+export function createEphemeralEvmAddress (): string {
+  return privateKeyToAddress(generatePrivateKey())
 }
 
 export class NoBroadcastSender {

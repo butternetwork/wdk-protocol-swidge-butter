@@ -10,6 +10,7 @@ import {
   GuardedTransactionSender,
   NoBroadcastSender,
   assertReadOnlySendBlocked,
+  createEphemeralEvmAddress,
   createGuardedEvmWalletClient,
   assertExecutionBudget,
   extractRecoverableSourceId,
@@ -237,6 +238,15 @@ describe('guarded viem wallet client', () => {
 })
 
 describe('read-only transaction boundary', () => {
+  it('generates a fresh valid EVM address for each read-only run', () => {
+    const first = createEphemeralEvmAddress()
+    const second = createEphemeralEvmAddress()
+
+    assert.match(first, /^0x[0-9a-f]{40}$/i)
+    assert.match(second, /^0x[0-9a-f]{40}$/i)
+    assert.notEqual(first, second)
+  })
+
   it('records exactly one attempted transaction and proves no broadcast occurred', async () => {
     const sender = new NoBroadcastSender(SENDER)
     const transaction = { to: RECIPIENT, value: 1n, data: '0x1234', chainId: 1 }

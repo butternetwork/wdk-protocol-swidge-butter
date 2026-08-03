@@ -6,6 +6,7 @@ import ButterSwidgeProtocol from '@butternetwork/wdk-protocol-swidge-butter'
 import {
   NoBroadcastSender,
   assertReadOnlySendBlocked,
+  createEphemeralEvmAddress,
   parseNonNegativeBigInt,
   parseNonNegativeSafeInteger,
   parsePositiveBigInt,
@@ -13,9 +14,9 @@ import {
 } from './harness.js'
 
 const NATIVE_TOKEN = '0x0000000000000000000000000000000000000000'
-const READ_ONLY_SENDER = '0x0000000000000000000000000000000000000001'
 
 test('live Butter discovery, quote, and swap assembly stop before broadcast', { timeout: 60_000 }, async () => {
+  const readOnlyAddress = createEphemeralEvmAddress()
   const sourceChainId = envOrDefault('E2E_READ_SOURCE_CHAIN_ID', '56')
   const destinationChainId = envOrDefault('E2E_READ_DESTINATION_CHAIN_ID', '137')
   const fromToken = envOrDefault('E2E_READ_FROM_TOKEN', NATIVE_TOKEN)
@@ -32,10 +33,10 @@ test('live Butter discovery, quote, and swap assembly stop before broadcast', { 
   )
   const entrance = parseRequiredString(process.env, 'BUTTER_E2E_ENTRANCE')
   const auth = optionalAuth()
-  const sender = new NoBroadcastSender(READ_ONLY_SENDER)
+  const sender = new NoBroadcastSender(readOnlyAddress)
   let wdkAccountSendCalls = 0
   const account = {
-    getAddress: async () => READ_ONLY_SENDER,
+    getAddress: async () => readOnlyAddress,
     sendTransaction: async (): Promise<never> => {
       wdkAccountSendCalls += 1
       throw new Error('WDK account sender must not carry EVM calldata')
@@ -72,7 +73,7 @@ test('live Butter discovery, quote, and swap assembly stop before broadcast', { 
     toChain: destinationChainId,
     fromTokenAmount: amount,
     slippage: 0.02,
-    recipient: READ_ONLY_SENDER
+    recipient: readOnlyAddress
   }
   const quote = await protocol.quoteSwidge(options)
   assert.equal(quote.fromTokenAmount, amount)

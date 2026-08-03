@@ -13,9 +13,11 @@ Configure these non-sensitive GitHub Repository Variables:
 
 The pull-request workflow performs discovery, obtains a cross-chain quote, asks
 Butter to assemble `/swap` calldata, runs the provider's transaction validators,
-and then stops at a sender that always throws. It has no private key and receives
-no Butter API credentials. Do not treat the entrance as secret: pull-request code
-can read Repository Variables.
+and then stops at a sender that always throws. Each run derives a fresh EVM address
+from an in-memory random private key, immediately discards the key, and never gives
+the sender signing capability. It receives no configured private key or Butter API
+credentials. Do not treat the entrance as secret: pull-request code can read
+Repository Variables.
 
 Run the same check locally with:
 
