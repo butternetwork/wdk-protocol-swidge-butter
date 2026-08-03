@@ -5,6 +5,7 @@ import ButterSwidgeProtocol, { toEvmPublicClient } from '@butternetwork/wdk-prot
 import { createPublicClient, defineChain, http } from 'viem'
 
 import {
+  isButterStatusIndexingDelay,
   parseNonNegativeSafeInteger,
   parseRequiredString,
   pollSwidgeStatus,
@@ -40,6 +41,7 @@ test('resumes status polling for an existing EVM source transaction', { timeout:
       fromChain: sourceChainId,
       toChain: destinationChainId
     }),
+    retryOnError: isButterStatusIndexingDelay,
     intervalMs: crossChain ? 15_000 : 3_000,
     timeoutMs: crossChain ? 45 * 60_000 : 3 * 60_000
   })

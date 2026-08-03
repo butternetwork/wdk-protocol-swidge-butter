@@ -17,7 +17,8 @@ and then stops at a sender that always throws. Each run derives a fresh EVM addr
 from an in-memory random private key, immediately discards the key, and never gives
 the sender signing capability. It receives no configured private key or Butter API
 credentials. Do not treat the entrance as secret: pull-request code can read
-Repository Variables.
+Repository Variables. The runner also ignores `BUTTER_API_KEY_ID` and
+`BUTTER_API_SECRET` when they are present in the same `.env.e2e` for funded tests.
 
 Run the same check locally with:
 
@@ -32,6 +33,7 @@ Use a dedicated low-value wallet and a separate recipient address that you
 control. Fill one complete scenario in `.env.e2e`; funded fields intentionally
 have no defaults. Review the amount, maximum input, native fee cap, fee bps caps,
 total gas cap, chain ids, RPC URLs, and both token addresses before every run.
+The common Butter API credentials are used only by funded and status tests.
 
 Set the exact confirmation only for the command you intend to run:
 
@@ -54,10 +56,20 @@ cross-chain status polls every 15 seconds for at most 45 minutes. A successful r
 requires `completed` status and a recipient balance increase at least equal to the
 quoted minimum.
 
+Cross-chain polling treats an explicit Butter `data.info: null` response as a
+temporary indexing delay and continues within the same 45-minute timeout. Other
+API, authentication, malformed-response, and infrastructure errors still fail
+immediately.
+
 Before signing, the guarded wallet prepares each transaction and rejects it if
 its cumulative maximum gas cost or native value exceeds the configured scenario
 budget. Results are written under `.e2e-results/` with BigInts normalized and
 private-key, API-key, API-secret, and authorization fields removed.
+
+If viem automatically prepares an EIP-1559 transaction with `maxFeePerGas: 0`,
+the guarded wallet re-prepares the original request as legacy before signing. An
+explicit transaction type is never overridden, and the gas budget uses the final
+legacy `gasPrice`; this is preparation fallback, not a broadcast retry.
 
 ## Partial execution
 

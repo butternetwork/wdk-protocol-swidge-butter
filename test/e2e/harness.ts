@@ -222,11 +222,14 @@ export function createGuardedEvmWalletClient (
   return {
     account: { address },
     async sendTransaction (transaction: unknown): Promise<string> {
-      const request = await client.prepareTransactionRequest(transaction)
-      if (typeof request !== 'object' || request == null) {
+      let request = await client.prepareTransactionRequest(transaction)
+      if (shouldReprepareAsLegacy(transaction, request)) {
+        request = await client.prepareTransactionRequest({ ...transaction, type: 'legacy' })
+      }
+      if (!isRecord(request)) {
         throw new Error('Prepared transaction must be an object')
       }
-      const prepared = request as Record<string, unknown>
+      const prepared = request
       const gas = prepared.gas
       const feePerGas = prepared.maxFeePerGas ?? prepared.gasPrice
       const value = prepared.value ?? 0n
@@ -242,6 +245,16 @@ export function createGuardedEvmWalletClient (
       return await guarded.send({ gas, feePerGas, value, request })
     }
   }
+}
+
+function shouldReprepareAsLegacy (transaction: unknown, prepared: unknown): transaction is Record<string, unknown> {
+  if (!isRecord(transaction) || !isRecord(prepared)) return false
+  if (Object.hasOwn(transaction, 'type')) return false
+  return prepared.type === 'eip1559' && prepared.maxFeePerGas === 0n
+}
+
+function isRecord (value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === 'object' && !Array.isArray(value)
 }
 
 type PollingStatus =
@@ -261,6 +274,7 @@ interface PollingResult {
 
 export interface PollSwidgeStatusOptions<TResult extends PollingResult> {
   query: () => Promise<TResult>
+  retryOnError?: (cause: unknown) => boolean
   intervalMs: number
   timeoutMs: number
   now?: () => number
@@ -283,6 +297,13 @@ const FAILED_STATUSES = new Set<PollingStatus>([
 
 const QUERY_TIMED_OUT = Symbol('query timed out')
 const NEVER = new Promise<never>(() => {})
+
+export function isButterStatusIndexingDelay (cause: unknown): boolean {
+  if (!(cause instanceof Error) || cause.name !== 'ButterApiError') return false
+  const details = (cause as Error & { details?: unknown }).details
+  if (!isRecord(details) || !isRecord(details.data)) return false
+  return Object.hasOwn(details.data, 'info') && details.data.info === null
+}
 
 export async function pollSwidgeStatus<TResult extends PollingResult> (
   options: PollSwidgeStatusOptions<TResult>
@@ -310,7 +331,17 @@ export async function pollSwidgeStatus<TResult extends PollingResult> (
       }
     )
     const queryTimeout = waitForQueryTimeout(remaining, sleep, controller.signal)
-    const outcome = await Promise.race([query, queryTimeout])
+    let outcome: TResult | typeof QUERY_TIMED_OUT
+    try {
+      outcome = await Promise.race([query, queryTimeout])
+    } catch (cause) {
+      controller.abort()
+      if (options.retryOnError?.(cause) !== true) throw cause
+      const elapsed = now() - startedAt
+      if (elapsed >= options.timeoutMs) throw new Error('Swidge status polling timed out')
+      await sleep(Math.min(options.intervalMs, options.timeoutMs - elapsed))
+      continue
+    }
     controller.abort()
 
     if (outcome === QUERY_TIMED_OUT || now() - startedAt >= options.timeoutMs) {

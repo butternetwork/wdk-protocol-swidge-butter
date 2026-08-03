@@ -32,7 +32,6 @@ test('live Butter discovery, quote, and swap assembly stop before broadcast', { 
     'E2E_READ_MAX_PROTOCOL_FEE_BPS'
   )
   const entrance = parseRequiredString(process.env, 'BUTTER_E2E_ENTRANCE')
-  const auth = optionalAuth()
   const sender = new NoBroadcastSender(readOnlyAddress)
   let wdkAccountSendCalls = 0
   const account = {
@@ -45,7 +44,7 @@ test('live Butter discovery, quote, and swap assembly stop before broadcast', { 
   const protocol = new ButterSwidgeProtocol(account, {
     sourceChainId,
     entrance,
-    ...auth,
+    authMode: 'optional',
     maxNativeFee,
     maxNetworkFeeBps,
     maxProtocolFeeBps,
@@ -100,20 +99,6 @@ test('live Butter discovery, quote, and swap assembly stop before broadcast', { 
   assert.match(String(request.data), /^0x[0-9a-f]+$/i)
   assert.equal(typeof request.value, 'bigint')
 })
-
-function optionalAuth (): {
-  apiKeyId?: string
-  apiSecret?: string
-  authMode: 'required' | 'optional'
-} {
-  const apiKeyId = process.env.BUTTER_API_KEY_ID?.trim()
-  const apiSecret = process.env.BUTTER_API_SECRET?.trim()
-  if (Boolean(apiKeyId) !== Boolean(apiSecret)) {
-    throw new Error('BUTTER_API_KEY_ID and BUTTER_API_SECRET must be provided together')
-  }
-  if (!apiKeyId || !apiSecret) return { authMode: 'optional' }
-  return { apiKeyId, apiSecret, authMode: 'required' }
-}
 
 function envOrDefault (name: string, fallback: string): string {
   return process.env[name]?.trim() || fallback

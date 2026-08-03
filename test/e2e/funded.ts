@@ -20,6 +20,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 import {
   createGuardedEvmWalletClient,
   extractRecoverableSourceId,
+  isButterStatusIndexingDelay,
   parseEvmAddress,
   parseNonNegativeBigInt,
   parseNonNegativeSafeInteger,
@@ -239,6 +240,7 @@ async function pollOperation (
       fromChain: config.sourceChainId,
       toChain: config.destinationChainId
     }),
+    retryOnError: isButterStatusIndexingDelay,
     intervalMs: crossChain ? 15_000 : 3_000,
     timeoutMs: crossChain ? 45 * 60_000 : 3 * 60_000
   })
