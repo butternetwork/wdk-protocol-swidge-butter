@@ -11,9 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-import { NATIVE_TOKEN_ADDRESSES, SYMBOLIC_NATIVE_TOKEN_IDS, SOLANA_CHAIN_ID, BTC_CHAIN_ID, TRON_CHAIN_ID } from './constants.js';
+import { SOLANA_CHAIN_ID, BTC_CHAIN_ID, TRON_CHAIN_ID } from './constants.js';
 import { parseTokenAmount } from './amounts.js';
-import { sameIdentifier } from './identifiers.js';
+import { isNativeTokenIdentifier, isSymbolicNativeTokenIdentifier, sameTokenIdentifier } from './identifiers.js';
 import { ButterApiError, ButterConfigurationError, ButterFeeLimitExceededError, ButterFeeValuationError } from './errors.js';
 const USD_DECIMALS = 18;
 const BPS_DENOMINATOR = 10000n;
@@ -136,7 +136,7 @@ function reportFeeCaveats(fees, context) {
                 // A `network` fee is gas, which is always paid in the chain's native token —
                 // never in the input token. `nativeTokenId` only answers when the source token
                 // IS native, so fall back to the generic 'native' identifier (recognized in
-                // NATIVE_TOKEN_ADDRESSES) rather than mislabelling gas as e.g. USDC.
+                // by every chain) rather than mislabelling gas as e.g. USDC.
                 token: nativeTokenId(context) ?? 'native',
                 chain: context.sourceChainId,
                 included: false,
@@ -185,7 +185,7 @@ function networkFeeRatios(route, context) {
         return [];
     const nativeDecimals = nativeDecimalsForChain(context.sourceChainId, context.nativeTokenDecimals);
     const gasAmount = parseTokenAmount(route.gasFee?.amount, nativeDecimals);
-    if (isNativeSource(context.sourceToken)) {
+    if (isNativeSource(context.sourceChainId, context.sourceToken)) {
         // Source is native here, so native decimals are the source token's decimals.
         return [{ numerator: gasAmount, denominator: sourceDenominator(context, route, nativeDecimals) }];
     }
@@ -229,7 +229,7 @@ function protocolFeeRatios(route, context) {
     }
     if (isNonZero(route.swapFee.nativeFee)) {
         const nativeFee = parseTokenAmount(route.swapFee.nativeFee, nativeDecimals);
-        if (isNativeSource(context.sourceToken)) {
+        if (isNativeSource(context.sourceChainId, context.sourceToken)) {
             ratios.push({ numerator: nativeFee, denominator: sourceDenominator(context, route, nativeDecimals) });
         }
         else {
@@ -272,7 +272,7 @@ function protocolFeeRatios(route, context) {
  * token, so any scaling error cancels and no trusted value exists anyway.
  */
 function componentDecimals(component, context) {
-    if (!isSourceTokenComponent(component.routeToken, context.sourceToken))
+    if (!isSourceTokenComponent(component.routeToken, context.sourceChainId, context.sourceToken))
         return component.decimals;
     return trustedSourceDecimals(context, component.decimals, component.description);
 }
@@ -390,7 +390,7 @@ function hasBridgeFeeComponents(fee) {
  */
 function bridgeFeeComponentRatio(component, route, context) {
     const decimals = componentDecimals(component, context);
-    if (isSourceTokenComponent(component.routeToken, context.sourceToken)) {
+    if (isSourceTokenComponent(component.routeToken, context.sourceChainId, context.sourceToken)) {
         return {
             numerator: parseTokenAmount(component.amount, decimals),
             denominator: sourceDenominator(context, route, decimals)
@@ -404,18 +404,18 @@ function bridgeFeeComponentRatio(component, route, context) {
     }
     const numerator = parseTokenAmount(component.amount, decimals);
     const inboundFirst = [
-        { token: route.bridgeChain?.tokenIn, amount: route.bridgeChain?.totalAmountIn },
-        { token: route.srcChain?.tokenOut, amount: route.srcChain?.totalAmountOut },
-        { token: route.srcChain?.tokenIn, amount: route.srcChain?.totalAmountIn }
+        { chainId: String(route.bridgeChain?.chainId ?? ''), token: route.bridgeChain?.tokenIn, amount: route.bridgeChain?.totalAmountIn },
+        { chainId: String(route.srcChain?.chainId ?? context.sourceChainId), token: route.srcChain?.tokenOut, amount: route.srcChain?.totalAmountOut },
+        { chainId: String(route.srcChain?.chainId ?? context.sourceChainId), token: route.srcChain?.tokenIn, amount: route.srcChain?.totalAmountIn }
     ];
     const outboundFirst = [
-        { token: route.bridgeChain?.tokenOut, amount: route.bridgeChain?.totalAmountOut },
-        { token: route.dstChain?.tokenOut, amount: route.dstChain?.totalAmountOut },
-        { token: route.srcChain?.tokenOut, amount: route.srcChain?.totalAmountOut }
+        { chainId: String(route.bridgeChain?.chainId ?? ''), token: route.bridgeChain?.tokenOut, amount: route.bridgeChain?.totalAmountOut },
+        { chainId: String(route.dstChain?.chainId ?? ''), token: route.dstChain?.tokenOut, amount: route.dstChain?.totalAmountOut },
+        { chainId: String(route.srcChain?.chainId ?? context.sourceChainId), token: route.srcChain?.tokenOut, amount: route.srcChain?.totalAmountOut }
     ];
     // An affiliate cut and an unsplit total are both taken on the way out.
     const candidates = component.role === 'inbound' ? inboundFirst : outboundFirst;
-    const denominator = candidates.find((candidate) => sameTokenAddress(candidate.token, component.routeToken) && candidate.amount != null);
+    const denominator = candidates.find((candidate) => sameTokenAddress(candidate.chainId, candidate.token, component.routeToken) && candidate.amount != null);
     if (!denominator?.amount) {
         throw new ButterFeeValuationError('Cannot value a Butter bridge fee component against a route amount in the same token', {
             token: component.token,
@@ -430,8 +430,8 @@ function bridgeFeeComponentRatio(component, route, context) {
  * Symbols are not identifiers: the same ticker appears on many chains, so matching
  * on one would pick a denominator that may be in a different currency than the fee.
  */
-function sameTokenAddress(left, right) {
-    return sameIdentifier(left?.address, right?.address);
+function sameTokenAddress(chainId, left, right) {
+    return sameTokenIdentifier(chainId, left?.address, right?.address);
 }
 /**
  * True when a fee component is denominated in the caller's source token.
@@ -454,15 +454,15 @@ function sameTokenAddress(left, right) {
  * let that amount be claimed by any component willing to name it. A trusted
  * denominator is not automatically a meaningful one.
  */
-function isSourceTokenComponent(token, sourceToken) {
+function isSourceTokenComponent(token, sourceChainId, sourceToken) {
     const source = sourceToken.trim();
     if (!source)
         return false;
     // Addresses compare format-aware: lowercasing a Base58 mint would merge it with a
     // different one. Symbols stay case-insensitive — a ticker is not an identifier.
     if (token?.address?.trim())
-        return sameIdentifier(token.address, source);
-    if (!SYMBOLIC_NATIVE_TOKEN_IDS.has(source.toLowerCase()))
+        return sameTokenIdentifier(sourceChainId, token.address, source);
+    if (!isSymbolicNativeTokenIdentifier(sourceChainId, source))
         return false;
     return token?.symbol?.trim().toLowerCase() === source.toLowerCase();
 }
@@ -570,7 +570,7 @@ function requiredTokenId(value, label) {
     return token;
 }
 function nativeTokenId(context) {
-    return isNativeSource(context.sourceToken) ? context.sourceToken : undefined;
+    return isNativeSource(context.sourceChainId, context.sourceToken) ? context.sourceToken : undefined;
 }
 /** Resolves source-chain native token decimals with caller overrides. */
 export function nativeDecimalsForChain(chainId, configured) {
@@ -585,8 +585,8 @@ export function nativeDecimalsForChain(chainId, configured) {
         return 9;
     return 18;
 }
-function isNativeSource(token) {
-    return NATIVE_TOKEN_ADDRESSES.has(token.toLowerCase());
+function isNativeSource(chainId, token) {
+    return isNativeTokenIdentifier(chainId, token);
 }
 function isNonZero(value) {
     if (value == null)

@@ -53,6 +53,8 @@
   ],
   "license": "Apache-2.0",
   "dependencies": {
+    "@noble/hashes": "^1.8.0",
+    "@scure/base": "^1.2.6",
     "viem": "^2.43.1"
   },
   "peerDependencies": {

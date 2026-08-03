@@ -1304,16 +1304,16 @@ describe('ButterSwidgeProtocol formal behavior', () => {
 
   it('resolves a native token from nativeTokenDecimals, not tokenDecimals', async () => {
     // Symbolic ids never reach the tokenDecimals map: decimalsFor answers them from
-    // NATIVE_TOKEN_ADDRESSES and nativeTokenDecimals first. This pins where a native
-    // token's decimals actually come from, so the unreachable branch is not
-    // reintroduced in normalizeTokenKey.
+    // the chain-aware native-token check and nativeTokenDecimals first. This pins
+    // where a native token's decimals actually come from, so the unreachable branch
+    // is not reintroduced in normalizeTokenKey.
     const fetch = makeFetch({
       '/route': async (url) => {
         assert.equal(url.searchParams.get('amount'), '1.5')
         return { errno: 0, message: 'success', data: [quoteRoute({
           srcChain: {
             chainId: '56',
-            tokenIn: { address: 'sol', decimals: 9, symbol: 'SOL' },
+            tokenIn: { address: 'native', decimals: 9, symbol: 'NATIVE' },
             tokenOut: { address: '0xto', decimals: 6, symbol: 'USDT' },
             totalAmountIn: '1.5',
             totalAmountOut: '10.25'
@@ -1328,11 +1328,11 @@ describe('ButterSwidgeProtocol formal behavior', () => {
       fetch,
       // Deliberately conflicting: the tokenDecimals entry is ignored for a native id.
       nativeTokenDecimals: { 56: 9 },
-      tokenDecimals: { sol: 18, '0xto': 6 }
+      tokenDecimals: { native: 18, '0xto': 6 }
     })
 
     const quote = await protocol.quoteSwidge({
-      fromToken: 'sol',
+      fromToken: 'native',
       toToken: '0xto',
       fromTokenAmount: 1500000000n
     })
@@ -3224,8 +3224,13 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     assert.equal(sent.length, 1)
   })
 
-  it('resolves missing token decimals through Butter /findToken', async () => {
+  it('quotes a token omitted from the advertised catalog by resolving decimals through /findToken', async () => {
     const fetch = makeFetch({
+      '/supportedTokenList': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [{ chainId: 56, tokens: [] }]
+      }),
       '/findToken': async (url) => {
         assert.equal(url.searchParams.get('chainId'), '56')
         assert.equal(url.searchParams.get('address'), ERC20_TOKEN)
@@ -3264,6 +3269,7 @@ describe('ButterSwidgeProtocol formal behavior', () => {
       slippage: 0.02
     }
 
+    assert.deepEqual(await protocol.getSupportedTokens({ fromChain: 56 }), [])
     const quote = await protocol.quoteSwidge(options)
 
     assert.equal(quote.fromTokenAmount, 1500000000000000000n)
@@ -4146,7 +4152,7 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     assert.equal(result.id, 'btc-tx')
   })
 
-  it('discovers tokens from the Router supportedTokenList endpoint without priming chain metadata', async () => {
+  it('returns the Router advertised token catalog without priming chain metadata', async () => {
     const fetch = makeFetch({
       '/supportedTokenList': async (url) => {
         assert.equal(url.searchParams.get('chainId'), '56')

@@ -13,7 +13,6 @@
 // limitations under the License.
 
 import {
-  NATIVE_TOKEN_ADDRESSES,
   ROUTE_CACHE_MAX_ENTRIES,
   ROUTE_EXECUTION_MARGIN_SECONDS,
   ROUTE_EXPIRY_MARGIN_SECONDS,
@@ -30,7 +29,12 @@ import {
   ButterNoRouteError
 } from './errors.js'
 import { assertBaseUnitAmount, formatTokenAmount, parseRequiredTokenAmount } from './amounts.js'
-import { normalizeTokenKey, sameIdentifier } from './identifiers.js'
+import {
+  isNativeTokenIdentifier,
+  normalizeTokenKey,
+  sameTokenIdentifier,
+  toButterTokenIdentifier
+} from './identifiers.js'
 import { toButterSlippage } from './slippage.js'
 import type { ButterRoute, CachedRoute, SwidgeOptions } from './types.js'
 
@@ -230,8 +234,8 @@ export class RouteManager {
         fromChainId: this.context.sourceChainId,
         toChainId,
         amount,
-        tokenInAddress: options.fromToken,
-        tokenOutAddress: options.toToken,
+        tokenInAddress: toButterTokenIdentifier(this.context.sourceChainId, options.fromToken),
+        tokenOutAddress: toButterTokenIdentifier(toChainId, options.toToken),
         type: 'exactIn',
         slippage,
         // Only Solana needs the sender-derived fallback; other chains keep the
@@ -265,14 +269,13 @@ export class RouteManager {
   }
 
   private async decimalsFor (token: string): Promise<number> {
-    // The native/symbolic checks are against short lowercase words, so plain casing
-    // is right there. The configured lookup is by identifier, so it must not
-    // lowercase a Base58 mint into a different mint's entry.
-    const lowered = token.toLowerCase()
-    if (lowered === 'btc') return 8
-    if (NATIVE_TOKEN_ADDRESSES.has(lowered)) return nativeDecimalsForChain(this.context.sourceChainId, this.context.nativeTokenDecimals)
+    // Native aliases and configured keys are chain-aware. Ordinary Base58 mints
+    // remain exact; only validated equivalent formats share a key.
+    if (isNativeTokenIdentifier(this.context.sourceChainId, token)) {
+      return nativeDecimalsForChain(this.context.sourceChainId, this.context.nativeTokenDecimals)
+    }
     // Same key function the map was built with — see `normalizedTokenDecimals`.
-    const configured = this.context.tokenDecimals.get(normalizeTokenKey(token))
+    const configured = this.context.tokenDecimals.get(normalizeTokenKey(this.context.sourceChainId, token))
     if (configured != null) return configured
     const resolved = await this.context.lookupDecimals?.(token)
     if (resolved != null) return resolved
@@ -300,7 +303,7 @@ export class RouteManager {
     if (!sourceToken) {
       throw new ButterApiError('Butter route is missing source token address', { route, request })
     }
-    if (!sameToken(sourceToken, String(request.tokenInAddress))) {
+    if (!sameToken(this.context.sourceChainId, sourceToken, String(request.tokenInAddress))) {
       throw new ButterApiError('Butter route source token does not match request', { route, request })
     }
     const outputToken = crossChain ? route.dstChain?.tokenOut : route.srcChain?.tokenOut
@@ -308,7 +311,7 @@ export class RouteManager {
     if (!outputTokenAddress) {
       throw new ButterApiError('Butter route is missing destination token address', { route, request })
     }
-    if (!sameToken(outputTokenAddress, String(request.tokenOutAddress))) {
+    if (!sameToken(String(request.toChainId), outputTokenAddress, String(request.tokenOutAddress))) {
       throw new ButterApiError('Butter route destination token does not match request', { route, request })
     }
   }
@@ -356,10 +359,9 @@ function normalizeId (id: string | number | undefined): string {
 /**
  * Token-intent comparison for `validateRouteMatchesRequest`.
  *
- * Format-aware: lowercasing both sides let a route satisfy the intent check with a
- * token differing from the request only in case, which for a Base58 mint is a
- * different token entirely.
+ * Chain-format-aware: ordinary Base58 stays exact, while native aliases and valid
+ * Tron Base58Check/hex forms compare through their canonical chain identity.
  */
-function sameToken (a: string, b: string): boolean {
-  return sameIdentifier(a, b)
+function sameToken (chainId: string, a: string, b: string): boolean {
+  return sameTokenIdentifier(chainId, a, b)
 }

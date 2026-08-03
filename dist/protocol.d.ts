@@ -85,11 +85,12 @@ export declare class ButterSwidgeProtocol extends SwidgeProtocol {
      */
     getSupportedChains(): Promise<ButterSupportedChain[]>;
     /**
-     * Lists all Butter-supported tokens for the selected chain.
+     * Lists the non-exhaustive token catalog currently advertised by Butter Router.
      *
-     * Chain selection uses `fromChain`, then `toChain`, then the instance's
-     * source chain. Route-scoped `fromToken` filtering is not implemented:
-     * Butter Router only supports per-chain listing.
+     * Catalog membership is not a route capability check: Butter can route tokens
+     * omitted here by swapping on the source and destination chains. Chain selection
+     * uses `fromChain`, then `toChain`, then the instance's source chain. Route-scoped
+     * `fromToken` filtering is unavailable from Butter Router's per-chain listing.
      */
     getSupportedTokens(options?: SwidgeSupportedTokensOptions): Promise<SwidgeSupportedToken[]>;
     private assertQuoteOptions;
