@@ -46,7 +46,7 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
   swap against an unconfirmed approval.
 - Match the calldata `feeData` against the route's quoted `feeConfig` as a full
   `(feeType, referrer, rateOrNativeFee)` tuple: reject an empty `feeData` when the
-  route quoted a non-zero integrator fee, and — for a non-empty `feeData` — fail
+  route quoted a non-zero referrer fee, and — for a non-empty `feeData` — fail
   closed when the quoted tuple is incomplete instead of matching only the fields
   present, so `/swap` cannot inject an unchecked `feeType`/`referrer` by
   under-specifying the quote.
@@ -287,11 +287,6 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
 - Include `affiliate.amount` when testing whether a cross-chain route reports a bridge
   fee at all. An affiliate-only bridge fee is a legitimate response and was being
   rejected as if the route had reported nothing.
-- Validate `route.feeConfig` at one boundary (`parseFeeConfig`): a non-integer rate
-  such as `'12abc'` escaped `quoteSwidge` as a raw `SyntaxError`, and a negative rate
-  produced a negative `SwidgeFee.amount` plus a negative cap numerator that subtracted
-  from the total and could let a genuine fee through. Both now raise
-  `ButterFeeValuationError`, and `enforceLimit` rejects negative numerators outright.
 - Count the **affiliate share** against `maxProtocolFeeBps`, and stop double-charging
   it. Live responses show the bridge fee summary is `in + out + affiliate` (observed:
   `0 + 0.139954 + 0.23 = 0.369954`), so the affiliate sits *inside* the summary. The
@@ -313,24 +308,13 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
   decimals — scaling a 3 USDC fee to `3e18`. The candidate is added, and a summary
   whose declared token still matches nothing now fails closed instead of being
   mis-scaled.
-- Surface the `feeConfig` integrator fee **at quote time**. It reached neither
-  `fees[]` nor `onWarning` on a plain quote: the warning fired only from the cap
-  path, which runs solely in `swidge` with `maxProtocolFeeBps` set, so a quote
-  silently understated the cost while the docs claimed otherwise. `quoteSwidge` now
-  passes the requested input through, letting a proportional rate be rendered as an
-  actual amount, and the warning fires from the fee mapping on every quote.
-- Count the route's **`feeConfig`** against `maxProtocolFeeBps`. The cap read only
-  `swapFee` and `bridgeFee`, while `validateFeeData` accepts calldata whose fee data
-  matches `feeConfig` exactly — so a route could declare a large proportional
-  `feeConfig`, omit `swapFee`, pass a 1 bps cap, and then execute calldata carrying
-  the fee. `feeType: 1` is a rate in basis points of the input, so its ratio is
-  `rate / 10000` and depends on no Butter-reported amount whatsoever; `feeType: 0` is
-  a fixed fee in source-chain native base units, valued like `swapFee.nativeFee`; any
-  other `feeType` raises `ButterFeeValuationError`. Where `feeConfig` and `swapFee`
-  describe the same charge the **larger** ratio is used rather than their sum, since
-  summing would double-count every ordinary route. When `feeConfig` charges a fee
-  `swapFee` does not report, `onWarning` fires with `undeclared-integrator-fee` —
-  `fees[]` cannot show it as an amount, because a rate is not an amount.
+- Treat `swapFee` as Butter's authoritative actual fee result. It already includes
+  the charge configured by `feeConfig`, so fee mapping and `maxProtocolFeeBps` now
+  ignore `feeConfig` instead of deriving a second amount or choosing the larger
+  value. A non-empty Router `feeData` still requires a complete, supported, exactly
+  matching `feeConfig` tuple; malformed or unsupported values fail with a typed
+  transaction validation error before send. Empty `feeData` remains valid when
+  `rateOrNativeFee` is zero, and unused tuple fields are not validated on that path.
 - Price `bridgeFee` per **component**. Butter reports it as `in` and `out` parts,
   each with its own amount and token, plus a top-level summary; this package read
   only the summary and *guessed* its token from five candidates. `in` and `out` now
@@ -458,9 +442,8 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
   the Security section; `evmChainIds` is the escape hatch.
 - Sub-basis-point `slippage` now truncates down, and a positive value below 1 bp
   throws `ButterUnsupportedError` instead of being widened to 1 bp.
-- Fee caps fail closed on absent (as opposed to explicitly zero) fee metadata, and
-  now also count `route.feeConfig`, so a route that previously slipped a large
-  proportional integrator fee past a cap is rejected.
+- Fee caps fail closed on absent (as opposed to explicitly zero) fee metadata,
+  including incomplete `route.swapFee` amounts under `maxProtocolFeeBps`.
 - A route reporting only a top-level `bridgeFee.amount`, with no `in`/`out`/`affiliate`
   component, now has that fee omitted from `fees[]` and cannot be executed under a
   configured `maxProtocolFeeBps` — including when that summary is `"0"`, since the
@@ -479,8 +462,7 @@ Security hardening from multi-round expert review. **Breaking** changes are mark
   component in the source token is unaffected — it is matched by symbol too.
 - `fees[]` reports `bridgeFee.in`, `bridgeFee.out` and `bridgeFee.affiliate` as
   separate entries instead of one summary entry, so the array can be **longer** than
-  before for a cross-chain route and each entry names its own token. It may also
-  gain an entry for a `feeConfig` integrator fee that `swapFee` does not report.
+  before for a cross-chain route and each entry names its own token.
 - `maxProtocolFeeBps` now includes the affiliate share, so a route that previously
   passed can be rejected. Raise the cap, or set `affiliate` deliberately, if this
   fires on routes you consider acceptable.

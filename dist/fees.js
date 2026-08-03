@@ -80,8 +80,6 @@ export function mapRouteFees(route, context) {
             details: { amount: route.bridgeFee?.amount }
         });
     }
-    for (const fee of integratorFees(route, context, sourceToken))
-        fees.push(fee);
     if (isNonZero(route.gasFee?.amount)) {
         fees.push({
             type: 'network',
@@ -214,29 +212,23 @@ function protocolFeeRatios(route, context) {
             summary: route.bridgeFee?.amount
         });
     }
-    // The integrator fee appears twice: `swapFee` reports it, and `feeConfig` encodes
-    // it for the calldata. Only `feeConfig` is verified against what the Router will
-    // actually charge (`swap-data.ts: validateFeeData`), so counting `swapFee` alone
-    // let a route declare a fat `feeConfig`, omit `swapFee`, pass any cap, and then
-    // execute calldata carrying the fee. They are taken as two views of ONE fee — the
-    // larger wins rather than being summed, which neither double-counts when they
-    // agree nor lets the under-reported one decide when they do not.
-    const integratorRate = feeConfigRateRatio(route);
-    const tokenFeeRatio = isNonZero(route.swapFee?.tokenFee)
-        ? {
-            numerator: parseTokenAmount(route.swapFee?.tokenFee, sourceDecimals),
+    // swapFee is Butter's authoritative fee result and already includes the charge
+    // described by feeConfig. feeConfig remains calldata-validation metadata only;
+    // reading it here would either double count the referrer fee or make the cap use
+    // a configuration value instead of the fee Butter actually quoted.
+    if (route.swapFee?.nativeFee == null || route.swapFee.tokenFee == null) {
+        throw new ButterFeeValuationError('Cannot enforce the Butter protocol fee cap: the route reports incomplete swap fee amounts', {
+            swapFee: route.swapFee
+        });
+    }
+    if (isNonZero(route.swapFee.tokenFee)) {
+        ratios.push({
+            numerator: parseTokenAmount(route.swapFee.tokenFee, sourceDecimals),
             denominator: sourceDenominator(context, route, sourceDecimals)
-        }
-        : undefined;
-    const proportional = largerRatio(tokenFeeRatio, integratorRate);
-    if (proportional)
-        ratios.push(proportional);
-    const feeConfigNative = feeConfigNativeAmount(route);
-    if (isNonZero(route.swapFee?.nativeFee) || feeConfigNative != null) {
-        // Same pairing on the native side: feeType 0 is a fixed native fee, which is
-        // what `swapFee.nativeFee` reports.
-        const reported = parseTokenAmount(route.swapFee?.nativeFee, nativeDecimals);
-        const nativeFee = feeConfigNative != null && feeConfigNative > reported ? feeConfigNative : reported;
+        });
+    }
+    if (isNonZero(route.swapFee.nativeFee)) {
+        const nativeFee = parseTokenAmount(route.swapFee.nativeFee, nativeDecimals);
         if (isNativeSource(context.sourceToken)) {
             ratios.push({ numerator: nativeFee, denominator: sourceDenominator(context, route, nativeDecimals) });
         }
@@ -268,142 +260,6 @@ function protocolFeeRatios(route, context) {
         ratios.push(bridgeFeeComponentRatio(component, route, context));
     }
     return ratios;
-}
-/**
- * Renders the `feeConfig` integrator fee as `fees[]` entries, and warns when it is
- * one the route's own `swapFee` never mentions.
- *
- * `feeConfig` is the fee as it will actually be encoded in the Router calldata, so
- * it is what the protocol cap is measured against. It used to reach neither
- * `fees[]` nor `onWarning` on a plain quote — the warning only fired from the cap
- * path, which runs solely in `swidge` with `maxProtocolFeeBps` set — so a quote
- * silently understated the cost while the docs claimed otherwise.
- *
- * A proportional fee is a rate, not an amount, so it can only be shown once the
- * input is known; `quoteSwidge` now supplies `requestedAmountIn` for exactly this.
- * Without it the warning still fires, just with no amount attached.
- */
-function integratorFees(route, context, sourceToken) {
-    const parsed = parseFeeConfig(route.feeConfig);
-    if (!parsed)
-        return [];
-    const { feeType, rate } = parsed;
-    const config = route.feeConfig;
-    if (feeType === FEE_TYPE_PROPORTION) {
-        // Reported by swapFee already: that entry stands, and adding this one would
-        // double count the same charge.
-        if (isNonZero(route.swapFee?.tokenFee))
-            return [];
-        context.onWarning?.({
-            code: 'undeclared-integrator-fee',
-            message: 'Butter feeConfig charges a proportional integrator fee that swapFee does not report',
-            details: { feeConfig: config }
-        });
-        if (context.requestedAmountIn == null)
-            return [];
-        return [{
-                type: 'protocol',
-                amount: (context.requestedAmountIn * rate) / BPS_DENOMINATOR,
-                token: requiredTokenId(sourceToken?.address ?? context.sourceToken, 'integrator fee'),
-                chain: context.sourceChainId,
-                included: true,
-                description: `Butter integrator fee (${Number(rate) / 100}%)`
-            }];
-    }
-    if (feeType === FEE_TYPE_FIXED_NATIVE) {
-        if (isNonZero(route.swapFee?.nativeFee))
-            return [];
-        context.onWarning?.({
-            code: 'undeclared-integrator-fee',
-            message: 'Butter feeConfig charges a fixed native integrator fee that swapFee does not report',
-            details: { feeConfig: config }
-        });
-        return [{
-                type: 'protocol',
-                amount: rate,
-                token: requiredTokenId(route.gasFee?.address ?? route.gasFee?.symbol ?? nativeTokenId(context) ?? 'native', 'integrator fee'),
-                chain: context.sourceChainId,
-                included: false,
-                description: 'Butter integrator fee (fixed)'
-            }];
-    }
-    return [];
-}
-/**
- * Validates the route's integrator fee config at the trust boundary.
- *
- * Returns `undefined` when no fee is charged, and throws a typed error otherwise
- * rather than letting a malformed value through: `BigInt('12abc')` used to escape
- * `quoteSwidge` as a raw `SyntaxError`, and a negative rate produced a negative
- * `SwidgeFee.amount` and a negative cap numerator that could offset genuine fees.
- * Both the quoted `fees[]` and the cap read this, so neither can be fed a value the
- * other rejected.
- */
-function parseFeeConfig(config) {
-    if (!config)
-        return undefined;
-    let rate;
-    try {
-        rate = BigInt(config.rateOrNativeFee ?? 0);
-    }
-    catch (cause) {
-        throw new ButterFeeValuationError('Butter feeConfig rateOrNativeFee is not an integer', {
-            rateOrNativeFee: config.rateOrNativeFee,
-            cause
-        });
-    }
-    if (rate < 0n) {
-        throw new ButterFeeValuationError('Butter feeConfig rateOrNativeFee is negative', {
-            rateOrNativeFee: config.rateOrNativeFee
-        });
-    }
-    if (rate === 0n)
-        return undefined;
-    const feeType = Number(config.feeType);
-    if (!Number.isInteger(feeType) || (feeType !== FEE_TYPE_PROPORTION && feeType !== FEE_TYPE_FIXED_NATIVE)) {
-        throw new ButterFeeValuationError('Butter feeConfig uses a feeType this package cannot value', {
-            feeType: config.feeType
-        });
-    }
-    return { feeType, rate };
-}
-/** Butter's proportional integrator fee type; `rateOrNativeFee` is then in bps. */
-const FEE_TYPE_PROPORTION = 1;
-/** Butter's fixed integrator fee type; `rateOrNativeFee` is then source-chain wei. */
-const FEE_TYPE_FIXED_NATIVE = 0;
-/**
- * Values a **proportional** integrator fee (`feeType: 1`) as a fraction of the input.
- *
- * `rateOrNativeFee` is in basis points of the input amount, so the ratio is simply
- * `rate / 10000` — it depends on no Butter-reported amount at all, which makes this
- * the one fee check in the module that requires zero trust in the route.
- *
- * Returns `undefined` when the config charges nothing or is a fixed-native fee
- * (handled separately). Fails closed on a `feeType` this package does not model:
- * an unrecognized encoding could charge anything.
- */
-function feeConfigRateRatio(route) {
-    const parsed = parseFeeConfig(route.feeConfig);
-    if (!parsed || parsed.feeType !== FEE_TYPE_PROPORTION)
-        return undefined;
-    // The warning belongs to `integratorFees`, which runs on every quote; issuing it
-    // here too would emit it twice on the execution path.
-    return { numerator: parsed.rate, denominator: BPS_DENOMINATOR };
-}
-/** Fixed native integrator fee (`feeType: 0`) in source-chain base units, if any. */
-function feeConfigNativeAmount(route) {
-    const parsed = parseFeeConfig(route.feeConfig);
-    if (!parsed || parsed.feeType !== FEE_TYPE_FIXED_NATIVE)
-        return undefined;
-    return parsed.rate;
-}
-/** Returns whichever ratio is larger, comparing by cross-multiplication. */
-function largerRatio(left, right) {
-    if (!left)
-        return right;
-    if (!right)
-        return left;
-    return left.numerator * right.denominator >= right.numerator * left.denominator ? left : right;
 }
 /**
  * Decimals to price a bridge fee component with.

@@ -246,10 +246,10 @@ function validateEvmRouterTransaction(tx, context) {
     }
 }
 /**
- * Validates that the calldata `feeData` matches the integrator fee config the
- * route declared. Empty feeData charges no integrator fee: allowed only when the
+ * Validates that the calldata `feeData` matches the referrer fee config the
+ * route declared. Empty feeData charges no referrer fee: allowed only when the
  * route quoted no fee (zero `rateOrNativeFee`) — otherwise `/swap` would silently
- * drop the quoted integrator fee. A non-empty feeData requires the route to have
+ * drop the quoted referrer fee. A non-empty feeData requires the route to have
  * declared the FULL `(feeType, referrer, rateOrNativeFee)` tuple and must match it
  * exactly. Butter's `/route` defines feeConfig as that one tuple, so an incomplete
  * quoted config cannot be verified and fails closed — otherwise `/swap` could pick
@@ -259,7 +259,7 @@ function validateEvmRouterTransaction(tx, context) {
 function validateFeeData(feeData, context) {
     if (feeData === '0x') {
         if (feeConfigChargesFee(context.feeConfig)) {
-            throw new ButterTransactionValidationError('Butter /swap dropped the quoted integrator fee: empty feeData for a non-zero feeConfig');
+            throw new ButterTransactionValidationError('Butter /swap dropped the quoted referrer fee: empty feeData for a non-zero feeConfig');
         }
         return;
     }
@@ -275,31 +275,51 @@ function validateFeeData(feeData, context) {
     if (!config) {
         throw new ButterTransactionValidationError('Butter /swap included fee data not declared by the route');
     }
-    // Non-empty feeData charges a fee, so the quoted tuple must be complete before it
-    // can be matched; a missing field is unverifiable and fails closed.
+    // Non-empty feeData charges a fee, so the quoted tuple must be complete and use
+    // a fee encoding this package understands before it can be matched.
+    if (!config.referrer) {
+        throw new ButterTransactionValidationError('Butter route feeConfig is missing referrer; cannot verify /swap fee data', { feeConfig: config });
+    }
+    const expected = parseFeeConfigForValidation(config);
+    if (Number(fee.feeType) !== expected.feeType) {
+        throw new ButterTransactionValidationError('Butter Router fee type does not match the quoted feeConfig', {
+            expected: expected.feeType, actual: fee.feeType
+        });
+    }
+    assertAddressEqual(fee.referrer, config.referrer, 'Butter Router fee referrer does not match the quoted feeConfig');
+    if (fee.rateOrNativeFee !== expected.rateOrNativeFee) {
+        throw new ButterTransactionValidationError('Butter Router fee rate does not match the quoted feeConfig', {
+            expected: expected.rateOrNativeFee.toString(), actual: fee.rateOrNativeFee.toString()
+        });
+    }
+}
+function parseFeeConfigForValidation(config) {
     if (config.feeType == null) {
         throw new ButterTransactionValidationError('Butter route feeConfig is missing feeType; cannot verify /swap fee data', { feeConfig: config });
     }
-    if (!config.referrer) {
-        throw new ButterTransactionValidationError('Butter route feeConfig is missing referrer; cannot verify /swap fee data', { feeConfig: config });
+    const feeType = Number(config.feeType);
+    if (!Number.isInteger(feeType) || (feeType !== 0 && feeType !== 1)) {
+        throw new ButterTransactionValidationError('Butter route feeConfig uses an unsupported feeType', { feeConfig: config });
     }
     if (config.rateOrNativeFee == null) {
         throw new ButterTransactionValidationError('Butter route feeConfig is missing rateOrNativeFee; cannot verify /swap fee data', { feeConfig: config });
     }
-    if (Number(fee.feeType) !== Number(config.feeType)) {
-        throw new ButterTransactionValidationError('Butter Router fee type does not match the quoted feeConfig', {
-            expected: config.feeType, actual: fee.feeType
+    let rateOrNativeFee;
+    try {
+        rateOrNativeFee = BigInt(config.rateOrNativeFee);
+    }
+    catch (cause) {
+        throw new ButterTransactionValidationError('Butter route feeConfig rateOrNativeFee is not an integer', {
+            feeConfig: config,
+            cause
         });
     }
-    assertAddressEqual(fee.referrer, config.referrer, 'Butter Router fee referrer does not match the quoted feeConfig');
-    const expectedRate = BigInt(config.rateOrNativeFee);
-    if (fee.rateOrNativeFee !== expectedRate) {
-        throw new ButterTransactionValidationError('Butter Router fee rate does not match the quoted feeConfig', {
-            expected: expectedRate.toString(), actual: fee.rateOrNativeFee.toString()
-        });
+    if (rateOrNativeFee < 0n) {
+        throw new ButterTransactionValidationError('Butter route feeConfig rateOrNativeFee is negative', { feeConfig: config });
     }
+    return { feeType, rateOrNativeFee };
 }
-/** True when the route's integrator fee config charges a non-zero fee. */
+/** True when the route's referrer fee config charges a non-zero fee. */
 export function feeConfigChargesFee(config) {
     if (!config)
         return false;

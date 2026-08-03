@@ -85,7 +85,7 @@ Everything else is a focused collaborator it composes:
   amount, empty permit); `feeData` matches the route's `feeConfig` as a full `(feeType, referrer,
   rateOrNativeFee)` tuple (a non-empty `feeData` requires the quoted tuple to be **complete** — fail
   closed on any missing field — and to match exactly; an **empty** `feeData` is rejected when the route
-  quoted a non-zero integrator fee — so a quoted fee cannot be silently dropped nor an unchecked
+  quoted a non-zero referrer fee — so a quoted fee cannot be silently dropped nor an unchecked
   `feeType`/`referrer` injected by under-specifying the quote); and the `tx.value` bounds — the
   native **input** half is a hard *lower* bound, while the remaining **fee** half is bounded only
   from *above* (by `maxNativeFee` and by the quoted `routerFee + bridgeFee` plus
@@ -259,10 +259,12 @@ Everything else is a focused collaborator it composes:
   well as capping** (`componentDecimals`, `swapFee.tokenFee` in `mapRouteFees`) — a quote needs no
   cap configured for a caller to read an understated number and act on it. A cross-denominated
   component keeps its own decimals, where numerator and denominator are both route-reported in the
-  same token and the scale cancels. `route.feeConfig` goes through one boundary parser
-  (`parseFeeConfig`): non-negative bigint rate, integer `feeType` in {0,1}, typed errors — a raw
-  `BigInt()` throw used to escape `quoteSwidge` as a `SyntaxError`, and a negative rate subtracted
-  from the cap total. `enforceLimit` rejects negative numerators too.
+  same token and the scale cancels. The actual Butter swap fee is authoritative from `swapFee`;
+  `feeConfig` is validation-only metadata for Router calldata and is never valued as a second fee.
+  Non-empty `feeData` runs its quoted tuple through `parseFeeConfigForValidation`: non-negative
+  bigint rate, integer `feeType` in {0,1}, complete referrer, and typed transaction-validation
+  errors. Empty `feeData` is allowed when `rateOrNativeFee` is zero, because the other tuple fields
+  are unused when no referrer fee is encoded. `enforceLimit` rejects negative numerators too.
 - **Source-denominated fee caps never use a route-reported denominator**: this covers
   `fees.ts: bridgeFeeComponentRatio` too — a bridge fee component charged in the source token must use
   `sourceDenominator`, falling back to a route amount only for a genuinely cross-denominated component
@@ -271,7 +273,7 @@ Everything else is a focused collaborator it composes:
   zero: a missing `gasFee.amount` (network cap) or no bridge fee at all on a cross-chain route
   (protocol cap) throws `ButterFeeValuationError`, since scoring an unreported fee as free lets any cap
   be passed by omission.
-- **`bridgeFee` is priced per component, `feeConfig` is the authoritative integrator fee**:
+- **`bridgeFee` is priced per component, `swapFee` is the authoritative actual swap fee**:
   `bridgeFeeComponents` emits `in`, `out` and `affiliate` as separate entries with their own tokens
   and a `role` that picks the matching route leg (`in` and `out` are usually the same token, so one
   shared candidate order measured the outbound fee against the inbound amount). The top-level
@@ -287,12 +289,12 @@ Everything else is a focused collaborator it composes:
   `affiliate.amount` must be one of the counted fields. The
   affiliate **is** aggregated into `maxProtocolFeeBps` while keeping its `affiliate` fee type: WDK has
   no affiliate cap, and an unset `config.affiliate` means Butter takes the cut with its own wallet.
-  For `maxProtocolFeeBps` the integrator fee comes from
-  `route.feeConfig`, which is what `validateFeeData` checks the calldata against: `feeType: 1` is bps
-  of the input, so its ratio is `rate / 10000` and needs **no** trusted route amount (preserve that);
-  `feeType: 0` is source-chain native base units; anything else fails closed. Take the **larger** of
-  the `feeConfig` and `swapFee` ratios, never the sum — they are two views of one charge. Counting only
-  `swapFee` was a cap bypass: declare a large `feeConfig`, omit `swapFee`, pass any cap.
+  For `maxProtocolFeeBps`, both `swapFee.nativeFee` and `swapFee.tokenFee` must be present and are
+  valued as the complete Butter swap-fee result. `swapFee` already includes any referrer charge
+  configured by `feeConfig`, so deriving another fee from `feeConfig`, summing it, or choosing a
+  larger value would misstate the actual fee. `validateFeeData` still checks non-empty Router
+  `feeData` against the complete quoted `feeConfig` tuple; this is calldata consistency validation,
+  not fee valuation.
 - **Fail closed on unvaluable fees**: if a configured fee cap can't be evaluated (missing USD
   metadata, zero gas fee, etc.), throw `ButterFeeValuationError` rather than skipping the check.
 - **Conservative status**: an unrecognized Butter state maps to `pending`, never a false terminal;

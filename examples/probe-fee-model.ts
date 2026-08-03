@@ -124,8 +124,8 @@ runExample(async () => {
       ? 'only one component present'
       : String(bridgeFee.in.token.symbol === bridgeFee.out.token.symbol),
     verdict: comparison(bridgeFee),
-    // Shown because the protocol fee cap now values feeConfig directly: feeType 1
-    // means rateOrNativeFee is bps of the input, feeType 0 means source-chain wei.
+    // Compare the referrer configuration with Butter's authoritative actual fee.
+    // Fee mapping and capping use swapFee only; feeConfig validates calldata.
     feeConfig: route?.feeConfig,
     swapFee: route?.swapFee
   })
