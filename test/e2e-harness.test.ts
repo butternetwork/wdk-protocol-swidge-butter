@@ -14,6 +14,7 @@ import {
   createGuardedEvmWalletClient,
   assertExecutionBudget,
   extractRecoverableSourceId,
+  isButterStatusIndexingDelay,
   parseEvmAddress,
   parseNonNegativeBigInt,
   parseNonNegativeSafeInteger,
@@ -206,6 +207,73 @@ describe('guarded viem wallet client', () => {
     assert.equal(sent.length, 1)
   })
 
+  it('re-prepares an automatically selected zero-price EIP-1559 transaction as legacy', async () => {
+    const preparations: unknown[] = []
+    const sent: unknown[] = []
+    const legacyRequest = {
+      to: RECIPIENT,
+      type: 'legacy',
+      gas: 2n,
+      gasPrice: 3n,
+      value: 4n
+    }
+    const client = createGuardedEvmWalletClient({
+      account: { address: SENDER },
+      prepareTransactionRequest: async (transaction) => {
+        preparations.push(transaction)
+        if (preparations.length === 1) {
+          return {
+            ...(transaction as object),
+            type: 'eip1559',
+            gas: 2n,
+            maxFeePerGas: 0n,
+            maxPriorityFeePerGas: 0n,
+            value: 4n
+          }
+        }
+        return legacyRequest
+      },
+      sendTransaction: async (transaction) => {
+        sent.push(transaction)
+        return '0xhash'
+      }
+    }, { maxTotalGasFee: 6n, maxValue: 4n })
+
+    assert.equal(await client.sendTransaction({ to: RECIPIENT }), '0xhash')
+    assert.deepEqual(preparations, [
+      { to: RECIPIENT },
+      { to: RECIPIENT, type: 'legacy' }
+    ])
+    assert.deepEqual(sent, [legacyRequest])
+  })
+
+  it('preserves an explicitly requested zero-price EIP-1559 transaction', async () => {
+    const preparations: unknown[] = []
+    const sent: unknown[] = []
+    const client = createGuardedEvmWalletClient({
+      account: { address: SENDER },
+      prepareTransactionRequest: async (transaction) => {
+        preparations.push(transaction)
+        return {
+          ...(transaction as object),
+          gas: 2n,
+          maxFeePerGas: 0n,
+          maxPriorityFeePerGas: 0n,
+          value: 0n
+        }
+      },
+      sendTransaction: async (transaction) => {
+        sent.push(transaction)
+        return '0xhash'
+      }
+    }, { maxTotalGasFee: 0n, maxValue: 0n })
+    const transaction = { to: RECIPIENT, type: 'eip1559' }
+
+    assert.equal(await client.sendTransaction(transaction), '0xhash')
+    assert.deepEqual(preparations, [transaction])
+    assert.equal(sent.length, 1)
+  })
+
   it('uses legacy gasPrice and rejects over budget before signing', async () => {
     let sends = 0
     const client = createGuardedEvmWalletClient({
@@ -277,6 +345,30 @@ describe('read-only transaction boundary', () => {
 })
 
 describe('status polling', () => {
+  it('recognizes only explicit Butter info-null indexing delays', () => {
+    const indexingDelay = Object.assign(new Error('missing state'), {
+      name: 'ButterApiError',
+      details: { id: '0xsource', data: { info: null } }
+    })
+    const missingInfo = Object.assign(new Error('missing state'), {
+      name: 'ButterApiError',
+      details: { id: '0xsource', data: {} }
+    })
+    const malformedInfo = Object.assign(new Error('missing state'), {
+      name: 'ButterApiError',
+      details: { id: '0xsource', data: { info: {} } }
+    })
+    const unrelated = Object.assign(new Error('network unavailable'), {
+      details: { id: '0xsource', data: { info: null } }
+    })
+
+    assert.equal(isButterStatusIndexingDelay(indexingDelay), true)
+    assert.equal(isButterStatusIndexingDelay(missingInfo), false)
+    assert.equal(isButterStatusIndexingDelay(malformedInfo), false)
+    assert.equal(isButterStatusIndexingDelay(unrelated), false)
+    assert.equal(isButterStatusIndexingDelay({ name: 'ButterApiError', details: { data: { info: null } } }), false)
+  })
+
   it('polls non-terminal statuses until completion', async () => {
     const statuses = ['pending', 'action-required', 'refund-pending', 'completed'] as const
     let currentTime = 0
@@ -292,6 +384,67 @@ describe('status polling', () => {
 
     assert.equal(result.status, 'completed')
     assert.equal(queries, 4)
+  })
+
+  it('retries selected query errors until completion', async () => {
+    const indexingDelay = new Error('status is not indexed yet')
+    let currentTime = 0
+    let queries = 0
+
+    const result = await pollSwidgeStatus({
+      query: async () => {
+        queries += 1
+        if (queries === 1) throw indexingDelay
+        if (queries === 2) return { status: 'pending' as const }
+        return { status: 'completed' as const }
+      },
+      retryOnError: (cause) => cause === indexingDelay,
+      intervalMs: 10,
+      timeoutMs: 100,
+      now: () => currentTime,
+      sleep: async (milliseconds) => { currentTime += milliseconds }
+    })
+
+    assert.equal(result.status, 'completed')
+    assert.equal(queries, 3)
+    assert.equal(currentTime, 20)
+  })
+
+  it('propagates query errors that are not selected for retry', async () => {
+    const infrastructureError = new Error('status API unavailable')
+    let sleeps = 0
+
+    await assert.rejects(pollSwidgeStatus({
+      query: async () => { throw infrastructureError },
+      retryOnError: () => false,
+      intervalMs: 10,
+      timeoutMs: 100,
+      now: () => 0,
+      sleep: async () => { sleeps += 1 }
+    }), (cause: unknown) => cause === infrastructureError)
+
+    assert.equal(sleeps, 0)
+  })
+
+  it('bounds repeated retryable query errors by the polling timeout', async () => {
+    const indexingDelay = new Error('status is not indexed yet')
+    let currentTime = 0
+    let queries = 0
+
+    await assert.rejects(pollSwidgeStatus({
+      query: async () => {
+        queries += 1
+        throw indexingDelay
+      },
+      retryOnError: (cause) => cause === indexingDelay,
+      intervalMs: 10,
+      timeoutMs: 20,
+      now: () => currentTime,
+      sleep: async (milliseconds) => { currentTime += milliseconds }
+    }), /timed out/i)
+
+    assert.equal(queries, 2)
+    assert.equal(currentTime, 20)
   })
 
   it('throws immediately for terminal failure statuses', async () => {
@@ -439,6 +592,13 @@ describe('E2E command and CI safety', () => {
     assert.match(workflow, /vars\.BUTTER_E2E_ENTRANCE/)
     assert.doesNotMatch(workflow, /secrets\./)
     assert.doesNotMatch(workflow, /PRIVATE_KEY/)
+  })
+
+  it('keeps the read-only runner anonymous when funded credentials share its env file', async () => {
+    const runner = await readFile(join(process.cwd(), 'test/e2e/read-only.test.ts'), 'utf8')
+
+    assert.doesNotMatch(runner, /BUTTER_API_KEY_ID|BUTTER_API_SECRET/)
+    assert.match(runner, /authMode:\s*'optional'/)
   })
 
   it('provides no aggregate command that could run every funded scenario', async () => {
