@@ -4146,65 +4146,42 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     assert.equal(result.id, 'btc-tx')
   })
 
-  it('paginates token discovery with the chain key from queryChainList', async () => {
+  it('discovers tokens from the Router supportedTokenList endpoint without priming chain metadata', async () => {
     const fetch = makeFetch({
-      '/supportedChainInfo': async () => ({ errno: 0, message: 'success', data: [{ id: '56', type: 'EVM', name: 'BNB Chain' }] }),
-      '/api/queryChainList': async () => ({
-        code: 200,
-        message: 'success',
-        data: {
-          chains: [{
-            chainId: '56',
-            chainType: 'EVM',
-            name: 'BNB Chain',
-            key: 'binance-smart-chain',
-            nativeToken: '{"symbol":"BNB","address":"0x0000000000000000000000000000000000000000","decimals":18,"name":"BNB"}'
-          }]
-        }
-      }),
-      '/api/queryTokenList': async (url) => {
-        assert.equal(url.searchParams.get('network'), 'binance-smart-chain')
-        assert.equal(url.searchParams.get('pageSize'), '100')
-        if (url.searchParams.get('pageNo') === '1') {
-          return {
-            code: 200,
-            message: 'success',
-            data: {
-              count: 101,
-              results: Array.from({ length: 100 }, (_, index) => ({
-                chainId: '56',
-                address: `0xtoken${index}`,
-                decimals: 18,
-                symbol: `T${index}`,
-                name: `Token ${index}`
-              }))
-            }
-          }
-        }
+      '/supportedTokenList': async (url) => {
+        assert.equal(url.searchParams.get('chainId'), '56')
         return {
-          code: 200,
+          errno: 0,
           message: 'success',
-          data: {
-            count: 101,
-            results: [{ chainId: '56', address: '0xtoken100', decimals: 18, symbol: 'T100', name: 'Token 100' }]
-          }
+          data: [{
+            chainId: 56,
+            tokens: [{
+              chainId: 56,
+              address: '0xtoken',
+              decimals: 18,
+              symbol: 'TOKEN',
+              name: 'Token'
+            }]
+          }]
         }
       }
     })
     const protocol = new ButterSwidgeProtocol(undefined, {
       sourceChainId: 56,
       entrance: 'wdk',
-      apiKeyId: 'key',
-      apiSecret: 'secret',
       fetch
     })
 
-    const chains = await protocol.getSupportedChains()
     const tokens = await protocol.getSupportedTokens({ fromChain: 56 })
 
-    assert.equal(chains[0]?.nativeToken, 'BNB')
-    assert.equal((chains[0] as { execution?: string })?.execution, 'native')
-    assert.equal(tokens.length, 101)
+    assert.deepEqual(tokens, [{
+      token: '0xtoken',
+      chain: '56',
+      symbol: 'TOKEN',
+      decimals: 18,
+      address: '0xtoken',
+      name: 'Token'
+    }])
   })
 
   it('reports supported chains without a local executor as quote-only', async () => {
@@ -4380,112 +4357,103 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     assert.deepEqual(chains, [])
   })
 
-  it('continues token pagination without count while pages remain full', async () => {
+  it('returns an empty list for a supported chain with no tokens', async () => {
     const fetch = makeFetch({
-      '/supportedChainInfo': async () => ({ errno: 0, message: 'success', data: [{ id: '56', type: 'EVM', name: 'BNB' }] }),
-      '/api/queryChainList': async () => ({ code: 200, message: 'success', data: { chains: [{ chainId: '56', key: 'bsc' }] } }),
-      '/api/queryTokenList': async (url) => ({
-        code: 200,
+      '/supportedTokenList': async () => ({
+        errno: 0,
         message: 'success',
-        data: {
-          results: url.searchParams.get('pageNo') === '1'
-            ? Array.from({ length: 100 }, (_, index) => ({ chainId: '56', address: `0x${index}`, decimals: 18, symbol: `T${index}` }))
-            : [{ chainId: '56', address: '0x100', decimals: 18, symbol: 'T100' }]
-        }
+        data: [{ chainId: 56, tokens: [] }]
       })
     })
     const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
 
-    const tokens = await protocol.getSupportedTokens({ fromChain: 56 })
-
-    assert.equal(tokens.length, 101)
+    assert.deepEqual(await protocol.getSupportedTokens({ fromChain: 56 }), [])
   })
 
-  it('stops token pagination when an advertised page makes no progress', async () => {
-    let tokenRequests = 0
-    const fetch = makeFetch({
-      '/supportedChainInfo': async () => ({ errno: 0, message: 'success', data: [{ id: '56', type: 'EVM', name: 'BNB' }] }),
-      '/api/queryChainList': async () => ({ code: 200, message: 'success', data: { chains: [{ chainId: '56', key: 'bsc' }] } }),
-      '/api/queryTokenList': async () => {
-        tokenRequests++
-        return { code: 200, message: 'success', data: { count: 2, results: [] } }
-      }
-    })
-    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+  it('requires exactly one supported-token group for the requested chain', async () => {
+    const invalidGroups: unknown[] = [
+      [],
+      [{ chainId: 137, tokens: [] }],
+      [null, { chainId: 56, tokens: [] }],
+      [{ chainId: 56, tokens: [] }, { chainId: 56, tokens: [] }]
+    ]
 
-    await assert.rejects(protocol.getSupportedTokens({ fromChain: 56 }), ButterApiError)
-    assert.equal(tokenRequests, 1)
+    for (const data of invalidGroups) {
+      const fetch = makeFetch({
+        '/supportedTokenList': async () => ({ errno: 0, message: 'success', data })
+      })
+      const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+
+      await assert.rejects(
+        protocol.getSupportedTokens({ fromChain: 56 }),
+        (error: unknown) => error instanceof ButterApiError && /exactly one group/.test(error.message)
+      )
+    }
   })
 
-  it('completes token pagination when entries are dropped by the filter', async () => {
-    // The advertised `count` counts RAW records; this package drops some (unusable
-    // decimals, duplicates). Comparing the filtered total against `count` meant a
-    // single dropped token made the loop unable to terminate, so it threw on the
-    // final empty page — one bad token broke discovery for the whole chain.
-    let tokenRequests = 0
-    const fetch = makeFetch({
-      '/supportedChainInfo': async () => ({ errno: 0, message: 'success', data: [{ id: '56', type: 'EVM', name: 'BNB', nativeToken: '{"symbol":"BNB"}' }] }),
-      '/api/queryChainList': async () => ({ code: 200, message: 'success', data: { chains: [{ chainId: '56', key: 'bsc' }] } }),
-      '/api/queryTokenList': async (url) => {
-        tokenRequests++
-        if (url.searchParams.get('pageNo') !== '1') {
-          return { code: 200, message: 'success', data: { count: 3, results: [] } }
-        }
-        return {
-          code: 200,
+  it('requires the supported-token group to contain a token array', async () => {
+    for (const tokens of [undefined, null, { address: '0xtoken' }]) {
+      const fetch = makeFetch({
+        '/supportedTokenList': async () => ({
+          errno: 0,
           message: 'success',
-          data: {
-            count: 3,
-            results: [
-              { address: '0xaaa', decimals: 18, symbol: 'AAA' },
-              // Dropped by the filter: no usable decimals. Pagination must still
-              // count it, since Butter counted it.
-              { address: '0xbbb', symbol: 'BBB' },
-              { address: '0xccc', decimals: 6, symbol: 'CCC' }
-            ]
-          }
-        }
-      }
-    })
-    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+          data: [{ chainId: 56, ...(tokens !== undefined ? { tokens } : {}) }]
+        })
+      })
+      const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
 
-    const tokens = await protocol.getSupportedTokens({ fromChain: 56 })
-
-    // All 3 raw records were consumed, so pagination stops after one page even
-    // though only 2 tokens survived the filter.
-    assert.deepEqual(tokens.map(({ token }) => token), ['0xaaa', '0xccc'])
-    assert.equal(tokenRequests, 1)
+      await assert.rejects(
+        protocol.getSupportedTokens({ fromChain: 56 }),
+        (error: unknown) => error instanceof ButterApiError && /token array/.test(error.message)
+      )
+    }
   })
 
-  it('keeps two Base58 mints that differ only by case', async () => {
-    // Lowercasing the dedupe key merged them, so only the first was ever returned —
-    // and the /findToken cache could then serve one mint's decimals for the other.
+  it('drops malformed and wrong-chain tokens while preserving format-aware deduplication', async () => {
     const upper = 'AbCdEfGhJkLmNpQrStUvWxYz123456789ABCDEFGHJK'
     const lower = 'abcdefghjklmnpqrstuvwxyz123456789abcdefghjk'
     const fetch = makeFetch({
-      '/supportedChainInfo': async () => ({ errno: 0, message: 'success', data: [{ id: '56', type: 'EVM', name: 'BNB', nativeToken: '{"symbol":"BNB"}' }] }),
-      '/api/queryChainList': async () => ({ code: 200, message: 'success', data: { chains: [{ chainId: '56', key: 'bsc' }] } }),
-      '/api/queryTokenList': async (url) => ({
-        code: 200,
+      '/supportedTokenList': async () => ({
+        errno: 0,
         message: 'success',
-        data: {
-          count: 2,
-          results: url.searchParams.get('pageNo') === '1'
-            ? [
-                { address: upper, decimals: 6, symbol: 'A' },
-                { address: lower, decimals: 9, symbol: 'B' }
-              ]
-            : []
-        }
+        data: [{
+          chainId: 56,
+          tokens: [
+            null,
+            7,
+            { chainId: 56, address: '0xAaA', decimals: 18, symbol: 'AAA' },
+            { chainId: '56', address: '0xaaa', decimals: 18, symbol: 'AAA duplicate' },
+            { chainId: 137, address: '0xwrong', decimals: 18, symbol: 'WRONG' },
+            { chainId: 56, address: '0xbad', symbol: 'BAD' },
+            { address: upper, decimals: 6, symbol: 'UPPER' },
+            { address: lower, decimals: 9, symbol: 'LOWER' }
+          ]
+        }]
       })
     })
     const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
 
     const tokens = await protocol.getSupportedTokens({ fromChain: 56 })
 
-    assert.deepEqual(tokens.map(({ token }) => token), [upper, lower])
-    // Their decimals must not be conflated either.
-    assert.deepEqual(tokens.map(({ decimals }) => decimals), [6, 9])
+    assert.deepEqual(tokens.map((token) => token.token), ['0xAaA', upper, lower])
+    assert.deepEqual(tokens.map((token) => token.chain), ['56', '56', '56'])
+    assert.deepEqual(tokens.map((token) => token.decimals), [18, 6, 9])
+  })
+
+  it('rejects a non-array Router supported-token payload', async () => {
+    const fetch = makeFetch({
+      '/supportedTokenList': async () => ({
+        errno: 0,
+        message: 'success',
+        data: { chainId: 56, tokens: [] }
+      })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
+
+    await assert.rejects(
+      protocol.getSupportedTokens({ fromChain: 56 }),
+      (error: unknown) => error instanceof ButterApiError && /non-array payload/.test(error.message)
+    )
   })
 
   it('accepts a Bitcoin txid that differs only by case', async () => {
@@ -4524,179 +4492,6 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     await assert.rejects(
       protocol.getSwidgeStatus(requested),
       (error: unknown) => error instanceof ButterApiError && /sourceHash does not match/.test(error.message)
-    )
-  })
-
-  it('rejects an invalid advertised token count instead of stopping early', async () => {
-    // `count` is the termination bound, so a negative one satisfied `consumed >= count`
-    // after the very first page: the walk stopped with a partial list, made no further
-    // requests, and raised nothing.
-    let tokenRequests = 0
-    const fetch = makeFetch({
-      '/supportedChainInfo': async () => ({ errno: 0, message: 'success', data: [{ id: '56', type: 'EVM', name: 'BNB', nativeToken: '{"symbol":"BNB"}' }] }),
-      '/api/queryChainList': async () => ({ code: 200, message: 'success', data: { chains: [{ chainId: '56', key: 'bsc' }] } }),
-      '/api/queryTokenList': async () => {
-        tokenRequests++
-        return { code: 200, message: 'success', data: { count: -1, results: [{ address: '0xaaa', decimals: 18, symbol: 'A' }] } }
-      }
-    })
-    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
-
-    await assert.rejects(
-      protocol.getSupportedTokens({ fromChain: 56 }),
-      (error: unknown) => error instanceof ButterApiError && /invalid record count/.test(error.message)
-    )
-    assert.equal(tokenRequests, 1)
-  })
-
-  it('rejects a non-array token results payload', async () => {
-    // `results` drives the loop; a non-array surfaced as a raw TypeError from for...of
-    // rather than as this package's own error.
-    const fetch = makeFetch({
-      '/supportedChainInfo': async () => ({ errno: 0, message: 'success', data: [{ id: '56', type: 'EVM', name: 'BNB', nativeToken: '{"symbol":"BNB"}' }] }),
-      '/api/queryChainList': async () => ({ code: 200, message: 'success', data: { chains: [{ chainId: '56', key: 'bsc' }] } }),
-      '/api/queryTokenList': async () => ({ code: 200, message: 'success', data: { count: 1, results: { address: '0xaaa' } } })
-    })
-    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
-
-    await assert.rejects(
-      protocol.getSupportedTokens({ fromChain: 56 }),
-      (error: unknown) => error instanceof ButterApiError && /non-array results/.test(error.message)
-    )
-  })
-
-  it('rejects a malformed token-list envelope with a Butter API error', async () => {
-    const fetch = makeFetch({
-      '/supportedChainInfo': async () => ({ errno: 0, message: 'success', data: [{ id: '56', type: 'EVM', name: 'BNB', nativeToken: '{"symbol":"BNB"}' }] }),
-      '/api/queryChainList': async () => ({ code: 200, message: 'success', data: { chains: [{ chainId: '56', key: 'bsc' }] } }),
-      '/api/queryTokenList': async () => ({ code: 200, message: 'success', data: null })
-    })
-    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
-
-    await assert.rejects(protocol.getSupportedTokens({ fromChain: 56 }), ButterApiError)
-  })
-
-  it('drops malformed token rows while counting every raw pagination row', async () => {
-    let tokenRequests = 0
-    const fetch = makeFetch({
-      '/supportedChainInfo': async () => ({ errno: 0, message: 'success', data: [{ id: '56', type: 'EVM', name: 'BNB', nativeToken: '{"symbol":"BNB"}' }] }),
-      '/api/queryChainList': async () => ({ code: 200, message: 'success', data: { chains: [{ chainId: '56', key: 'bsc' }] } }),
-      '/api/queryTokenList': async () => {
-        tokenRequests++
-        return {
-          code: 200,
-          message: 'success',
-          data: { count: 3, results: [null, 7, { address: '0xaaa', decimals: 18, symbol: 'AAA' }] }
-        }
-      }
-    })
-    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
-
-    const tokens = await protocol.getSupportedTokens({ fromChain: 56 })
-
-    assert.deepEqual(tokens.map(({ token }) => token), ['0xaaa'])
-    assert.equal(tokenRequests, 1)
-  })
-
-  it('rejects a page that repeats a record from an earlier page', async () => {
-    // With count 4 and pages [A,B] then [B,C], counting raw rows reaches 4 and the
-    // walk stops without ever asking for D. The overlap itself is the signal — the
-    // server is either looping or the list shifted underneath the walk.
-    const pages: Record<string, Array<{ address: string, decimals: number, symbol: string }>> = {
-      1: [{ address: '0xaaa', decimals: 18, symbol: 'A' }, { address: '0xbbb', decimals: 18, symbol: 'B' }],
-      2: [{ address: '0xbbb', decimals: 18, symbol: 'B' }, { address: '0xccc', decimals: 18, symbol: 'C' }]
-    }
-    const fetch = makeFetch({
-      '/supportedChainInfo': async () => ({ errno: 0, message: 'success', data: [{ id: '56', type: 'EVM', name: 'BNB', nativeToken: '{"symbol":"BNB"}' }] }),
-      '/api/queryChainList': async () => ({ code: 200, message: 'success', data: { chains: [{ chainId: '56', key: 'bsc' }] } }),
-      '/api/queryTokenList': async (url) => ({
-        code: 200,
-        message: 'success',
-        data: { count: 4, results: pages[String(url.searchParams.get('pageNo'))] ?? [] }
-      })
-    })
-    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
-
-    await assert.rejects(
-      protocol.getSupportedTokens({ fromChain: 56 }),
-      (error: unknown) => error instanceof ButterApiError && /record from an earlier page/.test(error.message)
-    )
-  })
-
-  it('counts an in-page duplicate toward the advertised raw count', async () => {
-    // Butter's `count` counts raw rows, so a page listing the same token twice has
-    // consumed both slots. Counting distinct records instead left the walk short of
-    // `count` and aborted a perfectly legitimate response on the following empty page.
-    const fetch = makeFetch({
-      '/supportedChainInfo': async () => ({ errno: 0, message: 'success', data: [{ id: '56', type: 'EVM', name: 'BNB', nativeToken: '{"symbol":"BNB"}' }] }),
-      '/api/queryChainList': async () => ({ code: 200, message: 'success', data: { chains: [{ chainId: '56', key: 'bsc' }] } }),
-      '/api/queryTokenList': async (url) => ({
-        code: 200,
-        message: 'success',
-        data: {
-          count: 3,
-          results: url.searchParams.get('pageNo') === '1'
-            ? [
-                { address: '0xaaa', decimals: 18, symbol: 'A' },
-                { address: '0xaaa', decimals: 18, symbol: 'A' },
-                { address: '0xbbb', decimals: 6, symbol: 'B' }
-              ]
-            : []
-        }
-      })
-    })
-    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
-
-    const tokens = await protocol.getSupportedTokens({ fromChain: 56 })
-
-    // Three raw rows consumed, two distinct tokens surfaced.
-    assert.deepEqual(tokens.map(({ token }) => token), ['0xaaa', '0xbbb'])
-  })
-
-  it('rejects a repeated token page instead of returning partial results', async () => {
-    // A server replaying page 1 used to look like progress: `consumed` climbed by the
-    // page size until it reached `count`, and the walk ended silently with a
-    // deduplicated fraction of the list and no error.
-    const fetch = makeFetch({
-      '/supportedChainInfo': async () => ({ errno: 0, message: 'success', data: [{ id: '56', type: 'EVM', name: 'BNB', nativeToken: '{"symbol":"BNB"}' }] }),
-      '/api/queryChainList': async () => ({ code: 200, message: 'success', data: { chains: [{ chainId: '56', key: 'bsc' }] } }),
-      '/api/queryTokenList': async () => ({
-        code: 200,
-        message: 'success',
-        data: { count: 4, results: [{ address: '0xaaa', decimals: 18, symbol: 'AAA' }, { address: '0xbbb', decimals: 6, symbol: 'BBB' }] }
-      })
-    })
-    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
-
-    await assert.rejects(
-      protocol.getSupportedTokens({ fromChain: 56 }),
-      (error: unknown) => error instanceof ButterApiError && /record from an earlier page/.test(error.message)
-    )
-  })
-
-  it('rejects a token page whose advertised count changes mid-walk', async () => {
-    // Re-reading `count` every page let a later response shrink it, ending the walk
-    // early with a partial list and no error.
-    const fetch = makeFetch({
-      '/supportedChainInfo': async () => ({ errno: 0, message: 'success', data: [{ id: '56', type: 'EVM', name: 'BNB', nativeToken: '{"symbol":"BNB"}' }] }),
-      '/api/queryChainList': async () => ({ code: 200, message: 'success', data: { chains: [{ chainId: '56', key: 'bsc' }] } }),
-      '/api/queryTokenList': async (url) => {
-        const page = Number(url.searchParams.get('pageNo'))
-        return {
-          code: 200,
-          message: 'success',
-          data: {
-            count: page === 1 ? 4 : 2,
-            results: [{ address: `0x${String(page)}aa`, decimals: 18, symbol: 'AAA' }]
-          }
-        }
-      }
-    })
-    const protocol = new ButterSwidgeProtocol(undefined, { sourceChainId: 56, entrance: 'wdk', fetch })
-
-    await assert.rejects(
-      protocol.getSupportedTokens({ fromChain: 56 }),
-      (error: unknown) => error instanceof ButterApiError && /changed its advertised count/.test(error.message)
     )
   })
 

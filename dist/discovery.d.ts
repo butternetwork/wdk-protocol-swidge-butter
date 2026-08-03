@@ -7,8 +7,6 @@ export declare class DiscoveryService {
     private readonly strictSlippageChainIds;
     private readonly routerRegistry;
     private readonly tokenDecimalsCache;
-    private chainDetails?;
-    private chainDetailsPromise;
     constructor(config: ButterSwidgeProtocolConfig, requestRouter: <T>(path: string, params?: Record<string, unknown>) => Promise<T>, requestToken: <T>(path: string, params?: Record<string, unknown>) => Promise<T>, strictSlippageChainIds: Set<string>, routerRegistry: ButterRouterRegistry);
     getSupportedChains(): Promise<ButterSupportedChain[]>;
     /**
@@ -41,6 +39,5 @@ export declare class DiscoveryService {
     private touchTokenDecimalsCache;
     private setTokenDecimalsCache;
     getSupportedTokens(chainId: string): Promise<SwidgeSupportedToken[]>;
-    private networkKeyForChain;
 }
 //# sourceMappingURL=discovery.d.ts.map

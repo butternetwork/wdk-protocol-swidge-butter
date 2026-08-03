@@ -23,8 +23,6 @@ export class DiscoveryService {
     strictSlippageChainIds;
     routerRegistry;
     tokenDecimalsCache = new Map();
-    chainDetails;
-    chainDetailsPromise;
     constructor(config, requestRouter, requestToken, strictSlippageChainIds, routerRegistry) {
         this.config = config;
         this.requestRouter = requestRouter;
@@ -40,14 +38,14 @@ export class DiscoveryService {
         const routerChains = recordArray(routerPayload, 'Butter supported-chain list');
         const tokenEnvelope = requiredRecord(tokenPayload, 'Butter token-chain envelope');
         const tokenChains = optionalRecordArray(tokenEnvelope.chains, 'Butter token-chain list');
-        this.chainDetails = new Map();
+        const chainDetails = new Map();
         for (const chain of tokenChains) {
-            this.chainDetails.set(normalizeId(chain.chainId ?? chain.id), chain);
+            chainDetails.set(normalizeId(chain.chainId ?? chain.id), chain);
         }
         return routerChains
             .map((chain) => {
             const id = normalizeId(chain.chainId ?? chain.id);
-            const detail = this.chainDetails?.get(id) ?? chain;
+            const detail = chainDetails.get(id) ?? chain;
             // Detect strict-slippage chains *before* the filter below: dropping a
             // chain from the listing must never relax its slippage floor, which is
             // consulted by chain id whether or not the chain was listed.
@@ -178,131 +176,39 @@ export class DiscoveryService {
         }
     }
     async getSupportedTokens(chainId) {
-        const network = await this.networkKeyForChain(chainId);
-        const tokens = [];
-        let pageNo = 1;
-        let count;
-        // Distinct raw records consumed, before filtering — the only quantity
-        // comparable to Butter's advertised `count`.
-        let consumed = 0;
-        const seen = new Set();
-        /** Raw record identities, so a replayed page is detected rather than counted. */
-        const rawSeen = new Set();
-        const maxPages = 1000;
-        while (true) {
-            if (pageNo > maxPages)
-                throw new ButterApiError(`Butter token pagination exceeded ${maxPages} pages`);
-            const payload = await this.requestToken('/api/queryTokenList', {
-                network,
-                pageNo,
-                pageSize: 100
+        const groups = await this.requestRouter('/supportedTokenList', { chainId });
+        if (!Array.isArray(groups)) {
+            throw new ButterApiError('Butter Router supported-token list returned a non-array payload', groups);
+        }
+        if (groups.length !== 1 || !isRecord(groups[0]) || normalizeId(groups[0].chainId) !== chainId) {
+            throw new ButterApiError('Butter Router supported-token list must return exactly one group for the requested chain', {
+                chainId,
+                groups
             });
-            const data = requiredRecord(payload, 'Butter token-list envelope');
-            // `results` drives the loop, so its shape is a trust boundary: a non-array made
-            // `results.length` undefined and surfaced later as a raw TypeError from
-            // `for...of` rather than as this package's own error.
-            if (data.results != null && !Array.isArray(data.results)) {
-                throw new ButterApiError('Butter token list returned a non-array results payload', { pageNo });
-            }
-            const results = data.results ?? [];
-            const reportedCount = data.count;
-            // Pin the advertised total to the FIRST page. Re-reading it every page let a
-            // later response shrink it, ending the walk early with a partial list and no
-            // error at all.
-            if (count == null) {
-                // Validate before trusting it as the termination bound: `count: -1` satisfies
-                // `consumed >= count` after the very first page, so the walk stopped with a
-                // partial list, no further requests, and no error at all.
-                if (reportedCount != null && (typeof reportedCount !== 'number' || !Number.isSafeInteger(reportedCount) || reportedCount < 0)) {
-                    throw new ButterApiError('Butter token list advertised an invalid record count', {
-                        pageNo,
-                        count: reportedCount
-                    });
-                }
-                count = reportedCount;
-            }
-            else if (reportedCount != null && reportedCount !== count) {
-                throw new ButterApiError('Butter token pagination changed its advertised count mid-walk', {
-                    pageNo,
-                    count,
-                    reported: reportedCount
-                });
-            }
-            // Compare Butter's advertised `count` against RAW records consumed, never
-            // against `tokens.length`: entries are dropped below (unusable decimals,
-            // duplicates), so a filtered total can never reach `count`. Conflating the two
-            // made every one of these three checks misfire the moment a single token was
-            // dropped — the loop could not terminate, then threw on the final empty page.
-            if (results.length === 0 && count != null && consumed < count) {
-                throw new ButterApiError('Butter token pagination returned an empty page before the advertised count', {
-                    pageNo,
-                    count,
-                    consumed,
-                    received: tokens.length
-                });
-            }
-            if (results.length === 0)
-                break;
-            // Keys seen on THIS page, so an in-page duplicate is not mistaken for a repeat
-            // of an earlier page.
-            const pageKeys = new Set();
-            // Two separate questions, previously conflated into one counter.
-            //
-            // How far through the list are we? `count` counts RAW rows, so `consumed` must
-            // too — a page legitimately containing the same token twice still consumed both
-            // slots, and counting distinct records instead made such a page fall short of
-            // `count` and abort the whole walk.
-            //
-            // Is the server actually paginating? That is a different test: a record already
-            // returned on an EARLIER page means the walk is going in circles or the list
-            // shifted underneath it, and either way `consumed` would reach `count` without
-            // the tail ever being fetched. Repeats within one page are fine; repeats across
-            // pages are not.
-            for (const item of results) {
-                const rawKey = rawRecordKey(item);
-                if (rawSeen.has(rawKey) && !pageKeys.has(rawKey)) {
-                    throw new ButterApiError('Butter token pagination returned a record from an earlier page', {
-                        pageNo,
-                        count,
-                        consumed,
-                        received: tokens.length
-                    });
-                }
-                pageKeys.add(rawKey);
-                rawSeen.add(rawKey);
-            }
-            consumed += results.length;
-            const validRows = results.filter((item) => isRecord(item));
-            for (const token of validRows.map((item) => tokenToSupportedToken(item, chainId))) {
-                // Fail closed per token: drop entries lacking a usable identifier or
-                // valid decimals rather than surfacing a placeholder ('' / 18).
-                if (!token.token || !Number.isInteger(token.decimals) || token.decimals < 0 || token.decimals > 255)
-                    continue;
-                // Format-aware: two Base58 mints differing only in case are two tokens, and
-                // lowercasing collapsed them so only the first was ever returned.
-                const key = `${token.chain}:${normalizeIdentifier(token.token)}`;
-                if (seen.has(key))
-                    continue;
-                seen.add(key);
-                tokens.push(token);
-            }
-            if (count != null ? consumed >= count : results.length < 100)
-                break;
-            pageNo++;
+        }
+        const group = groups[0];
+        if (!Array.isArray(group?.tokens)) {
+            throw new ButterApiError('Butter Router supported-token group must contain a token array', {
+                chainId,
+                group
+            });
+        }
+        const results = recordArray(group.tokens, 'Butter Router supported-token entries');
+        const tokens = [];
+        const seen = new Set();
+        for (const item of results) {
+            const token = tokenToSupportedToken(item, chainId);
+            if (!token.token || !Number.isInteger(token.decimals) || token.decimals < 0 || token.decimals > 255)
+                continue;
+            if (token.chain !== chainId)
+                continue;
+            const key = `${token.chain}:${normalizeIdentifier(token.token)}`;
+            if (seen.has(key))
+                continue;
+            seen.add(key);
+            tokens.push(token);
         }
         return tokens;
-    }
-    async networkKeyForChain(chainId) {
-        if (!this.chainDetails) {
-            // Dedupe concurrent priming so parallel getSupportedTokens calls share a
-            // single discovery request rather than each fetching chain metadata.
-            this.chainDetailsPromise ??= this.getSupportedChains().finally(() => {
-                this.chainDetailsPromise = undefined;
-            });
-            await this.chainDetailsPromise;
-        }
-        const chain = this.chainDetails?.get(chainId);
-        return chain?.key ?? chainId;
     }
 }
 function findTokenRecords(data) {
@@ -370,28 +276,6 @@ function isStrictSlippageChain(chain) {
         const normalized = String(value ?? '').toLowerCase();
         return normalized === 'btc' || normalized === 'ton' || normalized.includes('bitcoin') || normalized.includes('toncoin');
     });
-}
-/**
- * Identity of a raw `/api/queryTokenList` record, used only to tell a fresh page
- * from a replayed one.
- *
- * Falls back to the whole record when no address-like field is present: an entry
- * that cannot be identified must not silently collide with another and be mistaken
- * for a repeat, which would abort a perfectly good walk.
- */
-function rawRecordKey(item) {
-    if (isRecord(item)) {
-        const candidate = item.address ?? item.token;
-        const address = typeof candidate === 'string' ? candidate.trim() : '';
-        if (address)
-            return `${String(item.chainId ?? '')}:${normalizeIdentifier(address)}`;
-    }
-    try {
-        return JSON.stringify(item) ?? String(item);
-    }
-    catch {
-        return String(item);
-    }
 }
 function executionFor(chainId, config, registry) {
     if (chainId === TRON_CHAIN_ID)
