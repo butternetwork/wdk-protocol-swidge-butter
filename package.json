@@ -2,6 +2,18 @@
   "name": "@butternetwork/wdk-protocol-swidge-butter",
   "version": "0.1.0",
   "description": "Butter Network Swidge provider for WDK.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/butternetwork/wdk-protocol-swidge-butter.git"
+  },
+  "bugs": {
+    "url": "https://github.com/butternetwork/wdk-protocol-swidge-butter/issues"
+  },
+  "homepage": "https://github.com/butternetwork/wdk-protocol-swidge-butter#readme",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
