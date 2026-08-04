@@ -15,15 +15,57 @@ does not do.
 npm install @butternetwork/wdk-protocol-swidge-butter @tetherto/wdk-wallet
 ```
 
-## Usage
+## Complete example
+
+This read-only example discovers Butter's current chains and advertised tokens,
+then requests an exact-in quote. It does not send a transaction or require funds.
+
+```js
+import ButterSwidgeProtocol from '@butternetwork/wdk-protocol-swidge-butter'
+
+const sourceChainId = '56'
+const destinationChainId = '137'
+const nativeToken = '0x0000000000000000000000000000000000000000'
+
+const protocol = new ButterSwidgeProtocol(undefined, {
+  sourceChainId,
+  entrance: 'wdk',
+  authMode: 'optional'
+})
+
+const options = {
+  fromToken: nativeToken,
+  toToken: nativeToken,
+  toChain: destinationChainId,
+  fromTokenAmount: 1_000_000_000_000_000n,
+  slippage: 0.02
+}
+
+const chains = await protocol.getSupportedChains()
+const tokens = await protocol.getSupportedTokens({ fromChain: sourceChainId })
+const quote = await protocol.quoteSwidge(options)
+
+console.log({ chains, tokens, quote })
+```
+
+Save the snippet as `quote.mjs` and run it with `node quote.mjs`.
+
+Anonymous requests are subject to Butter's rate limits. For authenticated quotes,
+configure the server-side credentials below. See
+[`examples/swap.ts`](./examples/swap.ts) for a confirmation-gated, complete EVM
+transaction example.
+
+## Configuration
+
+EVM execution needs both a full WDK account supplied by the host application and
+an EVM-capable sender. A typical execution configuration is:
 
 ```ts
 import ButterSwidgeProtocol, {
-  toEvmWalletClient,
-  toEvmPublicClient
+  toEvmPublicClient,
+  toEvmWalletClient
 } from '@butternetwork/wdk-protocol-swidge-butter'
 
-// EVM execution needs BOTH a full WDK account and an EVM-capable sender.
 const protocol = new ButterSwidgeProtocol(account, {
   sourceChainId: 56,
   entrance: 'wdk',
@@ -224,10 +266,16 @@ retained and unit-tested.
 
 | Source | Value | `SwidgeStatus` |
 | --- | --- | --- |
-| Cross-chain `state` | `0` crossing | `pending` |
-| Cross-chain `state` | `1` completed | `completed` |
-| Cross-chain `state` | `6` refund | `refunded` |
-| Cross-chain `state` | any other / intermediate | `pending` (never a false terminal) |
+| Cross-chain `state` / `status` | `0`, `crossing`, `pending` | `pending` |
+| Cross-chain `state` / `status` | `1`, `success`, `completed` | `completed` |
+| Cross-chain `state` / `status` | `6`, `refund`, `refunded` | `refunded` |
+| Cross-chain `state` / `status` | `action-required` | `action-required` |
+| Cross-chain `state` / `status` | `refund-pending` | `refund-pending` |
+| Cross-chain `state` / `status` | `failed` | `failed` |
+| Cross-chain `state` / `status` | `cancelled` | `cancelled` |
+| Cross-chain `state` / `status` | `expired` | `expired` |
+| Cross-chain `state` / `status` | `partial` | `partial` |
+| Cross-chain `state` / `status` | any other / intermediate | `pending` (never a false terminal) |
 | Same-chain receipt | explicit success | `completed` |
 | Same-chain receipt | explicit revert | `failed` |
 | Same-chain receipt | missing / unknown | `pending` |
@@ -245,6 +293,7 @@ is where each entry lands in the legacy `swap()`/`bridge()` scalars:
 | `swapFee.nativeFee` | `protocol` | `bridgeFee` | native-denominated actual swap fee, including any charge configured by `feeConfig` |
 | `swapFee.tokenFee` | `protocol` | `bridgeFee` | input-token-denominated actual swap fee, including any charge configured by `feeConfig` |
 | `feeConfig` | — | — | referrer fee configuration used to validate `/swap` calldata; never added as a separate fee |
+| No reported fees | `network` | `fee` | zero-amount native-token placeholder, so `fees[]` is never empty |
 
 `bridgeFee` is reported per component, and the top-level `bridgeFee.amount` summary is
 **never priced**. It is a single figure in a single token describing a fee that can
@@ -476,26 +525,20 @@ per chain as `execution` by `getSupportedChains()`:
 | `adapter` | execution goes through a `transactionAdapters` entry you supply. Router calldata validation does **not** apply — only chain ID and required fields are checked |
 | `quote-only` | quoting, discovery, and status work; execution is unavailable until you pin a Router via `routerContracts` or supply an adapter |
 
-Chains with a pinned Router in the built-in registry (`constants.ts:
-DEFAULT_ROUTER_CONTRACTS`), i.e. `native` out of the box:
+Butter chain support is discovered at runtime and can change independently of a
+package release. Call `getSupportedChains()` for the current list; it starts with
+Butter's `/supportedChainInfo` response, enriches the entries with token API
+metadata, and reports this package's current execution tier on each returned
+chain. Do not infer current Butter support from `DEFAULT_ROUTER_CONTRACTS`: that
+registry is a transaction-target allowlist, not a support catalog. A chain that
+Butter no longer advertises is not returned even if a historical Router entry is
+still pinned locally.
 
-| Chain | ID |
-| --- | --- |
-| Ethereum | `1` |
-| OP Mainnet | `10` |
-| BNB Smart Chain | `56` |
-| Unichain | `130` |
-| Polygon | `137` |
-| X Layer | `196` |
-| Base | `8453` |
-| Arbitrum One | `42161` |
-| Avalanche C-Chain | `43114` |
-| Linea | `59144` |
-
-This is a curated subset of Butter's deployments, not the full set — see
-[Router Registry](#router-registry) for adding others. Non-EVM chains Butter
-supports (Solana, Bitcoin, Tron) are `quote-only` until you supply an adapter;
-Tron is always `adapter`-or-`quote-only` and never uses the built-in EVM path.
+For a chain Butter currently advertises, the tier is selected in this order:
+Tron remains `adapter`-or-`quote-only`; another chain with a verified EVM Router
+is `native`; a remaining chain with a configured `transactionAdapters` entry is
+`adapter`; otherwise it is `quote-only`. See
+[Router Registry](#router-registry) for supplying a verified Router deployment.
 
 **Butter's advertised token catalog is discovered at runtime**, not listed here —
 call `getSupportedTokens({ fromChain })`. It is useful for recommended-token UIs
@@ -537,9 +580,11 @@ placeholder. A chain you expect to see but don't is usually this, not an outage.
 The package includes a versioned registry of known Router V3 deployments.
 Addresses are pinned because `/route` and `/swap` are remote, untrusted inputs;
 an API response cannot authorize a new transaction target by itself. The
-built-in set is a curated subset of Butter's deployments; a chain without a
-pinned entry is quote-only for built-in EVM execution until its Router is
-supplied via `routerContracts` (verify the address independently first).
+built-in set is a curated transaction-target allowlist, not a statement of
+current Butter chain support. `getSupportedChains()` only surfaces chains in
+Butter's live response; among those, a chain without a pinned entry is quote-only
+for built-in EVM execution until its Router is supplied via `routerContracts`
+(verify the address independently first).
 
 Per-chain configuration replaces the built-in entries for that chain:
 
