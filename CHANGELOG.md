@@ -6,6 +6,11 @@ and (once published) [Semantic Versioning](https://semver.org).
 
 ## [Unreleased]
 
+### Fixed
+- Make GitHub Release publishing idempotent: an npm version already published
+  from the same tag commit is a successful no-op, while registry errors and
+  mismatched or invalid `gitHead` metadata fail closed.
+
 ### Documentation
 - Align the README with WDK provider documentation requirements: add a complete
   read-only discovery and quote example, make execution configuration explicit,
