@@ -6,6 +6,16 @@ and (once published) [Semantic Versioning](https://semver.org).
 
 ## [Unreleased]
 
+### Documentation
+- Align the README with WDK provider documentation requirements: add a complete
+  read-only discovery and quote example, make execution configuration explicit,
+  enumerate every supported status mapping, and include the zero-fee placeholder
+  in the fee mapping table.
+- Replace the static supported-chain snapshot with runtime discovery guidance, so
+  historical Router allowlist entries are not presented as current Butter support.
+
+## [0.1.0] - 2026-08-04
+
 Security hardening from multi-round expert review. **Breaking** changes are marked.
 
 ### End-to-end testing
