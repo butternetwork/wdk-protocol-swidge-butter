@@ -65,6 +65,28 @@ describe('npm release configuration', () => {
     assert.doesNotMatch(workflow, /NODE_AUTH_TOKEN|NPM_TOKEN|secrets\./)
   })
 
+  it('skips an identical published version and fails closed on registry ambiguity', async () => {
+    const workflow = await readFile(
+      join(repositoryRoot, '.github/workflows/publish.yml'),
+      'utf8'
+    )
+
+    const registryCheck = workflow.indexOf('- name: Check npm publication state')
+    const publishStep = workflow.indexOf('- name: Publish package')
+
+    assert.notEqual(registryCheck, -1)
+    assert.notEqual(publishStep, -1)
+    assert.ok(registryCheck < publishStep)
+    assert.match(workflow, /id: npm_state/)
+    assert.match(workflow, /\['rev-parse', 'HEAD'\]/)
+    assert.match(workflow, /\['view', `\$\{name\}@\$\{version\}`, 'gitHead', '--json'\]/)
+    assert.match(workflow, /\\bE404\\b/)
+    assert.match(workflow, /GITHUB_OUTPUT/)
+    assert.match(workflow, /already exists at/)
+    assert.match(workflow, /npm view failed/)
+    assert.match(workflow, /if: steps\.npm_state\.outputs\.publish == 'true'/)
+  })
+
   it('accepts only a release tag matching the package version', async () => {
     const packageJson = JSON.parse(
       await readFile(join(repositoryRoot, 'package.json'), 'utf8')

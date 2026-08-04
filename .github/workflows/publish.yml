@@ -36,7 +36,70 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: node scripts/check-release-tag.mjs "$RELEASE_TAG"
+      - name: Check npm publication state
+        id: npm_state
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from 'node:fs'
+          import { execFileSync, spawnSync } from 'node:child_process'
+
+          const { name, version } = JSON.parse(readFileSync('package.json', 'utf8'))
+          const currentHead = execFileSync(
+            'git',
+            ['rev-parse', 'HEAD'],
+            { encoding: 'utf8' }
+          ).trim()
+          const result = spawnSync(
+            'npm',
+            ['view', `${name}@${version}`, 'gitHead', '--json'],
+            { encoding: 'utf8' }
+          )
+
+          if (result.error) throw result.error
+
+          let publish
+
+          if (result.status === 0) {
+            let publishedHead
+
+            try {
+              publishedHead = JSON.parse(result.stdout)
+            } catch {
+              throw new Error(`${name}@${version} exists but has no valid gitHead`)
+            }
+
+            if (
+              typeof publishedHead !== 'string' ||
+              !/^[0-9a-f]{40}$/i.test(publishedHead)
+            ) {
+              throw new Error(`${name}@${version} exists but has no valid gitHead`)
+            }
+
+            if (publishedHead.toLowerCase() !== currentHead.toLowerCase()) {
+              throw new Error(
+                `${name}@${version} already exists at ${publishedHead}, ` +
+                `but this release points to ${currentHead}`
+              )
+            }
+
+            publish = false
+            console.log(
+              `${name}@${version} is already published from ${currentHead}; skipping npm publish`
+            )
+          } else if (/\bE404\b/.test(result.stderr)) {
+            publish = true
+            console.log(`${name}@${version} is not published yet`)
+          } else {
+            throw new Error(`npm view failed:\n${result.stderr}`)
+          }
+
+          const githubOutput = process.env.GITHUB_OUTPUT
+          if (!githubOutput) throw new Error('GITHUB_OUTPUT is unavailable')
+          appendFileSync(githubOutput, `publish=${publish}\n`)
+          NODE
       - name: Publish package
+        if: steps.npm_state.outputs.publish == 'true'
         env:
           NPM_TAG: ${{ github.event.release.prerelease && 'next' || 'latest' }}
         run: npm publish --tag "$NPM_TAG"

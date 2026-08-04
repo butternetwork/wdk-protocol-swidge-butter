@@ -59,6 +59,17 @@ Create and publish a GitHub Release whose tag is exactly `v` followed by the
 match before contacting npm. A regular GitHub Release publishes under the npm
 `latest` tag; a GitHub prerelease publishes under `next`.
 
+Before publishing, the workflow also checks the exact package version in the npm
+registry. A missing version (`E404`) is published normally. An existing version
+is treated as a successful no-op only when its npm `gitHead` matches the Release
+tag commit; a missing, malformed, or different `gitHead`, or any other registry
+error, fails the workflow without publishing.
+
+This allows a GitHub Release to be backfilled after a manual npm publish. Push a
+tag at the commit reported by `npm view <package>@<version> gitHead`, merge the
+idempotent workflow into the default branch, and only then publish the Release.
+Do not move the tag to a later documentation or release-automation commit.
+
 Trusted Publishing requires a GitHub-hosted runner and the workflow's
 `id-token: write` permission. Public packages built from public repositories also
 receive npm provenance automatically. A private repository can still use Trusted
