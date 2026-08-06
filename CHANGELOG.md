@@ -12,6 +12,9 @@ and (once published) [Semantic Versioning](https://semver.org).
   mismatched or invalid `gitHead` metadata fail closed.
 
 ### Documentation
+- Add a security policy covering supported versions, private vulnerability
+  reporting, response and disclosure timelines, safe harbor, and reward terms;
+  publish it with the npm package and link it from the README.
 - Align the README with WDK provider documentation requirements: add a complete
   read-only discovery and quote example, make execution configuration explicit,
   enumerate every supported status mapping, and include the zero-fee placeholder
