@@ -11,6 +11,7 @@ interface PackageManifest {
   bugs?: { url?: string }
   homepage?: string
   publishConfig?: { access?: string, registry?: string }
+  files?: string[]
 }
 
 const repositoryRoot = process.cwd()
@@ -37,6 +38,14 @@ describe('npm release configuration', () => {
       access: 'public',
       registry: 'https://registry.npmjs.org'
     })
+  })
+
+  it('publishes the security policy with the npm package', async () => {
+    const packageJson = JSON.parse(
+      await readFile(join(repositoryRoot, 'package.json'), 'utf8')
+    ) as PackageManifest
+
+    assert.ok(packageJson.files?.includes('SECURITY.md'))
   })
 
   it('publishes GitHub Releases through OIDC without a long-lived npm token', async () => {

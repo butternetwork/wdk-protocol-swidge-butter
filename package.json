@@ -35,7 +35,8 @@
     ".env.e2e.example",
     "test/e2e/README.md",
     "README.md",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "SECURITY.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",

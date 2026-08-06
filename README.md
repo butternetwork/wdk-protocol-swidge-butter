@@ -614,6 +614,13 @@ vulnerable old Router, operators must remove it (or temporarily configure `[]`)
 and notify integrators; the static defaults cannot dynamically revoke a formerly
 trusted deployment.
 
+## Security
+
+Report suspected vulnerabilities privately. Do not include vulnerability details
+in a public GitHub issue or discussion. See the [security policy](./SECURITY.md)
+for supported versions, reporting channels, and the coordinated disclosure
+process.
+
 ## Development
 
 ```sh
