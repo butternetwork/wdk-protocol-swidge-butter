@@ -21,6 +21,8 @@ import { classifyReceiptStatus } from './status.js';
  * viem client is not structurally assignable (its `sendTransaction` parameter is
  * strongly typed), so wrap it here. The client must have a bound account; the
  * adapter surfaces that as the required `account.address`.
+ *
+ * @throws {ButterConfigurationError} If the viem wallet client has no bound account address.
  */
 export function toEvmWalletClient(client) {
     const address = client.account?.address;
@@ -67,11 +69,14 @@ export function toEvmPublicClient(client) {
             return await client.readContract(args);
         },
         async waitForTransactionReceipt(args) {
-            return client.waitForTransactionReceipt(args);
+            return client.waitForTransactionReceipt({
+                ...args,
+                hash: args.hash
+            });
         },
         async getTransactionReceipt(hash) {
             try {
-                return await client.getTransactionReceipt({ hash });
+                return await client.getTransactionReceipt({ hash: hash });
             }
             catch (error) {
                 if (error instanceof TransactionReceiptNotFoundError)
@@ -83,7 +88,7 @@ export function toEvmPublicClient(client) {
         },
         async getTransaction(hash) {
             try {
-                const tx = await client.getTransaction({ hash });
+                const tx = await client.getTransaction({ hash: hash });
                 const result = {};
                 if (tx.input != null)
                     result.input = tx.input;
@@ -324,8 +329,11 @@ async function sendEvmTransaction(context, tx) {
 function normalizeSend(result) {
     if (typeof result === 'string')
         return { hash: assertTransactionHash(result) };
-    const hash = assertTransactionHash(result.hash);
-    return result.fee != null ? { hash, fee: result.fee } : { hash };
+    const record = result != null && typeof result === 'object'
+        ? result
+        : undefined;
+    const hash = assertTransactionHash(record?.hash);
+    return record?.fee != null ? { hash, fee: record.fee } : { hash };
 }
 /**
  * Validates a transaction hash reported by a host-supplied sender.

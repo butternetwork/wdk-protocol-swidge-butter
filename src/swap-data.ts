@@ -177,33 +177,61 @@ export function validateSwapTransaction (
   value: unknown,
   context: SwapValidationContext
 ): ButterSwapTx {
-  if (!value || typeof value !== 'object') {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
     throw new ButterApiError('Butter /swap returned invalid transaction data', value)
   }
-  const tx = value as Partial<ButterSwapTx>
-  if (!tx.to || tx.value == null || tx.chainId == null) {
-    throw new ButterApiError('Butter /swap transaction is missing required fields', value)
+  const tx = value as Record<string, unknown>
+  const to = requiredSwapString(tx.to, 'to', value)
+  const transactionValue = requiredSwapString(tx.value, 'value', value)
+  const chainId = swapChainId(tx.chainId, value)
+  const data = optionalSwapString(tx.data, 'data', value)
+  const method = optionalSwapString(tx.method, 'method', value)
+  const memo = optionalSwapString(tx.memo, 'memo', value)
+  if (tx.args != null && !Array.isArray(tx.args)) {
+    throw new ButterApiError('Butter /swap transaction has invalid args', value)
   }
-  if (String(tx.chainId) !== context.sourceChainId) {
+  const args = tx.args as unknown[] | undefined
+
+  if (String(chainId) !== context.sourceChainId) {
     throw new ButterTransactionValidationError('Butter /swap transaction chain does not match source chain', value)
   }
 
-  if (context.requireRouterAllowlist) {
-    validateEvmRouterTransaction(
-      tx as Partial<ButterSwapTx> & Pick<ButterSwapTx, 'to' | 'value' | 'chainId'>,
-      context
-    )
+  const validated: ButterSwapTx = {
+    to,
+    value: transactionValue,
+    chainId,
+    ...(data !== undefined ? { data } : {}),
+    ...(method !== undefined ? { method } : {}),
+    ...(args !== undefined ? { args } : {}),
+    ...(memo !== undefined ? { memo } : {})
   }
 
-  return {
-    to: tx.to,
-    value: tx.value,
-    chainId: tx.chainId,
-    data: tx.data,
-    method: tx.method,
-    args: tx.args,
-    memo: tx.memo
+  if (context.requireRouterAllowlist) {
+    validateEvmRouterTransaction(validated, context)
   }
+
+  return validated
+}
+
+function requiredSwapString (field: unknown, name: string, transaction: unknown): string {
+  if (typeof field !== 'string' || field.trim() === '') {
+    throw new ButterApiError(`Butter /swap transaction has invalid ${name}`, transaction)
+  }
+  return field
+}
+
+function optionalSwapString (field: unknown, name: string, transaction: unknown): string | undefined {
+  if (field == null) return undefined
+  if (typeof field !== 'string') {
+    throw new ButterApiError(`Butter /swap transaction has invalid ${name}`, transaction)
+  }
+  return field
+}
+
+function swapChainId (field: unknown, transaction: unknown): string | number {
+  if (typeof field === 'string' && field.trim() !== '') return field
+  if (typeof field === 'number' && Number.isFinite(field)) return field
+  throw new ButterApiError('Butter /swap transaction has invalid chainId', transaction)
 }
 
 function validateEvmRouterTransaction (
@@ -513,7 +541,7 @@ function validateBridgeRefundAddress (nestedData: Hex, requested: string): void 
  *
  * Butter carries it as raw `bytes` because the destination chain decides the
  * encoding: an EVM address is the 20 raw bytes, while a non-EVM address
- * (base58 / bech32 / TON) is its UTF-8 text. Both readings are accepted; only a
+ * (base58 / bech32) is its UTF-8 text. Both readings are accepted; only a
  * value matching neither is a mismatch.
  */
 function refundAddressMatches (encoded: Hex, requested: string): boolean {

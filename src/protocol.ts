@@ -99,7 +99,11 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
   // the optional fromChain/toChain hints. Instance-scoped (like the route cache).
   private readonly operationKinds = new Map<string, { fromChain: string, toChain: string }>()
 
-  /** Creates a protocol instance bound to one source chain. */
+  /**
+   * Creates a protocol instance bound to one source chain.
+   *
+   * @throws {ButterConfigurationError} If required configuration is absent, malformed, insecure, or internally inconsistent.
+   */
   constructor (account: ButterAccount | undefined, config: ButterSwidgeProtocolConfig) {
     // Validate configuration before any base-class behavior can surface less
     // specific errors (statements before super() may not reference `this`).
@@ -178,6 +182,13 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
    *
    * The returned quote carries `routeHash`; pass it back as `options.routeHash`
    * to {@link swidge} to pin this exact route instead of auto-re-quoting.
+   *
+   * @throws {ButterUnsupportedError} If the request uses unsupported or invalid quote options.
+   * @throws {ButterExactOutUnsupportedError} If the request asks for an exact output amount.
+   * @throws {ButterConfigurationError} If required local token metadata or Solana referrer configuration is absent.
+   * @throws {ButterNoRouteError} If Butter reports no liquid route for the requested pair.
+   * @throws {ButterFeeValuationError} If reported fee metadata cannot be valued safely.
+   * @throws {ButterApiError} If a Butter request fails or its response is malformed or inconsistent.
    */
   async quoteSwidge (options: SwidgeOptions): Promise<ButterSwidgeQuote> {
     options = normalizeRecipient(options)
@@ -210,7 +221,21 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
     return destinationChainId === this.sourceChainId ? 'enforced' : 'quoted-only'
   }
 
-  /** Executes an exact-in operation after validating route fees and transaction intent. */
+  /**
+   * Executes an exact-in operation after validating route fees and transaction intent.
+   *
+   * @throws {ButterUnsupportedError} If the request or configured execution path is unsupported.
+   * @throws {ButterExactOutUnsupportedError} If the request asks for an exact output amount.
+   * @throws {ButterConfigurationError} If required execution, fee, Router, signer, or receipt configuration is absent or invalid.
+   * @throws {ButterReadOnlyAccountError} If execution lacks a send-capable WDK account or EVM wallet client.
+   * @throws {ButterActionRequiredError} If a cross-family recipient or another caller decision is required.
+   * @throws {ButterFeeLimitExceededError} If a reported fee exceeds a configured WDK fee cap.
+   * @throws {ButterFeeValuationError} If a configured fee cap cannot be evaluated safely.
+   * @throws {ButterTransactionValidationError} If `/swap` transaction data does not match the validated route and caller intent.
+   * @throws {ButterNoRouteError} If Butter reports no liquid route for the requested pair.
+   * @throws {ButterApiError} If a Butter request fails or its response is malformed or inconsistent.
+   * @throws {ButterPartialExecutionError} If execution fails after one or more identifiable transactions were broadcast.
+   */
   async swidge (options: ButterSwidgeOptions, config: SwidgeProtocolConfig = {}): Promise<SwidgeResult> {
     options = normalizeRecipient(options)
     this.assertQuoteOptions(options)
@@ -286,7 +311,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
     const transactions: SwidgeTransaction[] = []
     // One entry per execution unit; undefined means that unit's gas was not
     // measured. Only fold in a measured fee when EVERY unit reported one.
-    const feeParts: Array<bigint | undefined> = []
+    const feeParts: (bigint | undefined)[] = []
     const toChain = destinationChainId
     if (this.isBuiltInEvmExecution()) {
       // The built-in EVM path is exactly one Router transaction (enforced by
@@ -376,6 +401,10 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
    * Same-chain swaps produce no Butter cross-chain record, so when the caller
    * indicates a same-chain operation (`fromChain === toChain`) the status is
    * derived from the transaction receipt instead of the cross-chain APIs.
+   *
+   * @throws {ButterApiError} If the identifier is empty, cannot be attributed safely, or Butter returns malformed status data.
+   * @throws {ButterConfigurationError} If same-chain status lookup lacks a transaction or receipt client.
+   * @throws {Error} If the configured RPC client fails for a reason other than transaction not-found.
    */
   async getSwidgeStatus (id: string, options: ButterSwidgeStatusOptions = {}): Promise<SwidgeStatusResult> {
     if (!id.trim()) throw new ButterApiError('A non-empty swidge id is required')
@@ -506,6 +535,8 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
    *
    * Each entry carries an `execution` field (`native` | `adapter` |
    * `quote-only`) describing how this instance would execute on that chain.
+   *
+   * @throws {ButterApiError} If Butter discovery fails or returns malformed chain collections.
    */
   async getSupportedChains (): Promise<ButterSupportedChain[]> {
     return this.discovery.getSupportedChains()
@@ -518,6 +549,8 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
    * omitted here by swapping on the source and destination chains. Chain selection
    * uses `fromChain`, then `toChain`, then the instance's source chain. Route-scoped
    * `fromToken` filtering is unavailable from Butter Router's per-chain listing.
+   *
+   * @throws {ButterApiError} If Butter discovery fails or returns malformed or conflicting token metadata.
    */
   async getSupportedTokens (options: SwidgeSupportedTokensOptions = {}): Promise<SwidgeSupportedToken[]> {
     const chainId = String(options.fromChain ?? options.toChain ?? this.sourceChainId)
@@ -608,8 +641,12 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
  * runtime rule as the built-in EVM path — an adapter is host-supplied too, so
  * the declared `string` is not a runtime guarantee.
  */
-function hashOf (result: string | { hash?: string }): string {
-  return assertTransactionHash(typeof result === 'string' ? result : result.hash)
+function hashOf (result: unknown): string {
+  if (typeof result === 'string') return assertTransactionHash(result)
+  const record = result != null && typeof result === 'object'
+    ? result as { hash?: unknown }
+    : undefined
+  return assertTransactionHash(record?.hash)
 }
 
 /**
@@ -640,8 +677,8 @@ function isAdapterType (value: unknown): value is SwidgeTransaction['type'] {
  * transaction defaults to `source`. Throws so nothing is sent on any violation.
  */
 function resolveAdapterTypes (
-  adapted: Array<{ transaction: unknown, type: SwidgeTransaction['type'] | undefined }>
-): Array<{ transaction: unknown, type: SwidgeTransaction['type'] }> {
+  adapted: { transaction: unknown, type: SwidgeTransaction['type'] | undefined }[]
+): { transaction: unknown, type: SwidgeTransaction['type'] }[] {
   for (const entry of adapted) {
     if (entry.type != null && !isAdapterType(entry.type)) {
       throw new ButterUnsupportedError(`Adapter returned an unknown transaction type: ${String(entry.type)}`)
@@ -661,11 +698,14 @@ function resolveAdapterTypes (
 }
 
 /** Extracts a gas fee reported by a transaction sender, rejecting anything but a non-negative bigint. */
-function feeOf (result: string | { hash?: string, fee?: bigint }): bigint | undefined {
+function feeOf (result: unknown): bigint | undefined {
   if (typeof result === 'string') return undefined
+  const record = result != null && typeof result === 'object'
+    ? result as { fee?: unknown }
+    : undefined
   // Same non-negative-bigint rule as the built-in EVM path; an adapter is
   // host-supplied too, so the declared `bigint` is not a runtime guarantee.
-  return assertGasFee(result.fee)
+  return assertGasFee(record?.fee)
 }
 
 /**

@@ -12,7 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 import { ButterApiError, ButterUnsupportedError } from './errors.js';
-/** Converts a non-negative decimal token amount into integer base units. */
+/**
+ * Converts a non-negative decimal token amount into integer base units.
+ *
+ * @throws {ButterApiError} If decimals are invalid or the amount is negative, unsafe, malformed, or loses precision under `reject` rounding.
+ */
 export function parseTokenAmount(amount, decimals = 18, options = {}) {
     assertDecimals(decimals);
     if (amount == null)
@@ -45,7 +49,11 @@ export function parseRequiredTokenAmount(amount, label, decimals = 18, options =
         throw new ButterApiError(`Butter route is missing ${label}`);
     return parseTokenAmount(amount, decimals, options);
 }
-/** Formats integer base units as a decimal token amount without floating point conversion. */
+/**
+ * Formats integer base units as a decimal token amount without floating point conversion.
+ *
+ * @throws {ButterApiError} If decimals are invalid or the amount is negative, unsafe, or not an integer representation.
+ */
 export function formatTokenAmount(amount, decimals = 18) {
     assertDecimals(decimals);
     if (typeof amount === 'number' && (!Number.isSafeInteger(amount) || amount < 0)) {

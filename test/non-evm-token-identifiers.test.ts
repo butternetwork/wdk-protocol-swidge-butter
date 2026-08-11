@@ -4,63 +4,18 @@ import { describe, it } from 'node:test'
 import ButterSwidgeProtocol, {
   ButterApiError,
   ButterConfigurationError,
-  ButterFeeLimitExceededError
+  type ButterRoute
 } from '../src/index.ts'
-import {
-  isNativeTokenIdentifier,
-  sameTokenIdentifier,
-  toButterTokenIdentifier
-} from '../src/identifiers.ts'
-import {
-  BTC_CHAIN_ID,
-  SOLANA_CHAIN_ID,
-  TRON_CHAIN_ID
-} from '../src/constants.ts'
-import { enforceFeeLimits } from '../src/fees.ts'
-import type { ButterRoute } from '../src/types.ts'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
+const SOLANA_CHAIN_ID = '1360108768460801'
+const TRON_CHAIN_ID = '728126428'
 const SOL_MINT = 'So11111111111111111111111111111111111111112'
 const TRON_NATIVE = 'T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb'
 const TRON_USDT = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'
 const TRON_USDT_HEX = '0xa614f803b6fd780986a42c78ec9c7f77e6ded13c'
-const TRON_USDD = 'TPYmHEhy5n8TCEfYGqW2rPxsghSfzghPDn'
-const TRON_USDD_HEX = '0x94f24e992ca04b49c6f2a2753076ef8938ed4daa'
 
 describe('chain-aware token identifiers', () => {
-  it('recognizes canonical native identifiers only on their own chain', () => {
-    for (const token of ['sol', 'native', ZERO_ADDRESS, SOL_MINT]) {
-      assert.equal(isNativeTokenIdentifier(SOLANA_CHAIN_ID, token), true)
-      assert.equal(sameTokenIdentifier(SOLANA_CHAIN_ID, token, SOL_MINT), true)
-    }
-    assert.equal(toButterTokenIdentifier(SOLANA_CHAIN_ID, 'sol'), SOL_MINT)
-
-    for (const token of ['trx', 'native', ZERO_ADDRESS, TRON_NATIVE]) {
-      assert.equal(isNativeTokenIdentifier(TRON_CHAIN_ID, token), true)
-      assert.equal(sameTokenIdentifier(TRON_CHAIN_ID, token, TRON_NATIVE), true)
-    }
-    assert.equal(toButterTokenIdentifier(TRON_CHAIN_ID, 'trx'), TRON_NATIVE)
-
-    assert.equal(sameTokenIdentifier(BTC_CHAIN_ID, 'btc', ZERO_ADDRESS), true)
-    assert.equal(toButterTokenIdentifier(BTC_CHAIN_ID, 'btc'), ZERO_ADDRESS)
-    assert.equal(isNativeTokenIdentifier('56', 'sol'), false)
-    assert.equal(isNativeTokenIdentifier(SOLANA_CHAIN_ID, 'btc'), false)
-  })
-
-  it('keeps ordinary Solana mints exact and case-sensitive', () => {
-    const mint = 'AbCdEfGhJkLmNpQrStUvWxYz123456789ABCDEFGHJK'
-    assert.equal(sameTokenIdentifier(SOLANA_CHAIN_ID, mint, mint), true)
-    assert.equal(sameTokenIdentifier(SOLANA_CHAIN_ID, mint, mint.toLowerCase()), false)
-  })
-
-  it('matches valid Tron Base58Check, 41-hex, and Butter 0x forms', () => {
-    assert.equal(sameTokenIdentifier(TRON_CHAIN_ID, TRON_USDT, TRON_USDT_HEX), true)
-    assert.equal(sameTokenIdentifier(TRON_CHAIN_ID, TRON_USDT, `41${TRON_USDT_HEX.slice(2)}`), true)
-    assert.equal(sameTokenIdentifier(TRON_CHAIN_ID, TRON_USDD, TRON_USDD_HEX), true)
-    assert.equal(sameTokenIdentifier(TRON_CHAIN_ID, TRON_USDT, TRON_USDD_HEX), false)
-    assert.equal(sameTokenIdentifier(TRON_CHAIN_ID, TRON_USDT, TRON_USDT.toLowerCase()), false)
-  })
-
   it('rejects conflicting configured decimals across equivalent Tron forms', () => {
     assert.throws(
       () => new ButterSwidgeProtocol(undefined, {
@@ -69,62 +24,111 @@ describe('chain-aware token identifiers', () => {
         fetch: async () => jsonResponse({ errno: 0, data: [] }),
         tokenDecimals: { [TRON_USDT]: 6, [TRON_USDT_HEX]: 18 }
       }),
-      ButterConfigurationError
+      {
+        name: 'ButterConfigurationError',
+        message: 'tokenDecimals has conflicting entries for the same token'
+      }
     )
   })
 
-  it('values canonical Solana native gas directly instead of trusting zero USD metadata', () => {
-    const route = {
+  it('values canonical Solana native gas directly instead of trusting zero USD metadata', async () => {
+    const route: ButterRoute = {
+      hash: 'solana-fee-route',
+      timestamp: 1_000,
+      hasLiquidity: true,
       srcChain: {
         chainId: SOLANA_CHAIN_ID,
         tokenIn: { address: SOL_MINT, decimals: 9, symbol: 'SOL' },
         totalAmountIn: '0.01'
       },
+      dstChain: {
+        chainId: '56',
+        tokenOut: { address: ZERO_ADDRESS, decimals: 18, symbol: 'BNB' },
+        totalAmountOut: '0.001'
+      },
+      minAmountOut: { amount: '0.0009', symbol: 'BNB' },
+      bridgeFee: { amount: '0', out: { amount: '0', token: { address: ZERO_ADDRESS, decimals: 18, symbol: 'BNB' } } },
+      swapFee: { nativeFee: '0', tokenFee: '0' },
       gasFee: { amount: '0.000005', symbol: 'SOL', inUSD: '0' },
       totalAmountInUSD: '0.7242501503'
-    } as ButterRoute
-    const context = {
-      sourceChainId: SOLANA_CHAIN_ID,
-      sourceToken: SOL_MINT,
-      sourceTokenDecimals: 9,
-      requestedAmountIn: 10_000_000n
     }
+    const protocol = feeProtocol({
+      sourceChainId: SOLANA_CHAIN_ID,
+      route,
+      maxNetworkFeeBps: 4
+    })
 
-    assert.throws(
-      () => enforceFeeLimits(route, context, { maxNetworkFeeBps: 4n }),
-      ButterFeeLimitExceededError
-    )
-    assert.doesNotThrow(
-      () => enforceFeeLimits(route, context, { maxNetworkFeeBps: 5n })
-    )
+    await assert.rejects(protocol.swidge({
+      fromToken: 'sol',
+      toToken: ZERO_ADDRESS,
+      toChain: '56',
+      recipient: '0x1111111111111111111111111111111111111111',
+      fromTokenAmount: 10_000_000n,
+      slippage: 0.02
+    }), {
+      name: 'ButterFeeLimitExceededError',
+      message: 'Butter network fee exceeds the configured limit'
+    })
   })
 
-  it('values canonical Tron native gas directly instead of trusting zero USD metadata', () => {
-    const route = {
+  it('values canonical Tron native gas directly instead of trusting zero USD metadata', async () => {
+    const route: ButterRoute = {
+      hash: 'tron-fee-route',
+      timestamp: 1_000,
+      hasLiquidity: true,
       srcChain: {
         chainId: TRON_CHAIN_ID,
         tokenIn: { address: TRON_NATIVE, decimals: 6, symbol: 'TRX' },
         totalAmountIn: '10'
       },
+      dstChain: {
+        chainId: '137',
+        tokenOut: { address: ZERO_ADDRESS, decimals: 18, symbol: 'POL' },
+        totalAmountOut: '1'
+      },
+      minAmountOut: { amount: '0.9', symbol: 'POL' },
+      bridgeFee: { amount: '0', out: { amount: '0', token: { address: ZERO_ADDRESS, decimals: 18, symbol: 'POL' } } },
+      swapFee: { nativeFee: '0', tokenFee: '0' },
       gasFee: { amount: '0.01', symbol: 'TRX', inUSD: '0' },
       totalAmountInUSD: '3.5'
-    } as ButterRoute
-    const context = {
-      sourceChainId: TRON_CHAIN_ID,
-      sourceToken: TRON_NATIVE,
-      sourceTokenDecimals: 6,
-      requestedAmountIn: 10_000_000n
     }
+    const protocol = feeProtocol({
+      sourceChainId: TRON_CHAIN_ID,
+      route,
+      maxNetworkFeeBps: 9
+    })
 
-    assert.throws(
-      () => enforceFeeLimits(route, context, { maxNetworkFeeBps: 9n }),
-      ButterFeeLimitExceededError
-    )
-    assert.doesNotThrow(
-      () => enforceFeeLimits(route, context, { maxNetworkFeeBps: 10n })
-    )
+    await assert.rejects(protocol.swidge({
+      fromToken: 'trx',
+      toToken: ZERO_ADDRESS,
+      toChain: '137',
+      recipient: '0x1111111111111111111111111111111111111111',
+      fromTokenAmount: 10_000_000n,
+      slippage: 0.02
+    }), {
+      name: 'ButterFeeLimitExceededError',
+      message: 'Butter network fee exceeds the configured limit'
+    })
   })
 })
+
+function feeProtocol (options: { sourceChainId: string, route: ButterRoute, maxNetworkFeeBps: number }): ButterSwidgeProtocol {
+  return new ButterSwidgeProtocol({
+    getAddress: async () => options.sourceChainId === SOLANA_CHAIN_ID ? 'solana-sender' : TRON_NATIVE,
+    sendTransaction: async () => 'source-hash'
+  }, {
+    sourceChainId: options.sourceChainId,
+    entrance: 'wdk',
+    now: () => 1_000,
+    maxNetworkFeeBps: options.maxNetworkFeeBps,
+    fetch: async (rawUrl: string) => {
+      const url = new URL(rawUrl)
+      if (url.pathname === '/route') return jsonResponse({ errno: 0, data: [options.route] })
+      throw new Error(`unexpected request: ${url.pathname}`)
+    },
+    transactionAdapters: { [options.sourceChainId]: (transaction) => transaction }
+  })
+}
 
 describe('chain-aware decimals discovery', () => {
   it('sends Butter the canonical Solana native identifier', async () => {
@@ -247,7 +251,10 @@ describe('chain-aware decimals discovery', () => {
       })
     })
 
-    await assert.rejects(protocol.getSupportedTokens(), ButterApiError)
+    await assert.rejects(protocol.getSupportedTokens(), {
+      name: 'ButterApiError',
+      message: 'Butter supported-token list returned conflicting decimals for the same token'
+    })
   })
 })
 

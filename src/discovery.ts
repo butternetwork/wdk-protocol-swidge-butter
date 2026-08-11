@@ -124,7 +124,7 @@ export class DiscoveryService {
       }
       throw error
     }
-    const matches: Array<{ decimals: number, entry: Record<string, unknown> }> = []
+    const matches: { decimals: number, entry: Record<string, unknown> }[] = []
     for (const entry of findTokenRecords(data)) {
       const candidateChain = scalarChainId(entry.chainId)
       const candidateAddress = tokenIdentifier(entry)
@@ -236,7 +236,7 @@ export class DiscoveryService {
 
 }
 
-function findTokenRecords (data: unknown): Array<Record<string, unknown>> {
+function findTokenRecords (data: unknown): Record<string, unknown>[] {
   if (data == null) return []
   if (Array.isArray(data)) {
     return data.filter((entry): entry is Record<string, unknown> => isRecord(entry))
@@ -254,12 +254,12 @@ function requiredRecord (value: unknown, label: string): Record<string, unknown>
   return value
 }
 
-function recordArray (value: unknown, label: string): Array<Record<string, unknown>> {
+function recordArray (value: unknown, label: string): Record<string, unknown>[] {
   if (!Array.isArray(value)) throw new ButterApiError(`${label} returned a non-array payload`, value)
   return value.filter((entry): entry is Record<string, unknown> => isRecord(entry))
 }
 
-function optionalRecordArray (value: unknown, label: string): Array<Record<string, unknown>> {
+function optionalRecordArray (value: unknown, label: string): Record<string, unknown>[] {
   return value == null ? [] : recordArray(value, label)
 }
 
@@ -298,7 +298,7 @@ function isStrictSlippageChain (chain: ButterChainInfo): boolean {
   const values = [chain.chainType, chain.type, chain.name, chain.key]
   return values.some((value) => {
     const normalized = String(value ?? '').toLowerCase()
-    return normalized === 'btc' || normalized === 'ton' || normalized.includes('bitcoin') || normalized.includes('toncoin')
+    return normalized === 'btc' || normalized.includes('bitcoin')
   })
 }
 

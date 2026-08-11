@@ -24,6 +24,8 @@ import type { ButterAccount, ButterRoute, ButterSwapTx, ButterSwidgeProtocolConf
  * viem client is not structurally assignable (its `sendTransaction` parameter is
  * strongly typed), so wrap it here. The client must have a bound account; the
  * adapter surfaces that as the required `account.address`.
+ *
+ * @throws {ButterConfigurationError} If the viem wallet client has no bound account address.
  */
 export function toEvmWalletClient (client: ViemWalletClientLike): EvmWalletClient {
   const address = client.account?.address
@@ -33,7 +35,7 @@ export function toEvmWalletClient (client: ViemWalletClientLike): EvmWalletClien
   return {
     account: { address },
     async sendTransaction (args) {
-      return client.sendTransaction(args)
+      return client.sendTransaction(args as Parameters<ViemWalletClientLike['sendTransaction']>[0])
     }
   }
 }
@@ -68,14 +70,17 @@ function isViemErrorNamed (error: unknown, name: string): boolean {
 export function toEvmPublicClient (client: ViemPublicClientLike): EvmPublicClient {
   return {
     async readContract (args) {
-      return await client.readContract(args) as bigint
+      return await client.readContract(args as Parameters<ViemPublicClientLike['readContract']>[0]) as bigint
     },
     async waitForTransactionReceipt (args) {
-      return client.waitForTransactionReceipt(args)
+      return client.waitForTransactionReceipt({
+        ...args,
+        hash: args.hash as `0x${string}`
+      })
     },
     async getTransactionReceipt (hash) {
       try {
-        return await client.getTransactionReceipt({ hash })
+        return await client.getTransactionReceipt({ hash: hash as `0x${string}` })
       } catch (error) {
         if (error instanceof TransactionReceiptNotFoundError) return null
         if (isViemErrorNamed(error, 'TransactionReceiptNotFoundError')) return null
@@ -84,7 +89,7 @@ export function toEvmPublicClient (client: ViemPublicClientLike): EvmPublicClien
     },
     async getTransaction (hash) {
       try {
-        const tx = await client.getTransaction({ hash })
+        const tx = await client.getTransaction({ hash: hash as `0x${string}` })
         const result: { input?: string, to?: string } = {}
         if (tx.input != null) result.input = tx.input
         if (tx.to != null) result.to = tx.to
@@ -135,14 +140,14 @@ export async function executeEvmSwap (context: {
    */
   approvalAmount: bigint
 }): Promise<{
-  transactions: Array<{ hash: string, chain: string | number, type: 'approval' | 'source' }>
+  transactions: { hash: string, chain: string | number, type: 'approval' | 'source' }[]
   gasFee: bigint | undefined
 }> {
-  const transactions: Array<{ hash: string, chain: string | number, type: 'approval' | 'source' }> = []
+  const transactions: { hash: string, chain: string | number, type: 'approval' | 'source' }[] = []
   // One entry per submitted transaction; undefined means that send reported no
   // fee. The measured gas fee is only usable when EVERY send reported one — a
   // partial sum would understate the true cost.
-  const feeParts: Array<bigint | undefined> = []
+  const feeParts: (bigint | undefined)[] = []
   const record: RecordSend = (sent, type) => {
     // Push before validating the fee: the send returned, so the transaction is
     // already on the wire and must appear in any partial-execution report even
@@ -367,10 +372,13 @@ async function sendEvmTransaction (context: {
  * broadcast the transaction, but it cannot be identified, so there is nothing to
  * report and this throws.
  */
-function normalizeSend (result: string | { hash?: string, fee?: bigint }): { hash: string, fee?: bigint } {
+function normalizeSend (result: unknown): { hash: string, fee?: bigint } {
   if (typeof result === 'string') return { hash: assertTransactionHash(result) }
-  const hash = assertTransactionHash(result.hash)
-  return result.fee != null ? { hash, fee: result.fee } : { hash }
+  const record = result != null && typeof result === 'object'
+    ? result as { hash?: unknown, fee?: unknown }
+    : undefined
+  const hash = assertTransactionHash(record?.hash)
+  return record?.fee != null ? { hash, fee: record.fee as bigint } : { hash }
 }
 
 /**

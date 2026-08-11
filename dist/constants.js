@@ -59,10 +59,6 @@ export const STRICT_CHAIN_MIN_SLIPPAGE_BPS = 300;
 export const BTC_CHAIN_ID = '1360095883558913';
 export const SOLANA_CHAIN_ID = '1360108768460801';
 export const TRON_CHAIN_ID = '728126428';
-// Butter's SDK chain ID for TON. Not currently advertised by
-// /supportedChainInfo; kept so the 300 bps strict-slippage floor applies
-// without requiring a prior getSupportedChains() call if TON routing returns.
-export const TON_CHAIN_ID = '1360104473493505';
 /**
  * Address family per non-EVM chain, used to decide whether the source sender is
  * a usable default recipient on the destination chain.
@@ -81,8 +77,7 @@ export const TON_CHAIN_ID = '1360104473493505';
 export const NON_EVM_CHAIN_FAMILIES = new Map([
     [BTC_CHAIN_ID, 'utxo'],
     [SOLANA_CHAIN_ID, 'svm'],
-    [TRON_CHAIN_ID, 'tvm'],
-    [TON_CHAIN_ID, 'ton']
+    [TRON_CHAIN_ID, 'tvm']
 ]);
 /**
  * EVM chains this package recognizes by id, for the address-family check only.
@@ -133,7 +128,6 @@ export const NATIVE_TOKEN_ADDRESSES = new Set([
     '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
     'native',
     'btc',
-    'ton',
     'trx',
     'sol'
 ]);
@@ -151,7 +145,6 @@ export const NATIVE_TOKEN_ADDRESSES = new Set([
 export const SYMBOLIC_NATIVE_TOKEN_IDS = new Set([
     'native',
     'btc',
-    'ton',
     'trx',
     'sol'
 ]);

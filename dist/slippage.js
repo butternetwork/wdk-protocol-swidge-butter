@@ -11,9 +11,14 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-import { BTC_CHAIN_ID, CROSS_CHAIN_MIN_SLIPPAGE_BPS, DEFAULT_SLIPPAGE_BPS, STRICT_CHAIN_MIN_SLIPPAGE_BPS, TON_CHAIN_ID } from './constants.js';
+import { BTC_CHAIN_ID, CROSS_CHAIN_MIN_SLIPPAGE_BPS, DEFAULT_SLIPPAGE_BPS, STRICT_CHAIN_MIN_SLIPPAGE_BPS } from './constants.js';
 import { ButterActionRequiredError, ButterUnsupportedError } from './errors.js';
-/** Converts WDK decimal slippage to Butter basis points and enforces minimums. */
+/**
+ * Converts WDK decimal slippage to Butter basis points and enforces minimums.
+ *
+ * @throws {ButterUnsupportedError} If slippage is outside the supported range or cannot be represented in whole basis points.
+ * @throws {ButterActionRequiredError} If slippage is below the route's required minimum.
+ */
 export function toButterSlippage(slippage, options = {}) {
     const minimum = minimumSlippageBps(options);
     const explicitBps = slippage == null ? Math.max(DEFAULT_SLIPPAGE_BPS, minimum) : decimalToBps(slippage);
@@ -72,6 +77,6 @@ function normalizeId(id) {
     return id == null ? undefined : String(id).toLowerCase();
 }
 function isStrictChain(id) {
-    return id === BTC_CHAIN_ID || id === TON_CHAIN_ID || id === 'btc' || id === 'ton';
+    return id === BTC_CHAIN_ID || id === 'btc';
 }
 //# sourceMappingURL=slippage.js.map

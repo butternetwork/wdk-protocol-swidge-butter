@@ -27,7 +27,11 @@ export interface ParseTokenAmountOptions {
   rounding?: TokenAmountRounding
 }
 
-/** Converts a non-negative decimal token amount into integer base units. */
+/**
+ * Converts a non-negative decimal token amount into integer base units.
+ *
+ * @throws {ButterApiError} If decimals are invalid or the amount is negative, unsafe, malformed, or loses precision under `reject` rounding.
+ */
 export function parseTokenAmount (
   amount: string | number | bigint | undefined | null,
   decimals = 18,
@@ -68,7 +72,11 @@ export function parseRequiredTokenAmount (
   return parseTokenAmount(amount, decimals, options)
 }
 
-/** Formats integer base units as a decimal token amount without floating point conversion. */
+/**
+ * Formats integer base units as a decimal token amount without floating point conversion.
+ *
+ * @throws {ButterApiError} If decimals are invalid or the amount is negative, unsafe, or not an integer representation.
+ */
 export function formatTokenAmount (amount: bigint | number | string, decimals = 18): string {
   assertDecimals(decimals)
   if (typeof amount === 'number' && (!Number.isSafeInteger(amount) || amount < 0)) {

@@ -4,6 +4,8 @@ import type { ButterAccount, ButterRoute, ButterSwapTx, ButterSwidgeProtocolConf
  * viem client is not structurally assignable (its `sendTransaction` parameter is
  * strongly typed), so wrap it here. The client must have a bound account; the
  * adapter surfaces that as the required `account.address`.
+ *
+ * @throws {ButterConfigurationError} If the viem wallet client has no bound account address.
  */
 export declare function toEvmWalletClient(client: ViemWalletClientLike): EvmWalletClient;
 /**
@@ -46,11 +48,11 @@ export declare function executeEvmSwap(context: {
      */
     approvalAmount: bigint;
 }): Promise<{
-    transactions: Array<{
+    transactions: {
         hash: string;
         chain: string | number;
         type: 'approval' | 'source';
-    }>;
+    }[];
     gasFee: bigint | undefined;
 }>;
 /**

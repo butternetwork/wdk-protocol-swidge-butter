@@ -7,6 +7,9 @@ and (once published) [Semantic Versioning](https://semver.org).
 ## [Unreleased]
 
 ### Fixed
+- Remove built-in TON chain metadata, native aliases, address-family handling,
+  and strict-slippage behavior. Unrecognized chains continue through the generic
+  unknown-chain path instead of receiving chain-specific treatment.
 - Make GitHub Release publishing idempotent: an npm version already published
   from the same tag commit is a successful no-op, while registry errors and
   mismatched or invalid `gitHead` metadata fail closed.

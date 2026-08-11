@@ -9,11 +9,19 @@ export type TokenAmountRounding = 'reject' | 'floor' | 'ceil';
 export interface ParseTokenAmountOptions {
     rounding?: TokenAmountRounding;
 }
-/** Converts a non-negative decimal token amount into integer base units. */
+/**
+ * Converts a non-negative decimal token amount into integer base units.
+ *
+ * @throws {ButterApiError} If decimals are invalid or the amount is negative, unsafe, malformed, or loses precision under `reject` rounding.
+ */
 export declare function parseTokenAmount(amount: string | number | bigint | undefined | null, decimals?: number, options?: ParseTokenAmountOptions): bigint;
 /** Parses a token amount from Butter while rejecting an omitted required field. */
 export declare function parseRequiredTokenAmount(amount: string | number | bigint | undefined | null, label: string, decimals?: number, options?: ParseTokenAmountOptions): bigint;
-/** Formats integer base units as a decimal token amount without floating point conversion. */
+/**
+ * Formats integer base units as a decimal token amount without floating point conversion.
+ *
+ * @throws {ButterApiError} If decimals are invalid or the amount is negative, unsafe, or not an integer representation.
+ */
 export declare function formatTokenAmount(amount: bigint | number | string, decimals?: number): string;
 /**
  * Parses a decimal or hexadecimal integer amount returned by Butter.

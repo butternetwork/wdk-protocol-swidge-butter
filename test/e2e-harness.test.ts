@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { ButterPartialExecutionError } from '../src/errors.js'
+import { ButterPartialExecutionError } from '../src/index.js'
 import {
   FUNDED_EXECUTION_CONFIRMATION,
   GuardedTransactionSender,

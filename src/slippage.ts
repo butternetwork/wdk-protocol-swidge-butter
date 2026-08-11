@@ -16,8 +16,7 @@ import {
   BTC_CHAIN_ID,
   CROSS_CHAIN_MIN_SLIPPAGE_BPS,
   DEFAULT_SLIPPAGE_BPS,
-  STRICT_CHAIN_MIN_SLIPPAGE_BPS,
-  TON_CHAIN_ID
+  STRICT_CHAIN_MIN_SLIPPAGE_BPS
 } from './constants.js'
 import { ButterActionRequiredError, ButterUnsupportedError } from './errors.js'
 
@@ -29,7 +28,12 @@ export interface SlippageOptions {
   strictChainMinimum?: number
 }
 
-/** Converts WDK decimal slippage to Butter basis points and enforces minimums. */
+/**
+ * Converts WDK decimal slippage to Butter basis points and enforces minimums.
+ *
+ * @throws {ButterUnsupportedError} If slippage is outside the supported range or cannot be represented in whole basis points.
+ * @throws {ButterActionRequiredError} If slippage is below the route's required minimum.
+ */
 export function toButterSlippage (slippage: number | undefined, options: SlippageOptions = {}): number {
   const minimum = minimumSlippageBps(options)
   const explicitBps = slippage == null ? Math.max(DEFAULT_SLIPPAGE_BPS, minimum) : decimalToBps(slippage)
@@ -92,5 +96,5 @@ function normalizeId (id: string | number | undefined): string | undefined {
 }
 
 function isStrictChain (id: string | undefined): boolean {
-  return id === BTC_CHAIN_ID || id === TON_CHAIN_ID || id === 'btc' || id === 'ton'
+  return id === BTC_CHAIN_ID || id === 'btc'
 }

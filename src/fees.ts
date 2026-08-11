@@ -408,7 +408,7 @@ interface BridgeFeeComponent {
  */
 function bridgeFeeComponents (route: ButterRoute): BridgeFeeComponent[] {
   const fee = route.bridgeFee
-  const parts: Array<{ part: ButterFeePart | undefined, role: BridgeFeeRole }> = [
+  const parts: { part: ButterFeePart | undefined, role: BridgeFeeRole }[] = [
     { part: fee?.in, role: 'inbound' },
     { part: fee?.out, role: 'outbound' },
     { part: fee?.affiliate, role: 'affiliate' }
@@ -515,12 +515,12 @@ function bridgeFeeComponentRatio (component: BridgeFeeComponent, route: ButterRo
     })
   }
   const numerator = parseTokenAmount(component.amount, decimals)
-  const inboundFirst: Array<{ chainId: string, token: ButterRouteToken | undefined, amount: string | undefined }> = [
+  const inboundFirst: { chainId: string, token: ButterRouteToken | undefined, amount: string | undefined }[] = [
     { chainId: String(route.bridgeChain?.chainId ?? ''), token: route.bridgeChain?.tokenIn, amount: route.bridgeChain?.totalAmountIn },
     { chainId: String(route.srcChain?.chainId ?? context.sourceChainId), token: route.srcChain?.tokenOut, amount: route.srcChain?.totalAmountOut },
     { chainId: String(route.srcChain?.chainId ?? context.sourceChainId), token: route.srcChain?.tokenIn, amount: route.srcChain?.totalAmountIn }
   ]
-  const outboundFirst: Array<{ chainId: string, token: ButterRouteToken | undefined, amount: string | undefined }> = [
+  const outboundFirst: { chainId: string, token: ButterRouteToken | undefined, amount: string | undefined }[] = [
     { chainId: String(route.bridgeChain?.chainId ?? ''), token: route.bridgeChain?.tokenOut, amount: route.bridgeChain?.totalAmountOut },
     { chainId: String(route.dstChain?.chainId ?? ''), token: route.dstChain?.tokenOut, amount: route.dstChain?.totalAmountOut },
     { chainId: String(route.srcChain?.chainId ?? context.sourceChainId), token: route.srcChain?.tokenOut, amount: route.srcChain?.totalAmountOut }
