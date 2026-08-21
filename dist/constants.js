@@ -119,6 +119,10 @@ export const KNOWN_EVM_CHAIN_IDS = new Set([
  * `'unknown'` is deliberately not `'evm'`: see {@link NON_EVM_CHAIN_FAMILIES}.
  * Callers must treat it as "cannot default the recipient", never as a family that
  * happens to match the source.
+ *
+ * @param {string} chainId - The chain identifier used for normalization or lookup.
+ * @param {ReadonlySet<string>} [extraEvmChainIds] - Additional chain identifiers the caller has confirmed as EVM.
+ * @returns {string} The known address family, or `unknown` when the chain is unclassified.
  */
 export function addressFamilyForChain(chainId, extraEvmChainIds) {
     const nonEvm = NON_EVM_CHAIN_FAMILIES.get(chainId);

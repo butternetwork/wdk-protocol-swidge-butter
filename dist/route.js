@@ -23,13 +23,28 @@ export class RouteManager {
     // Secondary index (route hash -> cache key) so a caller can pin an approved
     // quote by its Butter route hash. Kept in sync with `cache` on set/evict.
     hashIndex = new Map();
+    /**
+     * Creates a route manager instance.
+     *
+     * @param {RouteRequestContext} context - The validated context required by the operation.
+     */
     constructor(context) {
         this.context = context;
     }
+    /** @private */
     executionMargin() {
         return this.context.executionMarginSeconds ?? ROUTE_EXECUTION_MARGIN_SECONDS;
     }
-    async getRoute(options, { forExecution = false, senderFallback } = {}) {
+    /**
+     * Returns a fresh or reusable Butter route matching the caller options.
+     *
+     * @param {SwidgeOptions} options - The caller-supplied operation options.
+     * @param {RouteLookupOptions} [lookupOptions] - The cache and sender options used for route lookup (default: empty object).
+     * @returns {Promise<CachedRoute>} The resolved result.
+     * @throws {ButterNoRouteError} If Butter provides no liquid route for the request.
+     */
+    async getRoute(options, lookupOptions = {}) {
+        const { forExecution = false, senderFallback } = lookupOptions;
         const { request, sourceDecimals } = await this.buildRouteRequest(options, senderFallback);
         const key = stableRouteKey(request, options);
         const cached = this.cache.get(key);
@@ -87,6 +102,12 @@ export class RouteManager {
      * A pin is the caller's approved price, so a route inside the execution margin
      * cannot be silently re-fetched the way {@link getRoute} does — that would
      * execute a price the caller never saw. It is rejected instead.
+     *
+     * @param {string} hash - The transaction or route hash to process.
+     * @param {SwidgeOptions} options - The caller-supplied operation options.
+     * @param {string} [senderFallback] - The sender used when the route requires a receiver fallback.
+     * @returns {Promise<CachedRoute>} The pinned route removed from the cache for one execution attempt.
+     * @throws {ButterActionRequiredError} If caller action is required before the operation can continue.
      */
     async consumeRouteByHash(hash, options, senderFallback) {
         const { request } = await this.buildRouteRequest(options, senderFallback);
@@ -104,10 +125,11 @@ export class RouteManager {
         this.hashIndex.delete(hash);
         return entry;
     }
-    /**
+    /*
      * Bounds cache growth for long-lived quote-only instances: drops expired
      * entries, then evicts oldest (insertion-ordered) entries until under the cap.
      */
+    /** @private */
     evictStaleRoutes() {
         const now = this.context.now();
         for (const [key, entry] of this.cache) {
@@ -125,6 +147,7 @@ export class RouteManager {
                 this.cache.delete(oldestKey);
         }
     }
+    /** @private */
     evict(key, entry) {
         this.cache.delete(key);
         if (this.hashIndex.get(entry.route.hash) === key)
@@ -139,6 +162,13 @@ export class RouteManager {
      * units into Butter's decimal `amount`. They are returned rather than recomputed
      * so fee valuation can use exactly the same number instead of the route's own
      * `srcChain.tokenIn.decimals`, which is untrusted.
+     *
+     * @param {SwidgeOptions} options - The caller-supplied operation options.
+     * @param {string} [senderFallback] - The sender used when the route requires a receiver fallback.
+     * @returns {Promise<RouteRequestResult>} The normalized request and trusted source-token decimals.
+     * @throws {ButterActionRequiredError} If caller action is required before the operation can continue.
+     * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
+     * @throws {ButterExactOutUnsupportedError} If an exact-out operation is requested.
      */
     async buildRouteRequest(options, senderFallback) {
         const toChainId = normalizeId(options.toChain ?? this.context.sourceChainId);
@@ -194,6 +224,14 @@ export class RouteManager {
             }
         };
     }
+    /**
+     * Enforces min amount out.
+     *
+     * @param {SwidgeOptions} options - The caller-supplied operation options.
+     * @param {ButterRoute} route - The Butter route to inspect or map.
+     * @returns {void} Nothing; the function throws when validation fails.
+     * @throws {ButterActionRequiredError} If caller action is required before the operation can continue.
+     */
     enforceMinAmountOut(options, route) {
         if (options.minAmountOut == null)
             return;
@@ -210,6 +248,7 @@ export class RouteManager {
             });
         }
     }
+    /** @private */
     async decimalsFor(token) {
         // Native aliases and configured keys are chain-aware. Ordinary Base58 mints
         // remain exact; only validated equivalent formats share a key.
@@ -225,6 +264,7 @@ export class RouteManager {
             return resolved;
         throw new ButterActionRequiredError(`Token decimals are required for ${token}; Butter could not resolve them, configure tokenDecimals`);
     }
+    /** @private */
     validateRouteMatchesRequest(route, request) {
         if (!route.hash)
             throw new ButterApiError('Butter route is missing hash', route);
@@ -258,6 +298,14 @@ export class RouteManager {
         }
     }
 }
+/**
+ * Returns the conservative expiry timestamp for a Butter route.
+ *
+ * @param {ButterRoute} route - The Butter route to inspect or map.
+ * @param {number} now - The current Unix timestamp in seconds.
+ * @returns {number} The conservative Unix expiry timestamp in seconds.
+ * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
+ */
 export function routeExpiresAt(route, now) {
     if (route.timestamp != null) {
         const timestamp = Number(route.timestamp);
@@ -275,6 +323,11 @@ export function routeExpiresAt(route, now) {
  * Butter always echoes token decimals on a route; a missing value indicates
  * malformed data, so we fail rather than silently defaulting to 18 (which
  * would misscale amounts by orders of magnitude).
+ *
+ * @param {{ decimals?: string | number } | undefined} token - The token identifier or metadata to process.
+ * @param {string} [label] - The human-readable label used in validation errors (default: 'token').
+ * @returns {number} The validated token decimal count.
+ * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
  */
 export function decimalsOf(token, label = 'token') {
     const decimals = Number(token?.decimals);
@@ -283,6 +336,13 @@ export function decimalsOf(token, label = 'token') {
     }
     return decimals;
 }
+/**
+ * Builds the canonical cache key for a route request and caller constraints.
+ *
+ * @param {Record<string, unknown>} request - The normalized Butter route request.
+ * @param {SwidgeOptions} options - The caller-supplied operation options.
+ * @returns {string} The deterministic route-cache key.
+ */
 function stableRouteKey(request, options) {
     return JSON.stringify({
         ...request,
@@ -290,6 +350,12 @@ function stableRouteKey(request, options) {
         toTokenAmount: 'toTokenAmount' in options && options.toTokenAmount != null ? String(options.toTokenAmount) : undefined
     });
 }
+/**
+ * Normalizes id for consistent processing.
+ *
+ * @param {string | number | undefined} id - The identifier to normalize or query.
+ * @returns {string} The normalized value.
+ */
 function normalizeId(id) {
     return id == null ? '' : String(id);
 }
@@ -298,6 +364,11 @@ function normalizeId(id) {
  *
  * Chain-format-aware: ordinary Base58 stays exact, while native aliases and valid
  * Tron Base58Check/hex forms compare through their canonical chain identity.
+ *
+ * @param {string} chainId - The chain identifier used for normalization or lookup.
+ * @param {string} a - The first token identifier to compare.
+ * @param {string} b - The second token identifier to compare.
+ * @returns {boolean} Whether the inspected values satisfy the condition.
  */
 function sameToken(chainId, a, b) {
     return sameTokenIdentifier(chainId, a, b);

@@ -7,7 +7,21 @@ export declare class DiscoveryService {
     private readonly strictSlippageChainIds;
     private readonly routerRegistry;
     private readonly tokenDecimalsCache;
+    /**
+     * Creates a discovery service instance.
+     *
+     * @param {ButterSwidgeProtocolConfig} config - The configuration used by the operation.
+     * @param {<T>(path: string, params?: Record<string, unknown>) => Promise<T>} requestRouter - The injected requester for Butter Router endpoints.
+     * @param {<T>(path: string, params?: Record<string, unknown>) => Promise<T>} requestToken - The injected requester for Butter token endpoints.
+     * @param {Set<string>} strictSlippageChainIds - The chain identifiers requiring the strict slippage floor.
+     * @param {ButterRouterRegistry} routerRegistry - The allowlisted Router deployments used to classify execution.
+     */
     constructor(config: ButterSwidgeProtocolConfig, requestRouter: <T>(path: string, params?: Record<string, unknown>) => Promise<T>, requestToken: <T>(path: string, params?: Record<string, unknown>) => Promise<T>, strictSlippageChainIds: Set<string>, routerRegistry: ButterRouterRegistry);
+    /**
+     * Returns the chains currently advertised by Butter with this provider's execution capability.
+     *
+     * @returns {Promise<ButterSupportedChain[]>} The resolved result.
+     */
     getSupportedChains(): Promise<ButterSupportedChain[]>;
     /**
      * Resolves a token's decimals via Butter's `/findToken` router API.
@@ -33,11 +47,26 @@ export declare class DiscoveryService {
      *
      * Transport/auth failures rethrow so a network blip is not misreported as an
      * unknown token.
+     *
+     * @param {string} chainId - The chain identifier used for normalization or lookup.
+     * @param {string} address - The address or identifier to process.
+     * @returns {Promise<number | undefined>} The resolved result.
+     * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
      */
     findTokenDecimals(chainId: string, address: string): Promise<number | undefined>;
+    /** @private */
     private now;
+    /** @private */
     private touchTokenDecimalsCache;
+    /** @private */
     private setTokenDecimalsCache;
+    /**
+     * Returns Butter's non-exhaustive token catalog for the selected chain.
+     *
+     * @param {string} chainId - The chain identifier used for normalization or lookup.
+     * @returns {Promise<SwidgeSupportedToken[]>} The resolved result.
+     * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
+     */
     getSupportedTokens(chainId: string): Promise<SwidgeSupportedToken[]>;
 }
 //# sourceMappingURL=discovery.d.ts.map

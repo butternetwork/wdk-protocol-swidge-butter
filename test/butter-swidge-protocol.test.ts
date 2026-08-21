@@ -425,6 +425,7 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     })
 
     assert.equal(quote.priceImpact, undefined)
+    assert.equal(Object.hasOwn(quote, 'priceImpact'), false)
   })
 
   it('does not resolve the sender address when quoting a non-Solana route', async () => {
@@ -4646,7 +4647,7 @@ describe('ButterSwidgeProtocol formal behavior', () => {
 
     const result = await protocol.getSwidgeStatus('0xsourcehash')
     assert.equal(result.status, 'completed')
-    assert.deepEqual(result.transactions, [{ hash: '0xsourcehash', chain: undefined, type: 'source' }])
+    assert.deepEqual(result.transactions, [{ hash: '0xsourcehash', type: 'source' }])
   })
 
   it('parses an array-shaped status response and a scalar chain id', async () => {

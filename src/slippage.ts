@@ -29,7 +29,15 @@ export interface SlippageOptions {
   strictChainMinimum?: number
 }
 
-/** Converts WDK decimal slippage to Butter basis points and enforces minimums. */
+/**
+ * Converts WDK decimal slippage to Butter basis points and enforces minimums.
+ *
+ * @param {number | undefined} slippage - The maximum caller-approved slippage as a decimal fraction.
+ * @param {SlippageOptions} [options] - The caller-supplied operation options (default: empty object).
+ * @returns {number} The caller-approved slippage in integer basis points.
+ * @throws {ButterUnsupportedError} If slippage is outside 0 through 0.5 or cannot be expressed at one-basis-point precision.
+ * @throws {ButterActionRequiredError} If the requested slippage is below Butter's route-specific minimum.
+ */
 export function toButterSlippage (slippage: number | undefined, options: SlippageOptions = {}): number {
   const minimum = minimumSlippageBps(options)
   const explicitBps = slippage == null ? Math.max(DEFAULT_SLIPPAGE_BPS, minimum) : decimalToBps(slippage)
@@ -53,7 +61,12 @@ export function toButterSlippage (slippage: number | undefined, options: Slippag
   return explicitBps
 }
 
-/** Returns the minimum Butter slippage in basis points for a route. */
+/**
+ * Returns the minimum Butter slippage in basis points for a route.
+ *
+ * @param {SlippageOptions} options - The caller-supplied operation options.
+ * @returns {number} The minimum route slippage in basis points.
+ */
 export function minimumSlippageBps (options: SlippageOptions): number {
   const source = normalizeId(options.sourceChainId)
   const destination = normalizeId(options.toChainId)
@@ -76,6 +89,9 @@ export function minimumSlippageBps (options: SlippageOptions): number {
  *
  * Non-finite or negative inputs return `NaN`/negative and fall through to the range
  * check in {@link toButterSlippage}.
+ *
+ * @param {number} value - The value to parse, normalize, or validate.
+ * @returns {number} The decimal fraction truncated to integer basis points.
  */
 function decimalToBps (value: number): number {
   if (!Number.isFinite(value) || value < 0) return value * 10000
@@ -87,10 +103,22 @@ function decimalToBps (value: number): number {
   return Number(whole) * 10000 + Number(fraction.slice(0, 4).padEnd(4, '0'))
 }
 
+/**
+ * Normalizes id for consistent processing.
+ *
+ * @param {string | number | undefined} id - The identifier to normalize or query.
+ * @returns {string | undefined} The normalized value.
+ */
 function normalizeId (id: string | number | undefined): string | undefined {
   return id == null ? undefined : String(id).toLowerCase()
 }
 
+/**
+ * Returns whether a chain identifier requires the strict Butter slippage floor.
+ *
+ * @param {string | undefined} id - The identifier to normalize or query.
+ * @returns {boolean} Whether the inspected values satisfy the condition.
+ */
 function isStrictChain (id: string | undefined): boolean {
   return id === BTC_CHAIN_ID || id === TON_CHAIN_ID || id === 'btc' || id === 'ton'
 }

@@ -10,8 +10,15 @@ and (once published) [Semantic Versioning](https://semver.org).
 - Make GitHub Release publishing idempotent: an npm version already published
   from the same tag commit is a successful no-op, while registry errors and
   mismatched or invalid `gitHead` metadata fail closed.
+- Raise the supported `@tetherto/wdk-wallet` floor to `1.0.0-beta.15`, develop
+  against `1.0.0-beta.17`, and omit absent optional fields to match WDK's exact
+  optional-property declarations without changing populated results.
 
 ### Documentation
+- Add Tether's reviewed "Built with WDK" badge to the README and published
+  package contents.
+- Complete JSDoc descriptions, parameters, return values, and thrown-error
+  contracts across named source declarations, with an AST-based regression gate.
 - Add a security policy covering supported versions, private vulnerability
   reporting, response and disclosure timelines, safe harbor, and reward terms;
   publish it with the npm package and link it from the README.

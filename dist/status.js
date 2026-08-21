@@ -19,6 +19,11 @@ import { sameTransactionHash } from './identifiers.js';
  * yet mined (pending). Mapping is **fail-closed**: only an explicit success maps
  * to `completed` and only an explicit revert to `failed`; any unknown or missing
  * status maps to `pending` rather than falsely reporting completion.
+ *
+ * @param {string} id - The identifier to normalize or query.
+ * @param {EvmTransactionReceipt | null | undefined} receipt - The transaction receipt to classify.
+ * @param {string | number} [chain] - The chain metadata to inspect.
+ * @returns {SwidgeStatusResult} The mapped provider result.
  */
 export function mapReceiptStatus(id, receipt, chain) {
     if (receipt == null)
@@ -27,7 +32,11 @@ export function mapReceiptStatus(id, receipt, chain) {
     const swidgeStatus = kind === 'success' ? 'completed' : kind === 'reverted' ? 'failed' : 'pending';
     return {
         status: swidgeStatus,
-        transactions: [{ hash: id, chain, type: 'source' }]
+        transactions: [{
+                hash: id,
+                ...(chain != null ? { chain } : {}),
+                type: 'source'
+            }]
     };
 }
 /**
@@ -35,6 +44,9 @@ export function mapReceiptStatus(id, receipt, chain) {
  * `reverted`, or `unknown` (missing/unrecognized). Shared by same-chain status
  * mapping and approval-receipt confirmation so both fail closed on `unknown`
  * rather than treating an uninterpretable receipt as success.
+ *
+ * @param {EvmTransactionReceipt | null | undefined} receipt - The transaction receipt to classify.
+ * @returns {'success' | 'reverted' | 'unknown'} The explicit success, revert, or unknown classification.
  */
 export function classifyReceiptStatus(receipt) {
     const status = receipt?.status;
@@ -44,6 +56,15 @@ export function classifyReceiptStatus(receipt) {
         return 'reverted';
     return 'unknown';
 }
+/**
+ * Maps a partially trusted Butter status response to the WDK status contract.
+ *
+ * @param {string} id - The identifier to normalize or query.
+ * @param {unknown} data - The partially trusted data to inspect.
+ * @param {ButterSwidgeStatusOptions} [hints] - The optional source and destination chain hints (default: empty object).
+ * @returns {SwidgeStatusResult} The mapped provider result.
+ * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
+ */
 export function mapStatusResponse(id, data, hints = {}) {
     // Tolerate either an object or a single-element array, and an optional `info`
     // envelope, since Butter's status response shape is not formally documented.
@@ -79,10 +100,20 @@ export function mapStatusResponse(id, data, hints = {}) {
     const sourceHash = reportedSourceHash ?? (hints.byOrderId ? undefined : id);
     const destinationHash = stringValue(record.toHash ?? record.destHash ?? record.destinationHash);
     const transactions = [];
-    if (sourceHash)
-        transactions.push({ hash: sourceHash, chain: fromChain, type: 'source' });
-    if (destinationHash)
-        transactions.push({ hash: destinationHash, chain: toChain, type: 'destination' });
+    if (sourceHash) {
+        transactions.push({
+            hash: sourceHash,
+            ...(fromChain != null ? { chain: fromChain } : {}),
+            type: 'source'
+        });
+    }
+    if (destinationHash) {
+        transactions.push({
+            hash: destinationHash,
+            ...(toChain != null ? { chain: toChain } : {}),
+            type: 'destination'
+        });
+    }
     return {
         status: mapButterStatus(record.state ?? record.status),
         transactions
@@ -119,12 +150,21 @@ const BUTTER_STATE_MAP = {
  * method, and Butter may return intermediate codes (e.g. relaying) beyond the
  * documented `0/1/6`. Mislabeling an in-flight transfer as failed/refunded
  * would be worse than reporting it as still pending.
+ *
+ * @param {unknown} state - The Butter state value to map.
+ * @returns {SwidgeStatusResult['status']} The mapped provider result.
  */
 function mapButterStatus(state) {
     if (state == null)
         return 'pending';
     return BUTTER_STATE_MAP[String(state).toLowerCase()] ?? 'pending';
 }
+/**
+ * Extracts a chain identifier from scalar or nested Butter metadata.
+ *
+ * @param {unknown} value - The value to parse, normalize, or validate.
+ * @returns {string | undefined} The chain identifier, or undefined when unusable.
+ */
 function chainIdOf(value) {
     if (value == null)
         return undefined;
@@ -135,6 +175,12 @@ function chainIdOf(value) {
         return String(value);
     return undefined;
 }
+/**
+ * Converts a scalar status value to a string while rejecting structured values.
+ *
+ * @param {unknown} value - The value to parse, normalize, or validate.
+ * @returns {string | undefined} The scalar string value, or undefined for structured data.
+ */
 function stringValue(value) {
     return value == null ? undefined : String(value);
 }

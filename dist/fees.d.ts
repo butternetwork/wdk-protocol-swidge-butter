@@ -36,9 +36,20 @@ export interface ResolvedFeeLimits {
     maxNetworkFeeBps?: bigint;
     maxProtocolFeeBps?: bigint;
 }
-/** Resolves and validates constructor and per-call WDK fee limits. */
+/**
+ * Resolves and validates constructor and per-call WDK fee limits.
+ *
+ * @param {SwidgeProtocolConfig} defaults - The constructor-level defaults used when no override is present.
+ * @param {SwidgeProtocolConfig} overrides - The per-call or per-chain overrides to apply.
+ * @returns {ResolvedFeeLimits} The resolved result.
+ */
 export declare function resolveFeeLimits(defaults: SwidgeProtocolConfig, overrides: SwidgeProtocolConfig): ResolvedFeeLimits;
-/** Validates configured fee limits eagerly, rejecting malformed bps values. */
+/**
+ * Validates configured fee limits eagerly, rejecting malformed bps values.
+ *
+ * @param {SwidgeProtocolConfig} config - The configuration used by the operation.
+ * @returns {void} Nothing; the function throws when validation fails.
+ */
 export declare function validateFeeLimits(config: SwidgeProtocolConfig): void;
 /**
  * Maps Butter fee metadata into WDK fee entries using denomination-specific decimals.
@@ -51,6 +62,10 @@ export declare function validateFeeLimits(config: SwidgeProtocolConfig): void;
  * must read the itemised `fees[]` on the SwidgeQuote/SwidgeResult, not the
  * legacy scalars. This cannot be fixed here without overriding legacy methods
  * (which providers must not do); it needs a WDK PR #39 mapping-contract change.
+ *
+ * @param {ButterRoute} route - The Butter route to inspect or map.
+ * @param {FeeContext} context - The validated context required by the operation.
+ * @returns {SwidgeFee[]} The mapped provider result.
  */
 export declare function mapRouteFees(route: ButterRoute, context: FeeContext): SwidgeFee[];
 /**
@@ -60,10 +75,27 @@ export declare function mapRouteFees(route: ButterRoute, context: FeeContext): S
  * (`swap-data.ts`), so rounding down would turn a sub-wei formatting artifact in
  * Butter's decimal string into a rejected transaction. Rounding up can only widen
  * the bound by one wei, and the absolute `maxNativeFee` cap is unaffected.
+ *
+ * @param {ButterRoute} route - The Butter route to inspect or map.
+ * @param {FeeContext} context - The validated context required by the operation.
+ * @returns {bigint} The additional native protocol fee in source-chain base units.
  */
 export declare function routeNativeFee(route: ButterRoute, context: FeeContext): bigint;
-/** Enforces WDK network and protocol fee caps before transaction construction. */
+/**
+ * Enforces WDK network and protocol fee caps before transaction construction.
+ *
+ * @param {ButterRoute} route - The Butter route to inspect or map.
+ * @param {FeeContext} context - The validated context required by the operation.
+ * @param {ResolvedFeeLimits} limits - The resolved fee limits to enforce.
+ * @returns {void} Nothing; the function throws when validation fails.
+ */
 export declare function enforceFeeLimits(route: ButterRoute, context: FeeContext, limits: ResolvedFeeLimits): void;
-/** Resolves source-chain native token decimals with caller overrides. */
+/**
+ * Resolves source-chain native token decimals with caller overrides.
+ *
+ * @param {string} chainId - The chain identifier used for normalization or lookup.
+ * @param {Record<string, number> | undefined} configured - The caller-supplied configuration values.
+ * @returns {number} The configured or built-in native-token decimal count.
+ */
 export declare function nativeDecimalsForChain(chainId: string, configured: Record<string, number> | undefined): number;
 //# sourceMappingURL=fees.d.ts.map

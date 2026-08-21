@@ -34,6 +34,7 @@
     "examples/README.md",
     ".env.e2e.example",
     "test/e2e/README.md",
+    "docs/assets/built-with-wdk.png",
     "README.md",
     "CHANGELOG.md",
     "SECURITY.md"
@@ -71,11 +72,11 @@
     "viem": "^2.43.1"
   },
   "peerDependencies": {
-    "@tetherto/wdk-wallet": ">=1.0.0-beta.14 <2.0.0"
+    "@tetherto/wdk-wallet": ">=1.0.0-beta.15 <2.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
-    "@tetherto/wdk-wallet": ">=1.0.0-beta.14 <2.0.0",
+    "@tetherto/wdk-wallet": "1.0.0-beta.17",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"
   }

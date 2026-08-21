@@ -14,6 +14,12 @@
 import { isAddress } from 'viem';
 import { DEFAULT_ROUTER_CONTRACTS } from './constants.js';
 import { ButterConfigurationError } from './errors.js';
+/**
+ * Builds the effective per-chain Butter Router allowlist from defaults and caller overrides.
+ *
+ * @param {Partial<Record<number, readonly ButterRouterDeployment[]>>} [overrides] - The per-call or per-chain overrides to apply.
+ * @returns {ButterRouterRegistry} The validated Router registry.
+ */
 export function createRouterRegistry(overrides) {
     const registry = {};
     for (const [chainId, deployments] of Object.entries(DEFAULT_ROUTER_CONTRACTS)) {
@@ -24,15 +30,36 @@ export function createRouterRegistry(overrides) {
     }
     return registry;
 }
+/**
+ * Returns the allowlisted Router deployments configured for one chain.
+ *
+ * @param {ButterRouterRegistry} registry - The effective Butter Router allowlist.
+ * @param {string | number} chainId - The chain identifier used for normalization or lookup.
+ * @returns {readonly ButterRouterDeployment[]} The allowlisted deployments for the chain.
+ */
 export function routerDeploymentsForChain(registry, chainId) {
     return registry[String(chainId)] ?? [];
 }
+/**
+ * Projects the Router registry into a chain-to-address map.
+ *
+ * @param {ButterRouterRegistry} registry - The effective Butter Router allowlist.
+ * @returns {Record<string, string[]>} The allowlisted Router addresses grouped by chain.
+ */
 export function routerAddressesByChain(registry) {
     return Object.fromEntries(Object.entries(registry).map(([chainId, deployments]) => [
         chainId,
         deployments.map(({ address }) => address)
     ]));
 }
+/**
+ * Validates deployments against the required contract.
+ *
+ * @param {string} chainId - The chain identifier used for normalization or lookup.
+ * @param {readonly ButterRouterDeployment[]} deployments - The Router deployments configured for the chain.
+ * @returns {readonly ButterRouterDeployment[]} The validated immutable deployment list.
+ * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
+ */
 function validateDeployments(chainId, deployments) {
     if (!/^\d+$/.test(chainId)) {
         throw new ButterConfigurationError(`Invalid Butter router chain ID: ${chainId}`);
@@ -51,6 +78,13 @@ function validateDeployments(chainId, deployments) {
         return { address: deployment.address, version: deployment.version };
     });
 }
+/**
+ * Validates router version and rejects invalid values.
+ *
+ * @param {string} version - The Router validator version to validate.
+ * @returns {void} Nothing; the function throws when validation fails.
+ * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
+ */
 function assertRouterVersion(version) {
     if (version !== 'v3') {
         throw new ButterConfigurationError(`Unsupported Butter router validator version: ${version}`);

@@ -23,6 +23,15 @@ export class DiscoveryService {
     strictSlippageChainIds;
     routerRegistry;
     tokenDecimalsCache = new Map();
+    /**
+     * Creates a discovery service instance.
+     *
+     * @param {ButterSwidgeProtocolConfig} config - The configuration used by the operation.
+     * @param {<T>(path: string, params?: Record<string, unknown>) => Promise<T>} requestRouter - The injected requester for Butter Router endpoints.
+     * @param {<T>(path: string, params?: Record<string, unknown>) => Promise<T>} requestToken - The injected requester for Butter token endpoints.
+     * @param {Set<string>} strictSlippageChainIds - The chain identifiers requiring the strict slippage floor.
+     * @param {ButterRouterRegistry} routerRegistry - The allowlisted Router deployments used to classify execution.
+     */
     constructor(config, requestRouter, requestToken, strictSlippageChainIds, routerRegistry) {
         this.config = config;
         this.requestRouter = requestRouter;
@@ -30,6 +39,11 @@ export class DiscoveryService {
         this.strictSlippageChainIds = strictSlippageChainIds;
         this.routerRegistry = routerRegistry;
     }
+    /**
+     * Returns the chains currently advertised by Butter with this provider's execution capability.
+     *
+     * @returns {Promise<ButterSupportedChain[]>} The resolved result.
+     */
     async getSupportedChains() {
         const [routerPayload, tokenPayload] = await Promise.all([
             this.requestRouter('/supportedChainInfo'),
@@ -82,6 +96,11 @@ export class DiscoveryService {
      *
      * Transport/auth failures rethrow so a network blip is not misreported as an
      * unknown token.
+     *
+     * @param {string} chainId - The chain identifier used for normalization or lookup.
+     * @param {string} address - The address or identifier to process.
+     * @returns {Promise<number | undefined>} The resolved result.
+     * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
      */
     async findTokenDecimals(chainId, address) {
         // The key is chain-aware: Solana Base58 stays exact, while valid equivalent
@@ -158,13 +177,16 @@ export class DiscoveryService {
         this.setTokenDecimalsCache(key, { kind: 'resolved', decimals });
         return decimals;
     }
+    /** @private */
     now() {
         return this.config.now?.() ?? Math.floor(Date.now() / 1000);
     }
+    /** @private */
     touchTokenDecimalsCache(key, entry) {
         this.tokenDecimalsCache.delete(key);
         this.tokenDecimalsCache.set(key, entry);
     }
+    /** @private */
     setTokenDecimalsCache(key, entry) {
         this.touchTokenDecimalsCache(key, entry);
         while (this.tokenDecimalsCache.size > TOKEN_DECIMALS_CACHE_MAX_ENTRIES) {
@@ -174,6 +196,13 @@ export class DiscoveryService {
             this.tokenDecimalsCache.delete(oldest);
         }
     }
+    /**
+     * Returns Butter's non-exhaustive token catalog for the selected chain.
+     *
+     * @param {string} chainId - The chain identifier used for normalization or lookup.
+     * @returns {Promise<SwidgeSupportedToken[]>} The resolved result.
+     * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
+     */
     async getSupportedTokens(chainId) {
         const groups = await this.requestRouter('/supportedTokenList', { chainId });
         if (!Array.isArray(groups)) {
@@ -222,6 +251,13 @@ export class DiscoveryService {
         return [...tokens.values()];
     }
 }
+/**
+ * Finds token records in the supplied data.
+ *
+ * @param {unknown} data - The partially trusted data to inspect.
+ * @returns {Record<string, unknown>[]} The matching token records.
+ * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
+ */
 function findTokenRecords(data) {
     if (data == null)
         return [];
@@ -232,22 +268,57 @@ function findTokenRecords(data) {
         return [data];
     throw new ButterApiError('Butter /findToken returned an invalid payload', data);
 }
+/**
+ * Returns whether the value is a non-null, non-array record.
+ *
+ * @param {unknown} value - The value to parse, normalize, or validate.
+ * @returns {boolean} Whether the inspected values satisfy the condition.
+ */
 function isRecord(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
+/**
+ * Returns a required record from a Butter response or rejects the malformed payload.
+ *
+ * @param {unknown} value - The value to parse, normalize, or validate.
+ * @param {string} label - The human-readable label used in validation errors.
+ * @returns {Record<string, unknown>} The validated response record.
+ * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
+ */
 function requiredRecord(value, label) {
     if (!isRecord(value))
         throw new ButterApiError(`${label} returned an invalid payload`, value);
     return value;
 }
+/**
+ * Returns a required array containing only record values.
+ *
+ * @param {unknown} value - The value to parse, normalize, or validate.
+ * @param {string} label - The human-readable label used in validation errors.
+ * @returns {Record<string, unknown>[]} The validated record array.
+ * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
+ */
 function recordArray(value, label) {
     if (!Array.isArray(value))
         throw new ButterApiError(`${label} returned a non-array payload`, value);
     return value.filter((entry) => isRecord(entry));
 }
+/**
+ * Returns an optional record array, treating an absent value as empty.
+ *
+ * @param {unknown} value - The value to parse, normalize, or validate.
+ * @param {string} label - The human-readable label used in validation errors.
+ * @returns {Record<string, unknown>[]} The record array, or an empty array when absent.
+ */
 function optionalRecordArray(value, label) {
     return value == null ? [] : recordArray(value, label);
 }
+/**
+ * Extracts a scalar chain identifier from partially trusted metadata.
+ *
+ * @param {unknown} value - The value to parse, normalize, or validate.
+ * @returns {string | number | undefined} The scalar chain identifier, or undefined when unusable.
+ */
 function scalarChainId(value) {
     if (typeof value === 'string')
         return value.trim() === '' ? undefined : value;
@@ -255,6 +326,12 @@ function scalarChainId(value) {
         return value;
     return undefined;
 }
+/**
+ * Returns the first usable token address or identifier in a discovery entry.
+ *
+ * @param {Record<string, unknown>} entry - The cache or API entry to inspect.
+ * @returns {string | undefined} The usable token identifier, or undefined when none is present.
+ */
 function tokenIdentifier(entry) {
     for (const value of [entry.address, entry.token]) {
         if (typeof value === 'string' && value.trim() !== '')
@@ -262,6 +339,12 @@ function tokenIdentifier(entry) {
     }
     return undefined;
 }
+/**
+ * Parses discovery decimals into its validated representation.
+ *
+ * @param {unknown} value - The value to parse, normalize, or validate.
+ * @returns {number | undefined} The parsed value.
+ */
 function parseDiscoveryDecimals(value) {
     if (typeof value === 'number') {
         return Number.isInteger(value) && value >= 0 && value <= 255 ? value : undefined;
@@ -274,13 +357,24 @@ function parseDiscoveryDecimals(value) {
     const decimals = Number(normalized);
     return Number.isInteger(decimals) && decimals >= 0 && decimals <= 255 ? decimals : undefined;
 }
-/** True when an error is Butter's "token not found" response, not a transport failure. */
+/**
+ * True when an error is Butter's "token not found" response, not a transport failure.
+ *
+ * @param {unknown} error - The error value to classify.
+ * @returns {boolean} Whether the inspected values satisfy the condition.
+ */
 function isTokenNotFound(error) {
     if (!(error instanceof ButterApiError))
         return false;
     const details = error.details;
     return details?.errno === TOKEN_NOT_FOUND_ERRNO;
 }
+/**
+ * Returns whether Butter metadata identifies a chain with the strict slippage floor.
+ *
+ * @param {ButterChainInfo} chain - The chain metadata to inspect.
+ * @returns {boolean} Whether the inspected values satisfy the condition.
+ */
 function isStrictSlippageChain(chain) {
     const values = [chain.chainType, chain.type, chain.name, chain.key];
     return values.some((value) => {
@@ -288,6 +382,14 @@ function isStrictSlippageChain(chain) {
         return normalized === 'btc' || normalized === 'ton' || normalized.includes('bitcoin') || normalized.includes('toncoin');
     });
 }
+/**
+ * Returns the execution capability available for a discovered chain.
+ *
+ * @param {string} chainId - The chain identifier used for normalization or lookup.
+ * @param {ButterSwidgeProtocolConfig} config - The configuration used by the operation.
+ * @param {ButterRouterRegistry} registry - The effective Butter Router allowlist.
+ * @returns {ButterChainExecution} The chain execution capability for this provider instance.
+ */
 function executionFor(chainId, config, registry) {
     if (chainId === TRON_CHAIN_ID)
         return config.transactionAdapters?.[chainId] ? 'adapter' : 'quote-only';

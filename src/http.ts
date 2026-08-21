@@ -32,6 +32,12 @@ const BUTTER_NO_ROUTE_ERRNO = 2003
 export class ButterHttpClient {
   private readonly options: ButterHttpClientOptions
 
+  /**
+   * Creates a butter http client instance.
+   *
+   * @param {ButterHttpClientOptions} options - The caller-supplied operation options.
+   * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
+   */
   constructor (options: ButterHttpClientOptions) {
     this.options = options
     if (Boolean(options.apiKeyId) !== Boolean(options.apiSecret)) {
@@ -47,6 +53,15 @@ export class ButterHttpClient {
     }
   }
 
+  /**
+   * Requests and unwraps data from the Butter Router API.
+   *
+   * @param {string} path - The endpoint path relative to the configured Butter base URL.
+   * @param {Record<string, unknown>} [params] - Query parameters appended to the Router request (default: empty object).
+   * @returns {Promise<T>} The unwrapped Router response data.
+   * @throws {ButterNoRouteError} If Butter provides no liquid route for the request.
+   * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
+   */
   async router<T> (path: string, params: Record<string, unknown> = {}): Promise<T> {
     const body = await this.requestJson(this.options.routerBaseUrl, path, params)
     const envelope = body as { errno?: number, message?: string, data?: unknown }
@@ -63,6 +78,14 @@ export class ButterHttpClient {
     return envelope.data as T
   }
 
+  /**
+   * Requests and unwraps data from the Butter token API.
+   *
+   * @param {string} path - The endpoint path relative to the configured Butter base URL.
+   * @param {Record<string, unknown>} [params] - Query parameters appended to the token request (default: empty object).
+   * @returns {Promise<T>} The unwrapped token API response data.
+   * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
+   */
   async token<T> (path: string, params: Record<string, unknown> = {}): Promise<T> {
     const body = await this.requestJson(this.options.tokenBaseUrl, path, params)
     const envelope = body as { code?: number, message?: string, data?: unknown }
@@ -73,6 +96,14 @@ export class ButterHttpClient {
     return envelope.data as T
   }
 
+  /**
+   * Requests and unwraps data from the Butter application API.
+   *
+   * @param {string} path - The endpoint path relative to the configured Butter base URL.
+   * @param {Record<string, unknown>} [params] - Query parameters appended to the application request (default: empty object).
+   * @returns {Promise<T>} The unwrapped application API response data.
+   * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
+   */
   async app<T> (path: string, params: Record<string, unknown> = {}): Promise<T> {
     const body = await this.requestJson(this.options.appBaseUrl, path, params)
     const envelope = body as { code?: number, message?: string, data?: unknown }
@@ -83,6 +114,7 @@ export class ButterHttpClient {
     return envelope.data as T
   }
 
+  /** @private */
   private async requestJson (baseUrl: string, path: string, params: Record<string, unknown>): Promise<unknown> {
     const url = new URL(path, ensureTrailingSlash(baseUrl))
     for (const [key, value] of Object.entries(params)) {
@@ -141,6 +173,7 @@ export class ButterHttpClient {
     }
   }
 
+  /** @private */
   private headers (): Record<string, string> {
     const headers: Record<string, string> = {}
     if (this.options.apiKeyId) headers['x-api-key-id'] = this.options.apiKeyId
@@ -158,6 +191,9 @@ const MAX_ERROR_BODY_CHARS = 512
  * Deliberately swallows its own failures: the status code is the valuable part of
  * a non-2xx response and must not be lost to a second error raised while trying
  * to describe the first. Absent when the injected fetch supplies no `text()`.
+ *
+ * @param {ButterFetchResponse} response - The Butter response to map.
+ * @returns {Promise<string | undefined>} The bounded response body, or undefined when unavailable.
  */
 async function readErrorBody (response: ButterFetchResponse): Promise<string | undefined> {
   if (typeof response.text !== 'function') return undefined
@@ -170,10 +206,23 @@ async function readErrorBody (response: ButterFetchResponse): Promise<string | u
   }
 }
 
+/**
+ * Normalizes a base URL to exactly one trailing slash.
+ *
+ * @param {string} url - The Butter base URL to normalize or validate.
+ * @returns {string} The normalized URL ending in one slash.
+ */
 function ensureTrailingSlash (url: string): string {
   return url.endsWith('/') ? url : `${url}/`
 }
 
+/**
+ * Validates https base url and rejects invalid values.
+ *
+ * @param {string} url - The Butter base URL to normalize or validate.
+ * @returns {void} Nothing; the function throws when validation fails.
+ * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
+ */
 function assertHttpsBaseUrl (url: string): void {
   const parsed = new URL(url)
   if (parsed.protocol !== 'https:') {
@@ -181,10 +230,22 @@ function assertHttpsBaseUrl (url: string): void {
   }
 }
 
+/**
+ * Returns whether the value is a non-null, non-array record.
+ *
+ * @param {unknown} value - The value to parse, normalize, or validate.
+ * @returns {boolean} Whether the inspected values satisfy the condition.
+ */
 function isRecord (value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === 'object' && !Array.isArray(value)
 }
 
+/**
+ * Extracts a non-empty message from a partially trusted error payload.
+ *
+ * @param {unknown} value - The value to parse, normalize, or validate.
+ * @returns {string | undefined} The response message, or undefined when missing.
+ */
 function messageOf (value: unknown): string | undefined {
   if (!isRecord(value) || typeof value.message !== 'string') return undefined
   return value.message

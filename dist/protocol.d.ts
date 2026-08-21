@@ -15,7 +15,13 @@ export declare class ButterSwidgeProtocol extends SwidgeProtocol {
     /** Caller-supplied EVM chain ids, normalized, for the address-family check. */
     private readonly evmChainIds;
     private readonly operationKinds;
-    /** Creates a protocol instance bound to one source chain. */
+    /**
+     * Creates a protocol instance bound to one source chain.
+     *
+     * @param {ButterAccount | undefined} account - The WDK account bound to the protocol instance.
+     * @param {ButterSwidgeProtocolConfig} config - The source-chain, API, fee, routing, and execution configuration.
+     * @throws {ButterConfigurationError} If required integration metadata, fee limits, timeouts, Router deployments, credentials, or source-chain settings are invalid.
+     */
     constructor(account: ButterAccount | undefined, config: ButterSwidgeProtocolConfig);
     /**
      * Returns a non-binding exact-in quote without requiring execution capability.
@@ -26,16 +32,37 @@ export declare class ButterSwidgeProtocol extends SwidgeProtocol {
      *
      * The returned quote carries `routeHash`; pass it back as `options.routeHash`
      * to {@link swidge} to pin this exact route instead of auto-re-quoting.
+     *
+     * @param {SwidgeOptions} options - The caller-supplied operation options.
+     * @returns {Promise<ButterSwidgeQuote>} The non-binding quote with Butter route hash and destination guarantees.
+     * @throws {ButterExactOutUnsupportedError} If exact-out options are supplied.
+     * @throws {ButterUnsupportedError} If required tokens or the exact-in amount are missing or invalid.
+     * @throws {ButterActionRequiredError} If route requirements such as slippage, receiver, or minimum output need caller action.
+     * @throws {ButterNoRouteError} If Butter provides no liquid route.
+     * @throws {ButterApiError} If Butter returns malformed or inconsistent route or fee data.
+     * @throws {ButterFeeValuationError} If a reported fee cannot be mapped using trustworthy token metadata.
      */
     quoteSwidge(options: SwidgeOptions): Promise<ButterSwidgeQuote>;
-    /**
-     * Reports whether `toTokenAmountMin` is checked against the calldata at execution.
-     *
-     * Only same-chain is: cross-chain leaves the destination minimum inside the
-     * nested bridge payload, which is trusted to Butter by design.
-     */
+    /** @private */
     private destinationGuaranteesFor;
-    /** Executes an exact-in operation after validating route fees and transaction intent. */
+    /**
+     * Executes an exact-in operation after validating route fees and transaction intent.
+     *
+     * @param {ButterSwidgeOptions} options - The caller-supplied operation options.
+     * @param {SwidgeProtocolConfig} [config] - The configuration used by the operation (default: empty object).
+     * @returns {Promise<SwidgeResult>} The executed WDK result and every broadcast transaction.
+     * @throws {ButterExactOutUnsupportedError} If exact-out options are supplied.
+     * @throws {ButterUnsupportedError} If the requested route, adapter output, or operation shape is unsupported.
+     * @throws {ButterReadOnlyAccountError} If execution lacks a send-capable WDK account or EVM wallet client.
+     * @throws {ButterConfigurationError} If execution configuration, sender identity, approval confirmation, or native-fee bounds are invalid.
+     * @throws {ButterActionRequiredError} If the recipient, slippage, quote freshness, or minimum output needs caller action.
+     * @throws {ButterNoRouteError} If Butter provides no liquid route.
+     * @throws {ButterFeeValuationError} If a configured fee cap cannot value Butter's fee metadata safely.
+     * @throws {ButterFeeLimitExceededError} If the route exceeds a configured network or protocol fee cap.
+     * @throws {ButterTransactionValidationError} If `/swap` transaction data does not match the quoted intent or configured limits.
+     * @throws {ButterPartialExecutionError} If a send or confirmation fails after at least one transaction was broadcast.
+     * @throws {ButterApiError} If Butter returns malformed or inconsistent data or a sender reports invalid metadata.
+     */
     swidge(options: ButterSwidgeOptions, config?: SwidgeProtocolConfig): Promise<SwidgeResult>;
     /**
      * Retrieves a Butter operation by source hash or, when requested, order ID.
@@ -43,45 +70,32 @@ export declare class ButterSwidgeProtocol extends SwidgeProtocol {
      * Same-chain swaps produce no Butter cross-chain record, so when the caller
      * indicates a same-chain operation (`fromChain === toChain`) the status is
      * derived from the transaction receipt instead of the cross-chain APIs.
+     *
+     * @param {string} id - The identifier to normalize or query.
+     * @param {ButterSwidgeStatusOptions} [options] - The caller-supplied operation options (default: empty object).
+     * @returns {Promise<SwidgeStatusResult>} The conservative WDK status and any reported source or destination transactions.
+     * @throws {ButterApiError} If the id is empty, attribution fails, or Butter returns missing or inconsistent status data.
+     * @throws {ButterConfigurationError} If same-chain receipt status cannot be queried with the configured clients.
      */
     getSwidgeStatus(id: string, options?: ButterSwidgeStatusOptions): Promise<SwidgeStatusResult>;
-    /**
-     * Builds the error to throw when a send fails part-way through execution.
-     *
-     * Returns the original `cause` untouched when nothing was broadcast (rejected
-     * in the wallet, RPC refused): that is an ordinary failure, not a partially
-     * applied operation, and callers still match on the underlying error type.
-     * Once at least one transaction is on-chain the failure is wrapped in a
-     * {@link ButterPartialExecutionError} carrying every broadcast hash, so a
-     * caller cannot mistake it for "nothing happened" and retry into a double
-     * execution. A broadcast `source` transaction is also registered for status
-     * routing before throwing — the swidge is in flight even though this call
-     * failed, and `getSwidgeStatus` must still resolve it.
-     */
+    /** @private */
     private partialExecution;
-    /** Records an executed operation's chain kind for later status routing, bounding memory. */
+    /** @private */
     private rememberOperationKind;
-    /**
-     * Attributes a source transaction to a Butter Router by fetching its calldata
-     * (`evm.publicClient.getTransaction`) and requiring BOTH an allowlisted Router
-     * target AND a recognized Router function: `swapAndCall` → same-chain,
-     * `swapAndBridge` → cross-chain. Returns undefined when it cannot attribute (no
-     * `getTransaction`, the transaction is not found, a non-allowlisted target, or an
-     * unrecognized function), so an unrelated transaction is never taken for a Butter
-     * swidge. Infrastructure errors from `getTransaction` (RPC timeout, auth,
-     * rate-limit) propagate rather than being swallowed as "unattributable", so a
-     * genuine node fault surfaces to the caller instead of forcing a silent cross-API
-     * fallback. Stateless: works across process restarts and new instances.
-     */
+    /** @private */
     private attributeSourceTransaction;
-    /** True when the address is an allowlisted Router deployment on the source chain. */
+    /** @private */
     private isAllowlistedRouter;
+    /** @private */
     private getSameChainStatus;
     /**
      * Lists chains currently advertised by Butter Router.
      *
      * Each entry carries an `execution` field (`native` | `adapter` |
      * `quote-only`) describing how this instance would execute on that chain.
+     *
+     * @returns {Promise<ButterSupportedChain[]>} The validated chains with native, adapter, or quote-only execution capability.
+     * @throws {ButterApiError} If Butter returns malformed chain metadata.
      */
     getSupportedChains(): Promise<ButterSupportedChain[]>;
     /**
@@ -91,14 +105,23 @@ export declare class ButterSwidgeProtocol extends SwidgeProtocol {
      * omitted here by swapping on the source and destination chains. Chain selection
      * uses `fromChain`, then `toChain`, then the instance's source chain. Route-scoped
      * `fromToken` filtering is unavailable from Butter Router's per-chain listing.
+     *
+     * @param {SwidgeSupportedTokensOptions} [options] - The caller-supplied operation options (default: empty object).
+     * @returns {Promise<SwidgeSupportedToken[]>} The validated token catalog for the selected chain.
+     * @throws {ButterApiError} If Butter returns malformed, wrong-chain, or conflicting token metadata.
      */
     getSupportedTokens(options?: SwidgeSupportedTokensOptions): Promise<SwidgeSupportedToken[]>;
+    /** @private */
     private assertQuoteOptions;
+    /** @private */
     private isBuiltInEvmExecution;
+    /** @private */
     private getSender;
-    /** Resolves a sender address without throwing (used to default Solana recipient at quote time). */
+    /** @private */
     private resolveSenderOrUndefined;
+    /** @private */
     private assertExecutionCapability;
+    /** @private */
     private feeContextFor;
 }
 export default ButterSwidgeProtocol;

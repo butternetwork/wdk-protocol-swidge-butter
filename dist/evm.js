@@ -21,6 +21,10 @@ import { classifyReceiptStatus } from './status.js';
  * viem client is not structurally assignable (its `sendTransaction` parameter is
  * strongly typed), so wrap it here. The client must have a bound account; the
  * adapter surfaces that as the required `account.address`.
+ *
+ * @param {ViemWalletClientLike} client - The viem client to adapt.
+ * @returns {EvmWalletClient} The provider-compatible EVM wallet client.
+ * @throws {ButterConfigurationError} If the viem wallet client has no bound account address.
  */
 export function toEvmWalletClient(client) {
     const address = client.account?.address;
@@ -29,6 +33,12 @@ export function toEvmWalletClient(client) {
     }
     return {
         account: { address },
+        /**
+         * Sends transaction through the configured sender.
+         *
+         * @param {unknown} args - The request arguments forwarded to the wrapped viem client.
+         * @returns {Promise<`0x${string}`>} A promise resolving to the submitted transaction hash.
+         */
         async sendTransaction(args) {
             return client.sendTransaction(args);
         }
@@ -45,6 +55,10 @@ export function toEvmWalletClient(client) {
  * `name` explicitly on each error class and `shortMessage` on its `BaseError`,
  * and both survive the copy boundary — while still rejecting an unrelated error
  * that merely happens to share a name.
+ *
+ * @param {unknown} error - The error value to classify.
+ * @param {string} name - The viem error class name to match.
+ * @returns {boolean} Whether the inspected values satisfy the condition.
  */
 function isViemErrorNamed(error, name) {
     if (!(error instanceof Error) || error.name !== name)
@@ -60,15 +74,36 @@ function isViemErrorNamed(error, name) {
  * a bare `instanceof`). Any other failure (RPC timeout, auth, rate-limit,
  * malformed response) is rethrown so genuine infrastructure faults surface instead
  * of masquerading as "transaction does not exist".
+ *
+ * @param {ViemPublicClientLike} client - The viem client to adapt.
+ * @returns {EvmPublicClient} The provider-compatible EVM public client.
  */
 export function toEvmPublicClient(client) {
     return {
+        /**
+         * Reads contract from the configured client.
+         *
+         * @param {unknown} args - The request arguments forwarded to the wrapped viem client.
+         * @returns {Promise<bigint>} A promise resolving to the integer contract-read result.
+         */
         async readContract(args) {
             return await client.readContract(args);
         },
+        /**
+         * Waits for for transaction receipt.
+         *
+         * @param {{ hash: string; confirmations?: number; timeout?: number; }} args - The request arguments forwarded to the wrapped viem client.
+         * @returns {Promise<EvmTransactionReceipt>} A promise resolving to the confirmed transaction receipt.
+         */
         async waitForTransactionReceipt(args) {
             return client.waitForTransactionReceipt(args);
         },
+        /**
+         * Returns a viem transaction receipt, mapping only genuine not-found errors to null.
+         *
+         * @param {string} hash - The transaction or route hash to process.
+         * @returns {Promise<EvmTransactionReceipt | null>} The resolved result.
+         */
         async getTransactionReceipt(hash) {
             try {
                 return await client.getTransactionReceipt({ hash });
@@ -81,6 +116,12 @@ export function toEvmPublicClient(client) {
                 throw error;
             }
         },
+        /**
+         * Returns the transaction fields needed for Router attribution, or null when not found.
+         *
+         * @param {string} hash - The transaction or route hash to process.
+         * @returns {Promise<EvmTransactionData | null>} The attribution fields, or null when the transaction is not found.
+         */
         async getTransaction(hash) {
             try {
                 const tx = await client.getTransaction({ hash });
@@ -102,7 +143,12 @@ export function toEvmPublicClient(client) {
     };
 }
 const APPROVAL_POLL_INTERVAL_MS = 2_000;
-/** Returns true when the token identifier denotes a chain's native asset. */
+/**
+ * Returns true when the token identifier denotes a chain's native asset.
+ *
+ * @param {string} token - The token identifier or metadata to process.
+ * @returns {boolean} Whether the inspected values satisfy the condition.
+ */
 export function isNativeToken(token) {
     return NATIVE_TOKEN_ADDRESSES.has(token.toLowerCase());
 }
@@ -116,6 +162,10 @@ export function isNativeToken(token) {
  * on a {@link ButterPartialExecutionError} instead of being discarded with the stack
  * frame; a caller that blindly retried would otherwise re-approve or re-swap on top
  * of transactions already on-chain.
+ *
+ * @param {ExecuteEvmSwapContext} context - The validated context required by the operation.
+ * @returns {Promise<ExecuteEvmSwapResult>} The broadcast transactions and measured gas total.
+ * @throws {ButterPartialExecutionError} If execution fails after at least one transaction was broadcast.
  */
 export async function executeEvmSwap(context) {
     const transactions = [];
@@ -163,6 +213,10 @@ export async function executeEvmSwap(context) {
  * approval through `record` as soon as it is sent. Recording per-send (rather
  * than returning the list) is what lets a failure of the second `approve` still
  * surface the first one's hash.
+ *
+ * @param {{ account: ButterAccount | undefined config: ButterSwidgeProtocolConfig sender: string route: ButterRoute swapTx: ButterSwapTx options: SwidgeOptions sourceChainId: string approvalAmount: bigint }} context - The validated context required by the operation.
+ * @param {RecordSend} record - The callback that records a broadcast transaction.
+ * @returns {Promise<void>} A promise that resolves after the operation completes.
  */
 async function approveIfNeeded(context, record) {
     const publicClient = context.config.evm?.publicClient;
@@ -196,6 +250,10 @@ async function approveIfNeeded(context, record) {
  * fire-and-forget approval could revert (or be unconfirmed) yet the swap would
  * still follow. Requires `publicClient.waitForTransactionReceipt` or the
  * account's `getTransactionReceipt`.
+ *
+ * @param {{ account: ButterAccount | undefined config: ButterSwidgeProtocolConfig }} context - The validated context required by the operation.
+ * @returns {void} Nothing; the function throws when validation fails.
+ * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
  */
 function assertApprovalConfirmable(context) {
     const canConfirm = Boolean(context.config.evm?.publicClient?.waitForTransactionReceipt ||
@@ -204,7 +262,14 @@ function assertApprovalConfirmable(context) {
         throw new ButterConfigurationError('ERC20 approval requires a receipt source to confirm before the swap: provide evm.publicClient.waitForTransactionReceipt or a WDK account with getTransactionReceipt');
     }
 }
-/** Sends an exact `approve(router, value)` and waits for it to confirm. */
+/**
+ * Sends an exact `approve(router, value)` and waits for it to confirm.
+ *
+ * @param {{ account: ButterAccount | undefined config: ButterSwidgeProtocolConfig swapTx: ButterSwapTx options: SwidgeOptions sourceChainId: string }} context - The validated context required by the operation.
+ * @param {bigint} value - The value to parse, normalize, or validate.
+ * @param {RecordSend} record - The callback that records a broadcast transaction.
+ * @returns {Promise<void>} A promise that resolves after the operation completes.
+ */
 async function approveExact(context, value, record) {
     const sent = await sendEvmTransaction(context, {
         to: context.options.fromToken,
@@ -233,6 +298,11 @@ async function approveExact(context, value, record) {
  * Fail-closed: only an explicit success confirms; an explicit revert throws; an
  * unknown/uninterpretable status is treated as not-yet-final (keep polling until
  * timeout) rather than assumed successful.
+ *
+ * @param {{ account: ButterAccount | undefined config: ButterSwidgeProtocolConfig }} context - The validated context required by the operation.
+ * @param {string} hash - The transaction or route hash to process.
+ * @returns {Promise<void>} A promise that resolves after the operation completes.
+ * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
  */
 async function waitForApproval(context, hash) {
     const timeoutMs = context.config.evm?.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS;
@@ -272,6 +342,15 @@ async function waitForApproval(context, hash) {
     }
     throw approvalTimeoutError(hash, timeoutMs);
 }
+/**
+ * Runs one approval lookup while enforcing the remaining confirmation deadline.
+ *
+ * @param {() => Promise<T>} operation - The asynchronous operation constrained by the deadline.
+ * @param {number} deadline - The absolute millisecond deadline for the operation.
+ * @param {string} hash - The transaction or route hash to process.
+ * @param {number} timeoutMs - The operation timeout in milliseconds.
+ * @returns {Promise<T>} The lookup result produced before the deadline.
+ */
 async function beforeApprovalDeadline(operation, deadline, hash, timeoutMs) {
     const remaining = Math.max(deadline - Date.now(), 0);
     if (remaining === 0)
@@ -290,6 +369,13 @@ async function beforeApprovalDeadline(operation, deadline, hash, timeoutMs) {
             clearTimeout(timer);
     }
 }
+/**
+ * Creates the configuration error reported when approval confirmation exceeds its deadline.
+ *
+ * @param {string} hash - The transaction or route hash to process.
+ * @param {number} timeoutMs - The operation timeout in milliseconds.
+ * @returns {ButterConfigurationError} The typed approval timeout error.
+ */
 function approvalTimeoutError(hash, timeoutMs) {
     return new ButterConfigurationError('Timed out waiting for the ERC20 approval to confirm', { hash, timeoutMs });
 }
@@ -301,6 +387,11 @@ function approvalTimeoutError(hash, timeoutMs) {
  * calldata through it could silently drop `data`. The wallet client carries a
  * bound `account.address` (validated against the WDK account) so the signer,
  * calldata initiator, and allowance owner cannot split.
+ *
+ * @param {{ account: ButterAccount | undefined config: ButterSwidgeProtocolConfig }} context - The validated context required by the operation.
+ * @param {EvmTransactionRequest} tx - The transaction request to validate or send.
+ * @returns {Promise<EvmSendResult>} The submitted transaction hash and optional measured fee.
+ * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
  */
 async function sendEvmTransaction(context, tx) {
     const walletClient = context.config.evm?.walletClient;
@@ -320,6 +411,9 @@ async function sendEvmTransaction(context, tx) {
  * the hash IS the record: a sender that returns no usable hash has still
  * broadcast the transaction, but it cannot be identified, so there is nothing to
  * report and this throws.
+ *
+ * @param {string | { hash?: string, fee?: bigint }} result - The sender or API result to normalize.
+ * @returns {EvmSendResult} The validated transaction hash and optional measured fee.
  */
 function normalizeSend(result) {
     if (typeof result === 'string')
@@ -337,6 +431,10 @@ function normalizeSend(result) {
  * status-routing key (`toLowerCase()`), and approval receipt lookups — where a
  * number surfaces as a raw `TypeError` and an empty string silently produces an
  * unusable `id: ''`.
+ *
+ * @param {unknown} value - The value to parse, normalize, or validate.
+ * @returns {string} The validated non-empty transaction hash.
+ * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
  */
 export function assertTransactionHash(value) {
     if (typeof value !== 'string') {
@@ -358,6 +456,10 @@ export function assertTransactionHash(value) {
  *
  * Call this only once the transaction has been recorded: it is broadcast either
  * way, and its hash matters more than its fee.
+ *
+ * @param {unknown} fee - The fee value or metadata to inspect.
+ * @returns {bigint | undefined} The validated gas fee, or undefined when no fee was reported.
+ * @throws {ButterApiError} If the sender reports a fee that is not a non-negative bigint.
  */
 export function assertGasFee(fee) {
     if (fee == null)
@@ -370,6 +472,12 @@ export function assertGasFee(fee) {
     }
     return fee;
 }
+/**
+ * Waits for the requested delay without blocking the event loop.
+ *
+ * @param {number} ms - The delay duration in milliseconds.
+ * @returns {Promise<void>} A promise that resolves after the operation completes.
+ */
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }

@@ -7,6 +7,14 @@ manifest fixes both the public access level and the registry, while
 Publishing. Do not add an `NPM_TOKEN` to that workflow: it authenticates with a
 short-lived GitHub Actions OIDC token.
 
+## Tether review gate
+
+This source repository remains private by project-owner decision. Tether's launch
+review requires publicly accessible source, so a release must not describe that
+finding as fixed. Before launch, attach Tether's written exception or alternative
+acceptance path to the release record; without that evidence, the Tether review
+remains blocked even when the package's technical checks pass.
+
 ## First publish
 
 npm requires the package to exist before its Trusted Publisher can be configured.
