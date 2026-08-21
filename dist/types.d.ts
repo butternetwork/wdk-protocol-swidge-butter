@@ -20,7 +20,9 @@ export type ButterDestinationGuarantees = 'enforced' | 'quoted-only';
  * quoted route instead of allowing an automatic re-quote at execution time.
  */
 export type ButterSwidgeQuote = SwidgeQuote & {
+    /** Butter route hash that can pin a later execution. */
     routeHash: string;
+    /** Whether execution validates the destination minimum or reports it as quote-only. */
     destinationGuarantees: ButterDestinationGuarantees;
 };
 /**
@@ -35,6 +37,7 @@ export type ButterSwidgeQuote = SwidgeQuote & {
  * not treated as a hash.
  */
 export type ButterSwidgeStatusOptions = SwidgeStatusOptions & {
+    /** Treats `id` as an externally obtained Butter order ID instead of a source hash. */
     byOrderId?: boolean;
 };
 /** Butter-specific execution options layered on top of the WDK `SwidgeOptions`. */
@@ -82,8 +85,11 @@ export interface ButterAccount {
 }
 /** Fetch response subset consumed by the Butter HTTP client. */
 export interface ButterFetchResponse {
+    /** Whether the HTTP status is successful. */
     ok: boolean;
+    /** The numeric HTTP response status. */
     status: number;
+    /** Parses the response body as JSON. */
     json: () => Promise<unknown>;
     /**
      * Optional so an existing test double supplying only `json` stays valid. When
@@ -92,7 +98,13 @@ export interface ButterFetchResponse {
      */
     text?: () => Promise<string>;
 }
-/** Fetch-compatible function used for dependency injection and testing. */
+/**
+ * Fetch-compatible function used for dependency injection and testing.
+ *
+ * @param {string} url - The complete Butter endpoint URL.
+ * @param {{ method?: string, headers?: Record<string, string>, signal?: AbortSignal }} [init] - Optional request method, headers, and abort signal.
+ * @returns {Promise<ButterFetchResponse>} The minimal response consumed by the provider.
+ */
 export type ButterFetch = (url: string, init?: {
     method?: string;
     headers?: Record<string, string>;
@@ -100,11 +112,26 @@ export type ButterFetch = (url: string, init?: {
 }) => Promise<ButterFetchResponse>;
 /** Minimal EVM transaction receipt shape used for success/status checks. */
 export interface EvmTransactionReceipt {
+    /** The provider-specific receipt status used for fail-closed classification. */
     status?: string | number | boolean;
+}
+export interface EvmTransactionData {
+    /** The transaction calldata used for Router attribution. */
+    input?: string;
+    /** The transaction target used for Router allowlist checks. */
+    to?: string;
+}
+interface ViemTransactionData {
+    /** The transaction calldata returned by viem. */
+    input?: string;
+    /** The nullable transaction target returned by viem. */
+    to?: string | null;
 }
 /** Read-only EVM client capabilities needed for allowance and receipt checks. */
 export interface EvmPublicClient {
+    /** Reads an ERC-20 allowance or another integer contract value. */
     readContract: (args: unknown) => Promise<bigint>;
+    /** Waits for a submitted transaction to reach the requested confirmation count. */
     waitForTransactionReceipt?: (args: {
         hash: string;
         confirmations?: number;
@@ -116,10 +143,7 @@ export interface EvmPublicClient {
      * Fetches a sent transaction (for its calldata `input`). Used to statelessly
      * classify a swidge as same- or cross-chain when status hints are omitted.
      */
-    getTransaction?: (hash: string) => Promise<{
-        input?: string;
-        to?: string;
-    } | null>;
+    getTransaction?: (hash: string) => Promise<EvmTransactionData | null>;
 }
 /**
  * EVM wallet client capabilities needed for transaction submission. `account` is
@@ -127,9 +151,11 @@ export interface EvmPublicClient {
  * not structurally assignable to this; wrap it with {@link toEvmWalletClient}.
  */
 export interface EvmWalletClient {
+    /** The account bound to every transaction submitted by the client. */
     account: {
         address: string;
     };
+    /** Submits an EVM transaction with calldata and optional chain metadata. */
     sendTransaction: (args: unknown) => Promise<string | {
         hash?: string;
         fee?: bigint;
@@ -137,20 +163,23 @@ export interface EvmWalletClient {
 }
 /** Loose shape of a viem-style wallet client accepted by {@link toEvmWalletClient}. */
 export interface ViemWalletClientLike {
+    /** The optional account bound to the viem wallet client. */
     account?: {
         address: string;
     } | null;
+    /** Submits a transaction through the wrapped viem wallet client. */
     sendTransaction: (args: any) => Promise<`0x${string}`>;
 }
 /** Loose shape of a viem-style public client accepted by `toEvmPublicClient`. */
 export interface ViemPublicClientLike {
+    /** Reads a contract through the wrapped viem public client. */
     readContract: (args: any) => Promise<unknown>;
+    /** Waits for a transaction receipt through viem. */
     waitForTransactionReceipt: (args: any) => Promise<EvmTransactionReceipt>;
+    /** Fetches a transaction receipt through viem. */
     getTransactionReceipt: (args: any) => Promise<EvmTransactionReceipt>;
-    getTransaction: (args: any) => Promise<{
-        input?: string;
-        to?: string | null;
-    }>;
+    /** Fetches transaction calldata and target metadata through viem. */
+    getTransaction: (args: any) => Promise<ViemTransactionData>;
 }
 /**
  * An adapter's result: the transaction to send, plus its role. When an adapter
@@ -159,7 +188,9 @@ export interface ViemPublicClientLike {
  * return is treated as a single, untyped `source` transaction.
  */
 export interface ButterAdapterResult {
+    /** The host-specific transaction payload to broadcast. */
     transaction: unknown;
+    /** The transaction role used to select the operation id and status route. */
     type?: SwidgeTransaction['type'];
 }
 /**
@@ -171,11 +202,19 @@ export interface ButterAdapterResult {
  * primary `source` transaction is identifiable. The return stays `unknown` because
  * non-EVM transaction shapes are open-ended; use `ButterAdapterResult` for the
  * typed, classifiable form.
+ *
+ * @param {ButterSwapTx} swapTx - The transaction data returned by Butter `/swap`.
+ * @param {{ sender: string, receiver: string, route: ButterRoute, options: SwidgeOptions }} context - The validated sender, recipient, route, and caller options.
+ * @returns {unknown} A host-specific transaction or classified adapter result.
  */
 export type ButterTransactionAdapter = (swapTx: ButterSwapTx, context: {
+    /** The validated source account address. */
     sender: string;
+    /** The output recipient used for the Butter route. */
     receiver: string;
+    /** The route associated with the transaction data. */
     route: ButterRoute;
+    /** The caller options associated with the transaction data. */
     options: SwidgeOptions;
 }) => unknown;
 /** How this instance would execute on a given chain. */
@@ -185,13 +224,16 @@ export type ButterChainExecution = 'native' | 'adapter' | 'quote-only';
  * extra field is visible in the public type rather than only at runtime.
  */
 export type ButterSupportedChain = SwidgeSupportedChain & {
+    /** How the current provider instance can execute on this chain. */
     execution: ButterChainExecution;
 };
 /** Router calldata validator versions implemented by this package. */
 export type ButterRouterVersion = 'v3';
 /** Allowlisted Butter Router deployment and its validator version. */
 export interface ButterRouterDeployment {
+    /** The allowlisted Router contract address. */
     address: `0x${string}`;
+    /** The calldata validator version used for this deployment. */
     version: ButterRouterVersion;
 }
 /** A non-fatal condition reported through {@link ButterSwidgeProtocolConfig.onWarning}. */
@@ -207,7 +249,9 @@ export interface ButterWarning {
      * omitted from `fees[]` and a configured protocol cap refuses.
      */
     code: 'mixed-currency-protocol-fees' | 'no-fees-reported' | 'bridge-fee-components-missing';
+    /** A human-readable explanation of the non-fatal condition. */
     message: string;
+    /** Optional structured context for logging or diagnostics. */
     details?: unknown;
 }
 /** Construction and execution configuration for {@link ButterSwidgeProtocol}. */
@@ -216,22 +260,32 @@ export interface ButterSwidgeProtocolConfig extends SwidgeProtocolConfig {
     sourceChainId: string | number;
     /** Butter-issued integration entrance identifier. */
     entrance: string;
+    /** The Butter API key identifier; supply it together with `apiSecret`. */
     apiKeyId?: string | undefined;
+    /** The server-side Butter API secret; never expose it to browser clients. */
     apiSecret?: string | undefined;
+    /** Whether Butter credentials are optional or required (default: `optional`). */
     authMode?: 'required' | 'optional';
+    /** The HTTPS base URL for Butter Router endpoints. */
     routerBaseUrl?: string;
+    /** The HTTPS base URL for Butter token endpoints. */
     tokenBaseUrl?: string;
+    /** The HTTPS base URL for Butter status endpoints. */
     appBaseUrl?: string;
     /** Complete Butter HTTP request deadline in milliseconds (default 10,000). */
     requestTimeoutMs?: number;
+    /** The fetch implementation used for Butter HTTP requests. */
     fetch?: ButterFetch;
+    /** Returns the current Unix timestamp in seconds for deterministic expiry tests. */
     now?: () => number;
+    /** Per-chain Router allowlist overrides; each chain entry replaces its defaults. */
     routerContracts?: Partial<Record<number, readonly ButterRouterDeployment[]>>;
+    /** Source-token decimals keyed by token identifier for tokens Butter cannot resolve. */
     tokenDecimals?: Record<string, number>;
     /** Per-chain native token decimals overriding built-in chain defaults. */
     nativeTokenDecimals?: Record<string, number>;
     /** Additional chain IDs requiring Butter's strict 300 bps slippage floor. */
-    strictSlippageChainIds?: Array<string | number>;
+    strictSlippageChainIds?: (string | number)[];
     /**
      * Butter affiliate collecting the integrator's share, formatted
      * `<nickname>` or `<nickname>:<rate>`. Validated at construction.
@@ -278,7 +332,7 @@ export interface ButterSwidgeProtocolConfig extends SwidgeProtocolConfig {
      * EVM chain the built-in table does not list yet, instead of passing a recipient
      * on every call.
      */
-    evmChainIds?: Array<string | number>;
+    evmChainIds?: (string | number)[];
     /**
      * Absolute ceiling (source-chain native base units) on the non-input native
      * value a `/swap` transaction may spend — the router protocol fee plus the
@@ -299,6 +353,7 @@ export interface ButterSwidgeProtocolConfig extends SwidgeProtocolConfig {
      * any deeper validation of the provider-supplied transaction data.
      */
     transactionAdapters?: Record<string, ButterTransactionAdapter>;
+    /** The EVM read, send, and approval-confirmation capabilities. */
     evm?: {
         /**
          * Read-only client for ERC-20 allowance checks. Optional: without it the
@@ -312,6 +367,7 @@ export interface ButterSwidgeProtocolConfig extends SwidgeProtocolConfig {
          * Wrap a viem wallet client with {@link toEvmWalletClient}.
          */
         walletClient?: EvmWalletClient;
+        /** Receipt confirmations required before an ERC-20 approval is accepted. */
         approvalConfirmations?: number;
         /** Approval confirmation deadline in milliseconds (default 10,000). Zero means immediate timeout. */
         approvalTimeoutMs?: number;
@@ -319,9 +375,13 @@ export interface ButterSwidgeProtocolConfig extends SwidgeProtocolConfig {
 }
 /** Token metadata returned inside a Butter route. */
 export interface ButterRouteToken {
+    /** The chain-specific token address or native identifier. */
     address?: string;
+    /** The token decimal count declared by Butter. */
     decimals?: number | string;
+    /** The human-readable token symbol. */
     symbol?: string;
+    /** The human-readable token name. */
     name?: string;
 }
 /** A single DEX/bridge leg within a chain's route segment. */
@@ -331,27 +391,44 @@ export interface ButterRouteLeg {
 }
 /** Per-chain route segment returned by Butter. */
 export interface ButterRouteChain {
+    /** The chain identifier for this route segment. */
     chainId?: string | number;
+    /** The token entering this route segment. */
     tokenIn?: ButterRouteToken;
+    /** The token leaving this route segment. */
     tokenOut?: ButterRouteToken;
+    /** The segment input amount as a decimal string. */
     totalAmountIn?: string;
+    /** The segment output amount as a decimal string. */
     totalAmountOut?: string;
+    /** Butter USD metadata for the segment input. */
     totalAmountInUSD?: string;
+    /** Butter USD metadata for the segment output. */
     totalAmountOutUSD?: string;
     /** Ordered legs for this segment; the final leg carries the segment's price impact. */
     route?: ButterRouteLeg[];
 }
 /** Normalized shape of a Butter `/route` result. */
 export interface ButterRoute {
+    /** The route hash required by the `/swap` request. */
     hash: string;
+    /** The route creation time as a Unix timestamp in seconds. */
     timestamp?: number;
+    /** Whether Butter reports sufficient liquidity for the candidate. */
     hasLiquidity?: boolean;
+    /** The estimated route duration in seconds. */
     timeEstimated?: number;
+    /** Alternate Butter field for estimated duration in seconds. */
     estimatedTime?: number;
+    /** The Router address selected by Butter. */
     contract?: string;
+    /** Authoritative top-level price impact when Butter provides one. */
     priceImpact?: string | number;
+    /** The bridge fee summary and independently denominated components. */
     bridgeFee?: ButterBridgeFee;
+    /** The estimated source-chain network fee. */
     gasFee?: ButterFee;
+    /** The authoritative Butter swap fee amounts. */
     swapFee?: {
         nativeFee?: string;
         tokenFee?: string;
@@ -360,42 +437,64 @@ export interface ButterRoute {
     };
     /** Referrer fee config mirrored into `/swap` feeData; its charge is already included in `swapFee`. */
     feeConfig?: ButterFeeConfig;
+    /** The minimum destination amount and optional symbol. */
     minAmountOut?: {
         amount?: string;
         symbol?: string;
     };
+    /** Alternate Butter field for minimum destination amount. */
     amountOutMin?: string;
+    /** The source-chain route segment. */
     srcChain?: ButterRouteChain;
+    /** The bridge-chain route segment when supplied. */
     bridgeChain?: ButterRouteChain;
+    /** The destination-chain route segment for cross-chain routes. */
     dstChain?: ButterRouteChain;
+    /** Top-level route input amount as a decimal string. */
     totalAmountIn?: string;
+    /** Top-level route output amount as a decimal string. */
     totalAmountOut?: string;
+    /** Butter USD metadata for the route input. */
     totalAmountInUSD?: string;
+    /** Butter USD metadata for the route output. */
     totalAmountOutUSD?: string;
 }
 /** Butter `/route` referrer fee configuration, encoded on-chain as `feeData`. */
 export interface ButterFeeConfig {
+    /** The Router fee encoding mode. */
     feeType?: number | string;
+    /** The address receiving the quoted referrer fee. */
     referrer?: string;
+    /** The quoted rate or native fee encoded in Router calldata. */
     rateOrNativeFee?: string | number;
 }
 /** Common Butter fee fields. */
 export interface ButterFee {
+    /** The fee amount as a decimal string. */
     amount?: string;
+    /** The symbol of the fee token. */
     symbol?: string;
+    /** The address or identifier of the fee token. */
     address?: string;
+    /** The chain on which the fee is charged. */
     chainId?: string | number;
+    /** Butter USD metadata for the fee. */
     inUSD?: string;
 }
 /** Token-denominated component of a Butter bridge fee. */
 export interface ButterFeePart {
+    /** The component amount as a decimal string. */
     amount?: string;
+    /** The token in which the component is denominated. */
     token?: ButterRouteToken;
 }
 /** Detailed bridge and affiliate fee information. */
 export interface ButterBridgeFee extends ButterFee {
+    /** The source-side bridge fee component. */
     in?: ButterFeePart;
+    /** The destination-side bridge fee component. */
     out?: ButterFeePart;
+    /** The affiliate bridge fee component and raw metadata. */
     affiliate?: ButterFeePart & {
         list?: unknown[];
         data?: string;
@@ -403,51 +502,80 @@ export interface ButterBridgeFee extends ButterFee {
 }
 /** Transaction request returned by Butter `/swap`. */
 export interface ButterSwapTx {
+    /** The transaction target returned by Butter. */
     to: string;
+    /** The native transaction value encoded as an integer string. */
     value: string;
+    /** The source chain on which to submit the transaction. */
     chainId: string | number;
+    /** The optional EVM calldata returned by Butter. */
     data?: string | undefined;
+    /** Optional method metadata accompanying EVM calldata. */
     method?: string | undefined;
+    /** Optional decoded argument metadata returned by Butter. */
     args?: unknown[] | undefined;
+    /** Optional memo used by non-EVM transaction adapters. */
     memo?: string | undefined;
 }
 /** Chain metadata returned by Butter discovery APIs. */
 export interface ButterChainInfo {
+    /** The id value carried by butter chain info metadata. */
     id?: string | number;
+    /** The chain id value carried by butter chain info metadata. */
     chainId?: string | number;
+    /** The chain type value carried by butter chain info metadata. */
     chainType?: string;
+    /** The type value carried by butter chain info metadata. */
     type?: string;
+    /** The name value carried by butter chain info metadata. */
     name?: string;
+    /** The key value carried by butter chain info metadata. */
     key?: string;
+    /** The native token value carried by butter chain info metadata. */
     nativeToken?: string | ButterTokenInfo;
 }
 /** Token metadata returned by Butter discovery APIs. */
 export interface ButterTokenInfo {
+    /** The chain id value carried by butter token info metadata. */
     chainId?: string | number;
+    /** The address value carried by butter token info metadata. */
     address?: string;
+    /** The token value carried by butter token info metadata. */
     token?: string;
+    /** The decimals value carried by butter token info metadata. */
     decimals?: number | string;
+    /** The decimal value carried by butter token info metadata. */
     decimal?: number | string;
+    /** The symbol value carried by butter token info metadata. */
     symbol?: string;
+    /** The name value carried by butter token info metadata. */
     name?: string;
 }
 /** EVM transaction request passed to configured senders. */
 export interface EvmTransactionRequest {
+    /** The target address for the submitted EVM transaction. */
     to: `0x${string}` | string;
+    /** The native value in source-chain base units. */
     value?: bigint | undefined;
+    /** The transaction calldata. */
     data?: `0x${string}` | string | undefined;
+    /** The numeric EVM chain identifier. */
     chainId?: number | undefined;
 }
 /** Internal cached route envelope. */
 export interface CachedRoute {
+    /** The key value carried by cached route metadata. */
     key: string;
+    /** The route value carried by cached route metadata. */
     route: ButterRoute;
+    /** The slippage bps value carried by cached route metadata. */
     slippageBps: number;
     /**
      * Source-token decimals resolved by this package (config / `/findToken` / native
      * default) and used to build the request — NOT the route's own reported value.
      */
     sourceDecimals: number;
+    /** The expires at value carried by cached route metadata. */
     expiresAt: number;
 }
 //# sourceMappingURL=types.d.ts.map

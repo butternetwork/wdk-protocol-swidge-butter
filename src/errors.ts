@@ -16,8 +16,15 @@ import type { SwidgeTransaction } from './types.js'
 
 /** Indicates malformed, inconsistent, or unsuccessful Butter API data. */
 export class ButterApiError extends Error {
+  /** Structured Butter response or validation context associated with the failure. */
   readonly details: unknown
 
+  /**
+   * Creates a butter api error instance.
+   *
+   * @param {string} message - The human-readable error or validation message.
+   * @param {unknown} [details] - Optional structured diagnostic details attached to the error.
+   */
   constructor (message: string, details?: unknown) {
     super(message)
     this.name = 'ButterApiError'
@@ -27,8 +34,15 @@ export class ButterApiError extends Error {
 
 /** Indicates an operation or option unsupported by this provider. */
 export class ButterUnsupportedError extends Error {
+  /** Structured caller input or operation context associated with the failure. */
   readonly details: unknown
 
+  /**
+   * Creates a butter unsupported error instance.
+   *
+   * @param {string} message - The human-readable error or validation message.
+   * @param {unknown} [details] - Optional structured diagnostic details attached to the error.
+   */
   constructor (message: string, details?: unknown) {
     super(message)
     this.name = 'ButterUnsupportedError'
@@ -38,8 +52,15 @@ export class ButterUnsupportedError extends Error {
 
 /** Indicates missing or invalid provider configuration. */
 export class ButterConfigurationError extends Error {
+  /** Structured configuration context associated with the failure. */
   readonly details: unknown
 
+  /**
+   * Creates a butter configuration error instance.
+   *
+   * @param {string} message - The human-readable error or validation message.
+   * @param {unknown} [details] - Optional structured diagnostic details attached to the error.
+   */
   constructor (message: string, details?: unknown) {
     super(message)
     this.name = 'ButterConfigurationError'
@@ -49,8 +70,15 @@ export class ButterConfigurationError extends Error {
 
 /** Indicates that caller action is required before an operation can continue. */
 export class ButterActionRequiredError extends Error {
+  /** Structured context describing the caller action required. */
   readonly details: unknown
 
+  /**
+   * Creates a butter action required error instance.
+   *
+   * @param {string} message - The human-readable error or validation message.
+   * @param {unknown} [details] - Optional structured diagnostic details attached to the error.
+   */
   constructor (message: string, details?: unknown) {
     super(message)
     this.name = 'ButterActionRequiredError'
@@ -64,6 +92,12 @@ export class ButterActionRequiredError extends Error {
  * against the input amount. Fee limits fail closed on unvaluable routes.
  */
 export class ButterFeeValuationError extends ButterApiError {
+  /**
+   * Creates a butter fee valuation error instance.
+   *
+   * @param {string} message - The human-readable error or validation message.
+   * @param {unknown} [details] - Optional structured diagnostic details attached to the error.
+   */
   constructor (message: string, details?: unknown) {
     super(message, details)
     this.name = 'ButterFeeValuationError'
@@ -80,6 +114,12 @@ export class ButterFeeValuationError extends ButterApiError {
  * to a user, whereas a bad parameter or a rejected API key is not.
  */
 export class ButterNoRouteError extends ButterApiError {
+  /**
+   * Creates a butter no route error instance.
+   *
+   * @param {string} message - The human-readable error or validation message.
+   * @param {unknown} [details] - Optional structured diagnostic details attached to the error.
+   */
   constructor (message: string, details?: unknown) {
     super(message, details)
     this.name = 'ButterNoRouteError'
@@ -88,6 +128,13 @@ export class ButterNoRouteError extends ButterApiError {
 
 /** Indicates that a configured WDK network or protocol fee cap was exceeded. */
 export class ButterFeeLimitExceededError extends ButterActionRequiredError {
+  /**
+   * Creates a butter fee limit exceeded error instance.
+   *
+   * @param {'network' | 'protocol'} feeType - The WDK fee category that exceeded its limit.
+   * @param {bigint} actualBps - The calculated fee ratio in basis points.
+   * @param {bigint} maximumBps - The maximum allowed fee ratio in basis points.
+   */
   constructor (feeType: 'network' | 'protocol', actualBps: bigint, maximumBps: bigint) {
     super(`Butter ${feeType} fee exceeds the configured limit`, {
       feeType,
@@ -122,6 +169,13 @@ export class ButterPartialExecutionError extends ButterActionRequiredError {
   /** Role of the transaction whose send failed, when known. */
   readonly failedType: SwidgeTransaction['type'] | undefined
 
+  /**
+   * Creates a butter partial execution error instance.
+   *
+   * @param {readonly SwidgeTransaction[]} transactions - The transactions already broadcast before the failure.
+   * @param {unknown} cause - The underlying failure that interrupted the operation.
+   * @param {SwidgeTransaction['type']} [failedType] - The role of the transaction whose send failed, when known.
+   */
   constructor (
     transactions: readonly SwidgeTransaction[],
     cause: unknown,
@@ -140,6 +194,11 @@ export class ButterPartialExecutionError extends ButterActionRequiredError {
 
 /** Indicates that execution was attempted without a send-capable signer. */
 export class ButterReadOnlyAccountError extends ButterConfigurationError {
+  /**
+   * Creates a butter read only account error instance.
+   *
+   * @param {string} [message] - The human-readable error or validation message (default: 'Swidge execution requires an account or signer that can send transactions').
+   */
   constructor (message = 'Swidge execution requires an account or signer that can send transactions') {
     super(message)
     this.name = 'ButterReadOnlyAccountError'
@@ -157,6 +216,7 @@ export class ButterReadOnlyAccountError extends ButterConfigurationError {
  * live API via `npm run example:probe-exact-out`.
  */
 export class ButterExactOutUnsupportedError extends ButterUnsupportedError {
+  /** Creates an exact-out unsupported error. */
   constructor () {
     super('Butter router does not support exact-out swaps')
     this.name = 'ButterExactOutUnsupportedError'
@@ -165,6 +225,12 @@ export class ButterExactOutUnsupportedError extends ButterUnsupportedError {
 
 /** Indicates that `/swap` transaction data does not match the requested intent. */
 export class ButterTransactionValidationError extends ButterApiError {
+  /**
+   * Creates a butter transaction validation error instance.
+   *
+   * @param {string} message - The human-readable error or validation message.
+   * @param {unknown} [details] - Optional structured diagnostic details attached to the error.
+   */
   constructor (message: string, details?: unknown) {
     super(message, details)
     this.name = 'ButterTransactionValidationError'

@@ -4,6 +4,10 @@ import type { ButterAccount, ButterRoute, ButterSwapTx, ButterSwidgeProtocolConf
  * viem client is not structurally assignable (its `sendTransaction` parameter is
  * strongly typed), so wrap it here. The client must have a bound account; the
  * adapter surfaces that as the required `account.address`.
+ *
+ * @param {ViemWalletClientLike} client - The viem client to adapt.
+ * @returns {EvmWalletClient} The provider-compatible EVM wallet client.
+ * @throws {ButterConfigurationError} If the viem wallet client has no bound account address.
  */
 export declare function toEvmWalletClient(client: ViemWalletClientLike): EvmWalletClient;
 /**
@@ -15,22 +19,19 @@ export declare function toEvmWalletClient(client: ViemWalletClientLike): EvmWall
  * a bare `instanceof`). Any other failure (RPC timeout, auth, rate-limit,
  * malformed response) is rethrown so genuine infrastructure faults surface instead
  * of masquerading as "transaction does not exist".
+ *
+ * @param {ViemPublicClientLike} client - The viem client to adapt.
+ * @returns {EvmPublicClient} The provider-compatible EVM public client.
  */
 export declare function toEvmPublicClient(client: ViemPublicClientLike): EvmPublicClient;
-/** Returns true when the token identifier denotes a chain's native asset. */
-export declare function isNativeToken(token: string): boolean;
 /**
- * Executes a validated Butter swap transaction (plus ERC-20 approval when needed) on an EVM chain.
+ * Returns true when the token identifier denotes a chain's native asset.
  *
- * Up to three transactions can be submitted (`approve(0)`, `approve(amount)`, the
- * swap), so each send is recorded through {@link RecordSend} the instant it
- * returns rather than collected at the end. If anything then fails — a later send,
- * or an approval that cannot be confirmed — the already broadcast hashes travel out
- * on a {@link ButterPartialExecutionError} instead of being discarded with the stack
- * frame; a caller that blindly retried would otherwise re-approve or re-swap on top
- * of transactions already on-chain.
+ * @param {string} token - The token identifier or metadata to process.
+ * @returns {boolean} Whether the inspected values satisfy the condition.
  */
-export declare function executeEvmSwap(context: {
+export declare function isNativeToken(token: string): boolean;
+interface ExecuteEvmSwapContext {
     account: ButterAccount | undefined;
     config: ButterSwidgeProtocolConfig;
     sender: string;
@@ -41,18 +42,35 @@ export declare function executeEvmSwap(context: {
     nativeSource: boolean;
     /**
      * Exact ERC-20 allowance to grant the router, in source-token base units. The
-     * caller resolves it because exact-out has no `fromTokenAmount` to read — it is
+     * caller resolves it because exact-out has no `fromTokenAmount` to read - it is
      * the caller's `maxFromTokenAmount` bound there, and the exact input for exact-in.
      */
     approvalAmount: bigint;
-}): Promise<{
-    transactions: Array<{
+}
+interface ExecuteEvmSwapResult {
+    transactions: {
         hash: string;
         chain: string | number;
         type: 'approval' | 'source';
-    }>;
+    }[];
     gasFee: bigint | undefined;
-}>;
+}
+/**
+ * Executes a validated Butter swap transaction (plus ERC-20 approval when needed) on an EVM chain.
+ *
+ * Up to three transactions can be submitted (`approve(0)`, `approve(amount)`, the
+ * swap), so each send is recorded through {@link RecordSend} the instant it
+ * returns rather than collected at the end. If anything then fails — a later send,
+ * or an approval that cannot be confirmed — the already broadcast hashes travel out
+ * on a {@link ButterPartialExecutionError} instead of being discarded with the stack
+ * frame; a caller that blindly retried would otherwise re-approve or re-swap on top
+ * of transactions already on-chain.
+ *
+ * @param {ExecuteEvmSwapContext} context - The validated context required by the operation.
+ * @returns {Promise<ExecuteEvmSwapResult>} The broadcast transactions and measured gas total.
+ * @throws {ButterPartialExecutionError} If execution fails after at least one transaction was broadcast.
+ */
+export declare function executeEvmSwap(context: ExecuteEvmSwapContext): Promise<ExecuteEvmSwapResult>;
 /**
  * Validates a transaction hash reported by a host-supplied sender.
  *
@@ -63,6 +81,10 @@ export declare function executeEvmSwap(context: {
  * status-routing key (`toLowerCase()`), and approval receipt lookups — where a
  * number surfaces as a raw `TypeError` and an empty string silently produces an
  * unusable `id: ''`.
+ *
+ * @param {unknown} value - The value to parse, normalize, or validate.
+ * @returns {string} The validated non-empty transaction hash.
+ * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
  */
 export declare function assertTransactionHash(value: unknown): string;
 /**
@@ -76,6 +98,11 @@ export declare function assertTransactionHash(value: unknown): string;
  *
  * Call this only once the transaction has been recorded: it is broadcast either
  * way, and its hash matters more than its fee.
+ *
+ * @param {unknown} fee - The fee value or metadata to inspect.
+ * @returns {bigint | undefined} The validated gas fee, or undefined when no fee was reported.
+ * @throws {ButterApiError} If the sender reports a fee that is not a non-negative bigint.
  */
 export declare function assertGasFee(fee: unknown): bigint | undefined;
+export {};
 //# sourceMappingURL=evm.d.ts.map

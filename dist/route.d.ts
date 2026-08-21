@@ -30,16 +30,35 @@ export interface RouteRequestContext {
     /** Optional fallback resolving decimals for tokens absent from `tokenDecimals`. */
     lookupDecimals?: (token: string) => Promise<number | undefined>;
 }
+interface RouteLookupOptions {
+    forExecution?: boolean;
+    senderFallback?: string;
+}
+interface RouteRequestResult {
+    request: Record<string, unknown>;
+    sourceDecimals: number;
+}
 export declare class RouteManager {
     private readonly context;
     private readonly cache;
     private readonly hashIndex;
+    /**
+     * Creates a route manager instance.
+     *
+     * @param {RouteRequestContext} context - The validated context required by the operation.
+     */
     constructor(context: RouteRequestContext);
+    /** @private */
     private executionMargin;
-    getRoute(options: SwidgeOptions, { forExecution, senderFallback }?: {
-        forExecution?: boolean;
-        senderFallback?: string | undefined;
-    }): Promise<CachedRoute>;
+    /**
+     * Returns a fresh or reusable Butter route matching the caller options.
+     *
+     * @param {SwidgeOptions} options - The caller-supplied operation options.
+     * @param {RouteLookupOptions} [lookupOptions] - The cache and sender options used for route lookup (default: empty object).
+     * @returns {Promise<CachedRoute>} The resolved result.
+     * @throws {ButterNoRouteError} If Butter provides no liquid route for the request.
+     */
+    getRoute(options: SwidgeOptions, lookupOptions?: RouteLookupOptions): Promise<CachedRoute>;
     /**
      * Consumes a previously quoted route pinned by its Butter hash.
      *
@@ -50,13 +69,17 @@ export declare class RouteManager {
      * A pin is the caller's approved price, so a route inside the execution margin
      * cannot be silently re-fetched the way {@link getRoute} does — that would
      * execute a price the caller never saw. It is rejected instead.
+     *
+     * @param {string} hash - The transaction or route hash to process.
+     * @param {SwidgeOptions} options - The caller-supplied operation options.
+     * @param {string} [senderFallback] - The sender used when the route requires a receiver fallback.
+     * @returns {Promise<CachedRoute>} The pinned route removed from the cache for one execution attempt.
+     * @throws {ButterActionRequiredError} If caller action is required before the operation can continue.
      */
     consumeRouteByHash(hash: string, options: SwidgeOptions, senderFallback?: string): Promise<CachedRoute>;
-    /**
-     * Bounds cache growth for long-lived quote-only instances: drops expired
-     * entries, then evicts oldest (insertion-ordered) entries until under the cap.
-     */
+    /** @private */
     private evictStaleRoutes;
+    /** @private */
     private evict;
     /**
      * Builds the `/route` query, and returns the source-token decimals it resolved
@@ -67,15 +90,37 @@ export declare class RouteManager {
      * units into Butter's decimal `amount`. They are returned rather than recomputed
      * so fee valuation can use exactly the same number instead of the route's own
      * `srcChain.tokenIn.decimals`, which is untrusted.
+     *
+     * @param {SwidgeOptions} options - The caller-supplied operation options.
+     * @param {string} [senderFallback] - The sender used when the route requires a receiver fallback.
+     * @returns {Promise<RouteRequestResult>} The normalized request and trusted source-token decimals.
+     * @throws {ButterActionRequiredError} If caller action is required before the operation can continue.
+     * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
+     * @throws {ButterExactOutUnsupportedError} If an exact-out operation is requested.
      */
-    buildRouteRequest(options: SwidgeOptions, senderFallback?: string): Promise<{
-        request: Record<string, unknown>;
-        sourceDecimals: number;
-    }>;
+    buildRouteRequest(options: SwidgeOptions, senderFallback?: string): Promise<RouteRequestResult>;
+    /**
+     * Enforces min amount out.
+     *
+     * @param {SwidgeOptions} options - The caller-supplied operation options.
+     * @param {ButterRoute} route - The Butter route to inspect or map.
+     * @returns {void} Nothing; the function throws when validation fails.
+     * @throws {ButterActionRequiredError} If caller action is required before the operation can continue.
+     */
     enforceMinAmountOut(options: SwidgeOptions, route: ButterRoute): void;
+    /** @private */
     private decimalsFor;
+    /** @private */
     private validateRouteMatchesRequest;
 }
+/**
+ * Returns the conservative expiry timestamp for a Butter route.
+ *
+ * @param {ButterRoute} route - The Butter route to inspect or map.
+ * @param {number} now - The current Unix timestamp in seconds.
+ * @returns {number} The conservative Unix expiry timestamp in seconds.
+ * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
+ */
 export declare function routeExpiresAt(route: ButterRoute, now: number): number;
 /**
  * Reads a route token's decimals, requiring them to be present and valid.
@@ -83,8 +128,14 @@ export declare function routeExpiresAt(route: ButterRoute, now: number): number;
  * Butter always echoes token decimals on a route; a missing value indicates
  * malformed data, so we fail rather than silently defaulting to 18 (which
  * would misscale amounts by orders of magnitude).
+ *
+ * @param {{ decimals?: string | number } | undefined} token - The token identifier or metadata to process.
+ * @param {string} [label] - The human-readable label used in validation errors (default: 'token').
+ * @returns {number} The validated token decimal count.
+ * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
  */
 export declare function decimalsOf(token: {
     decimals?: string | number;
 } | undefined, label?: string): number;
+export {};
 //# sourceMappingURL=route.d.ts.map

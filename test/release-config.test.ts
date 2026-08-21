@@ -48,6 +48,14 @@ describe('npm release configuration', () => {
     assert.ok(packageJson.files?.includes('SECURITY.md'))
   })
 
+  it('publishes the reviewed Built with WDK badge with the package', async () => {
+    const packageJson = JSON.parse(
+      await readFile(join(repositoryRoot, 'package.json'), 'utf8')
+    ) as PackageManifest
+
+    assert.equal(packageJson.files?.includes('docs/assets/built-with-wdk.png'), true)
+  })
+
   it('publishes GitHub Releases through OIDC without a long-lived npm token', async () => {
     const workflow = await readFile(
       join(repositoryRoot, '.github/workflows/publish.yml'),

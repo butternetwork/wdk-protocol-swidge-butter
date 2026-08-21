@@ -27,7 +27,15 @@ export interface ParseTokenAmountOptions {
   rounding?: TokenAmountRounding
 }
 
-/** Converts a non-negative decimal token amount into integer base units. */
+/**
+ * Converts a non-negative decimal token amount into integer base units.
+ *
+ * @param {string | number | bigint | undefined | null} amount - The token amount to process.
+ * @param {number} [decimals] - The token decimal precision used for conversion (default: 18).
+ * @param {ParseTokenAmountOptions} [options] - The caller-supplied operation options (default: empty object).
+ * @returns {bigint} The parsed value.
+ * @throws {ButterApiError} If the amount is negative, unsafe as a number, malformed, or more precise than the selected rounding policy allows.
+ */
 export function parseTokenAmount (
   amount: string | number | bigint | undefined | null,
   decimals = 18,
@@ -57,7 +65,16 @@ export function parseTokenAmount (
   return losesPrecision && rounding === 'ceil' ? truncated + 1n : truncated
 }
 
-/** Parses a token amount from Butter while rejecting an omitted required field. */
+/**
+ * Parses a token amount from Butter while rejecting an omitted required field.
+ *
+ * @param {string | number | bigint | undefined | null} amount - The token amount to process.
+ * @param {string} label - The human-readable label used in validation errors.
+ * @param {number} [decimals] - The token decimal precision used for conversion (default: 18).
+ * @param {ParseTokenAmountOptions} [options] - The caller-supplied operation options (default: empty object).
+ * @returns {bigint} The parsed value.
+ * @throws {ButterApiError} If Butter omitted the required amount or returned an invalid amount.
+ */
 export function parseRequiredTokenAmount (
   amount: string | number | bigint | undefined | null,
   label: string,
@@ -68,7 +85,14 @@ export function parseRequiredTokenAmount (
   return parseTokenAmount(amount, decimals, options)
 }
 
-/** Formats integer base units as a decimal token amount without floating point conversion. */
+/**
+ * Formats integer base units as a decimal token amount without floating point conversion.
+ *
+ * @param {bigint | number | string} amount - The token amount to process.
+ * @param {number} [decimals] - The token decimal precision used for conversion (default: 18).
+ * @returns {string} The formatted value.
+ * @throws {ButterApiError} If the amount or decimal count is negative, unsafe, or otherwise invalid.
+ */
 export function formatTokenAmount (amount: bigint | number | string, decimals = 18): string {
   assertDecimals(decimals)
   if (typeof amount === 'number' && (!Number.isSafeInteger(amount) || amount < 0)) {
@@ -90,6 +114,10 @@ export function formatTokenAmount (amount: bigint | number | string, decimals = 
  * negative check applies to every input form: a `"-1"` string used to pass here
  * and only fail later in an equality comparison, which pointed the error at the
  * wrong cause.
+ *
+ * @param {string | number | bigint | undefined | null} value - The value to parse, normalize, or validate.
+ * @returns {bigint} The parsed value.
+ * @throws {ButterApiError} If the integer is negative or unsafe as a JavaScript number.
  */
 export function parseIntegerAmount (value: string | number | bigint | undefined | null): bigint {
   if (value == null) return 0n
@@ -116,6 +144,12 @@ export interface BaseUnitAmountOptions {
  *
  * Throws `ButterUnsupportedError` (not `ButterApiError`) because the value came from
  * the caller, not from Butter — this is the type `assertQuoteOptions` already used.
+ *
+ * @param {number | bigint | undefined | null} value - The value to parse, normalize, or validate.
+ * @param {string} field - The caller-facing field name used in validation errors.
+ * @param {BaseUnitAmountOptions} [options] - The caller-supplied operation options (default: empty object).
+ * @returns {bigint} The validated amount in integer base units.
+ * @throws {ButterUnsupportedError} If the amount is missing, fractional, unsafe as a number, negative, or zero when zero is not allowed.
  */
 export function assertBaseUnitAmount (
   value: number | bigint | undefined | null,
@@ -145,6 +179,13 @@ export function assertBaseUnitAmount (
   return result
 }
 
+/**
+ * Validates decimals and rejects invalid values.
+ *
+ * @param {number} decimals - The token decimal precision used for conversion.
+ * @returns {void} Nothing; the function throws when validation fails.
+ * @throws {ButterApiError} If the decimal count is not an integer from 0 through 255.
+ */
 function assertDecimals (decimals: number): void {
   if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
     throw new ButterApiError(`Invalid token decimals: ${decimals}`)

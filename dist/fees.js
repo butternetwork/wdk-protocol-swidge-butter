@@ -17,7 +17,13 @@ import { isNativeTokenIdentifier, isSymbolicNativeTokenIdentifier, sameTokenIden
 import { ButterApiError, ButterConfigurationError, ButterFeeLimitExceededError, ButterFeeValuationError } from './errors.js';
 const USD_DECIMALS = 18;
 const BPS_DENOMINATOR = 10000n;
-/** Resolves and validates constructor and per-call WDK fee limits. */
+/**
+ * Resolves and validates constructor and per-call WDK fee limits.
+ *
+ * @param {SwidgeProtocolConfig} defaults - The constructor-level defaults used when no override is present.
+ * @param {SwidgeProtocolConfig} overrides - The per-call or per-chain overrides to apply.
+ * @returns {ResolvedFeeLimits} The resolved result.
+ */
 export function resolveFeeLimits(defaults, overrides) {
     const network = overrides.maxNetworkFeeBps ?? defaults.maxNetworkFeeBps;
     const protocol = overrides.maxProtocolFeeBps ?? defaults.maxProtocolFeeBps;
@@ -28,7 +34,12 @@ export function resolveFeeLimits(defaults, overrides) {
         result.maxProtocolFeeBps = parseBps(protocol, 'maxProtocolFeeBps');
     return result;
 }
-/** Validates configured fee limits eagerly, rejecting malformed bps values. */
+/**
+ * Validates configured fee limits eagerly, rejecting malformed bps values.
+ *
+ * @param {SwidgeProtocolConfig} config - The configuration used by the operation.
+ * @returns {void} Nothing; the function throws when validation fails.
+ */
 export function validateFeeLimits(config) {
     resolveFeeLimits(config, {});
 }
@@ -53,6 +64,10 @@ const DISPLAY_ROUNDING = { rounding: 'floor' };
  * must read the itemised `fees[]` on the SwidgeQuote/SwidgeResult, not the
  * legacy scalars. This cannot be fixed here without overriding legacy methods
  * (which providers must not do); it needs a WDK PR #39 mapping-contract change.
+ *
+ * @param {ButterRoute} route - The Butter route to inspect or map.
+ * @param {FeeContext} context - The validated context required by the operation.
+ * @returns {SwidgeFee[]} The mapped provider result.
  */
 export function mapRouteFees(route, context) {
     const fees = [];
@@ -65,7 +80,7 @@ export function mapRouteFees(route, context) {
             type: component.role === 'affiliate' ? 'affiliate' : 'protocol',
             amount: parseTokenAmount(component.amount, componentDecimals(component, context), DISPLAY_ROUNDING),
             token: component.token,
-            chain: route.bridgeFee?.chainId,
+            ...(route.bridgeFee?.chainId != null ? { chain: route.bridgeFee.chainId } : {}),
             included: true,
             description: component.description
         });
@@ -123,6 +138,10 @@ export function mapRouteFees(route, context) {
  * empty one also reads as "free" rather than "Butter told us nothing". The
  * placeholder is zero-amount and only added when there is nothing else, so it can
  * never mask a real fee.
+ *
+ * @param {SwidgeFee[]} fees - The mapped WDK fees to inspect.
+ * @param {FeeContext} context - The validated context required by the operation.
+ * @returns {SwidgeFee[]} The original fees after emitting any non-fatal caveat.
  */
 function reportFeeCaveats(fees, context) {
     if (fees.length === 0) {
@@ -160,11 +179,22 @@ function reportFeeCaveats(fees, context) {
  * (`swap-data.ts`), so rounding down would turn a sub-wei formatting artifact in
  * Butter's decimal string into a rejected transaction. Rounding up can only widen
  * the bound by one wei, and the absolute `maxNativeFee` cap is unaffected.
+ *
+ * @param {ButterRoute} route - The Butter route to inspect or map.
+ * @param {FeeContext} context - The validated context required by the operation.
+ * @returns {bigint} The additional native protocol fee in source-chain base units.
  */
 export function routeNativeFee(route, context) {
     return parseTokenAmount(route.swapFee?.nativeFee ?? '0', nativeDecimalsForChain(context.sourceChainId, context.nativeTokenDecimals), { rounding: 'ceil' });
 }
-/** Enforces WDK network and protocol fee caps before transaction construction. */
+/**
+ * Enforces WDK network and protocol fee caps before transaction construction.
+ *
+ * @param {ButterRoute} route - The Butter route to inspect or map.
+ * @param {FeeContext} context - The validated context required by the operation.
+ * @param {ResolvedFeeLimits} limits - The resolved fee limits to enforce.
+ * @returns {void} Nothing; the function throws when validation fails.
+ */
 export function enforceFeeLimits(route, context, limits) {
     if (limits.maxNetworkFeeBps != null) {
         enforceLimit('network', networkFeeRatios(route, context), limits.maxNetworkFeeBps);
@@ -173,6 +203,14 @@ export function enforceFeeLimits(route, context, limits) {
         enforceLimit('protocol', protocolFeeRatios(route, context), limits.maxProtocolFeeBps);
     }
 }
+/**
+ * Builds the source-denominated or USD-denominated ratios used for the network fee cap.
+ *
+ * @param {ButterRoute} route - The Butter route to inspect or map.
+ * @param {FeeContext} context - The validated context required by the operation.
+ * @returns {Ratio[]} The ratios to enforce against the network fee cap.
+ * @throws {ButterFeeValuationError} If a fee cannot be valued against a trustworthy denominator.
+ */
 function networkFeeRatios(route, context) {
     // Absent is NOT zero. An unreported gas fee cannot be valued, so a configured cap
     // must fail closed rather than score it as free — otherwise omitting the metadata
@@ -191,6 +229,14 @@ function networkFeeRatios(route, context) {
     }
     return [usdRatio(route.gasFee?.inUSD, route.totalAmountInUSD, 'network fee')];
 }
+/**
+ * Builds the per-component ratios used for the aggregate protocol fee cap.
+ *
+ * @param {ButterRoute} route - The Butter route to inspect or map.
+ * @param {FeeContext} context - The validated context required by the operation.
+ * @returns {Ratio[]} The ratios to aggregate against the protocol fee cap.
+ * @throws {ButterFeeValuationError} If a fee cannot be valued against a trustworthy denominator.
+ */
 function protocolFeeRatios(route, context) {
     const ratios = [];
     const sourceToken = route.srcChain?.tokenIn;
@@ -270,6 +316,10 @@ function protocolFeeRatios(route, context) {
  * to be configured. A cross-denominated component keeps its declared decimals —
  * there the amount is only ever compared with a route-reported amount in the same
  * token, so any scaling error cancels and no trusted value exists anyway.
+ *
+ * @param {BridgeFeeComponent} component - The fee component to inspect or value.
+ * @param {FeeContext} context - The validated context required by the operation.
+ * @returns {number} The trusted decimals used to parse the fee component.
  */
 function componentDecimals(component, context) {
     if (!isSourceTokenComponent(component.routeToken, context.sourceChainId, context.sourceToken))
@@ -296,6 +346,9 @@ function componentDecimals(component, context) {
  * Each component keeps its own token rather than sharing one guessed for the whole
  * fee: the parts can sit on different chains in different tokens, and folding them
  * into a single entry forced a guess about which one to report.
+ *
+ * @param {ButterRoute} route - The Butter route to inspect or map.
+ * @returns {BridgeFeeComponent[]} The independently denominated bridge fee components.
  */
 function bridgeFeeComponents(route) {
     const fee = route.bridgeFee;
@@ -332,6 +385,9 @@ function bridgeFeeComponents(route) {
  *
  * So it is only ever used as a *detector*: when the components do not add up to the
  * summary, quoting warns and omits, and a configured cap refuses.
+ *
+ * @param {ButterRoute} route - The Butter route to inspect or map.
+ * @returns {boolean} Whether a bridge summary lacks attributable components.
  */
 function bridgeFeeComponentsMissing(route) {
     // No arithmetic against the summary — not even a consistency check. The three
@@ -349,6 +405,9 @@ function bridgeFeeComponentsMissing(route) {
  * describes no charge, so there is nothing for a cap to refuse; a same-chain route
  * legitimately sending `{ amount: '0' }` must not be blocked over it. Cross-chain is
  * covered regardless by the separate `hasBridgeFeeComponents` requirement.
+ *
+ * @param {ButterRoute} route - The Butter route to inspect or map.
+ * @returns {boolean} Whether the route reports an unpriceable non-zero bridge summary.
  */
 function unattributableBridgeFeeCharges(route) {
     return isNonZero(route.bridgeFee?.amount) && !hasBridgeFeeComponents(route.bridgeFee);
@@ -362,6 +421,9 @@ function unattributableBridgeFeeCharges(route) {
  * a figure too untrusted to price is equally too untrusted to attest that a fee is
  * zero — otherwise `bridgeFee: { amount: "0" }` with no components satisfies any
  * cap, which is a cheaper forgery than inventing a small summary.
+ *
+ * @param {ButterBridgeFee | undefined} fee - The fee value or metadata to inspect.
+ * @returns {boolean} Whether the inspected values satisfy the condition.
  */
 function hasBridgeFeeComponents(fee) {
     return fee?.in?.amount != null || fee?.out?.amount != null || fee?.affiliate?.amount != null;
@@ -387,6 +449,12 @@ function hasBridgeFeeComponents(fee) {
  * Candidates are ordered by the component's own leg. `in` and `out` are usually the
  * same token, so a single shared order made both match the inbound amount first —
  * and where `totalAmountIn > totalAmountOut`, that understates the outbound fee.
+ *
+ * @param {BridgeFeeComponent} component - The fee component to inspect or value.
+ * @param {ButterRoute} route - The Butter route to inspect or map.
+ * @param {FeeContext} context - The validated context required by the operation.
+ * @returns {Ratio} The fee component ratio and its same-token denominator.
+ * @throws {ButterFeeValuationError} If a fee cannot be valued against a trustworthy denominator.
  */
 function bridgeFeeComponentRatio(component, route, context) {
     const decimals = componentDecimals(component, context);
@@ -429,6 +497,11 @@ function bridgeFeeComponentRatio(component, route, context) {
  *
  * Symbols are not identifiers: the same ticker appears on many chains, so matching
  * on one would pick a denominator that may be in a different currency than the fee.
+ *
+ * @param {string} chainId - The chain identifier used for normalization or lookup.
+ * @param {ButterRouteToken | undefined} left - The first value to compare.
+ * @param {ButterRouteToken | undefined} right - The second value to compare.
+ * @returns {boolean} Whether the inspected values satisfy the condition.
  */
 function sameTokenAddress(chainId, left, right) {
     return sameTokenIdentifier(chainId, left?.address, right?.address);
@@ -453,6 +526,11 @@ function sameTokenAddress(chainId, left, right) {
  * token's fee by the caller's source amount; and an unconditional symbol fallback
  * let that amount be claimed by any component willing to name it. A trusted
  * denominator is not automatically a meaningful one.
+ *
+ * @param {ButterRouteToken | undefined} token - The token identifier or metadata to process.
+ * @param {string} sourceChainId - The source-chain identifier.
+ * @param {string} sourceToken - The source-token identifier.
+ * @returns {boolean} Whether the inspected values satisfy the condition.
  */
 function isSourceTokenComponent(token, sourceChainId, sourceToken) {
     const source = sourceToken.trim();
@@ -466,6 +544,16 @@ function isSourceTokenComponent(token, sourceChainId, sourceToken) {
         return false;
     return token?.symbol?.trim().toLowerCase() === source.toLowerCase();
 }
+/**
+ * Enforces limit.
+ *
+ * @param {'network' | 'protocol'} type - The fee or transaction category being processed.
+ * @param {Ratio[]} ratios - The fee ratios to aggregate before enforcing the cap.
+ * @param {bigint} maximumBps - The maximum allowed fee ratio in basis points.
+ * @returns {void} Nothing; the function throws when validation fails.
+ * @throws {ButterFeeValuationError} If a fee cannot be valued against a trustworthy denominator.
+ * @throws {ButterFeeLimitExceededError} If a configured fee cap is exceeded.
+ */
 function enforceLimit(type, ratios, maximumBps) {
     let total = { numerator: 0n, denominator: 1n };
     for (const ratio of ratios) {
@@ -484,12 +572,28 @@ function enforceLimit(type, ratios, maximumBps) {
         throw new ButterFeeLimitExceededError(type, actualBps, maximumBps);
     }
 }
+/**
+ * Builds a fee-to-input ratio from Butter USD metadata.
+ *
+ * @param {string | undefined} feeUsd - The fee value expressed in Butter USD metadata.
+ * @param {string | undefined} inputUsd - The input value expressed in Butter USD metadata.
+ * @param {string} label - The human-readable label used in validation errors.
+ * @returns {Ratio} The fee-to-input USD ratio.
+ */
 function usdRatio(feeUsd, inputUsd, label) {
     return {
         numerator: parseUsd(feeUsd, label),
         denominator: parseUsd(inputUsd, label)
     };
 }
+/**
+ * Parses usd into its validated representation.
+ *
+ * @param {string | undefined} value - The value to parse, normalize, or validate.
+ * @param {string} label - The human-readable label used in validation errors.
+ * @returns {bigint} The parsed value.
+ * @throws {ButterFeeValuationError} If a fee cannot be valued against a trustworthy denominator.
+ */
 function parseUsd(value, label) {
     if (value == null)
         throw new ButterFeeValuationError(`Cannot value Butter ${label} without USD metadata`);
@@ -517,6 +621,12 @@ function parseUsd(value, label) {
  * verifies the source token's *address*, so a response is free to claim
  * `decimals: 0` and shrink a 10 USDC fee from `10000000n` to `10n` — a
  * thousand-basis-point charge measured as one hundredth of one.
+ *
+ * @param {FeeContext} context - The validated context required by the operation.
+ * @param {string | number | undefined} declared - The source decimals declared by the Butter route.
+ * @param {string} label - The human-readable label used in validation errors.
+ * @returns {number} The locally resolved source decimals after route consistency checks.
+ * @throws {ButterFeeValuationError} If a fee cannot be valued against a trustworthy denominator.
  */
 function trustedSourceDecimals(context, declared, label) {
     const trusted = context.sourceTokenDecimals;
@@ -541,6 +651,15 @@ function trustedSourceDecimals(context, declared, label) {
     }
     return trusted;
 }
+/**
+ * Returns the trusted source-token amount used as a fee denominator.
+ *
+ * @param {FeeContext} context - The validated context required by the operation.
+ * @param {ButterRoute} route - The Butter route to inspect or map.
+ * @param {number} sourceDecimals - The trusted decimal count used to express the source amount.
+ * @returns {bigint} The trusted source-token denominator in base units.
+ * @throws {ButterFeeValuationError} If a fee cannot be valued against a trustworthy denominator.
+ */
 function sourceDenominator(context, route, sourceDecimals) {
     if (context.requestedAmountIn != null)
         return context.requestedAmountIn;
@@ -556,6 +675,14 @@ function sourceDenominator(context, route, sourceDecimals) {
 // `sameToken` is gone: its symbol fallback is what let a fee be valued against an
 // amount in a different currency. Use `sameTokenAddress` for denominator matching,
 // or `isSourceTokenComponent` when the question is "is this the caller's token".
+/**
+ * Returns valid token decimals from route metadata.
+ *
+ * @param {ButterRouteToken | undefined} token - The token identifier or metadata to process.
+ * @param {string} label - The human-readable label used in validation errors.
+ * @returns {number} The validated token decimal count.
+ * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
+ */
 function requiredDecimals(token, label) {
     const decimals = Number(token?.decimals);
     if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
@@ -563,16 +690,36 @@ function requiredDecimals(token, label) {
     }
     return decimals;
 }
+/**
+ * Returns a non-empty fee token identifier.
+ *
+ * @param {string | undefined} value - The value to parse, normalize, or validate.
+ * @param {string} label - The human-readable label used in validation errors.
+ * @returns {string} The validated non-empty token identifier.
+ * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
+ */
 function requiredTokenId(value, label) {
     const token = value?.trim();
     if (!token)
         throw new ButterApiError(`Butter ${label} is missing a token identifier`);
     return token;
 }
+/**
+ * Returns the configured source-native token identifier used for fee reporting.
+ *
+ * @param {FeeContext} context - The validated context required by the operation.
+ * @returns {string | undefined} The source-native token identifier, or undefined when unavailable.
+ */
 function nativeTokenId(context) {
     return isNativeSource(context.sourceChainId, context.sourceToken) ? context.sourceToken : undefined;
 }
-/** Resolves source-chain native token decimals with caller overrides. */
+/**
+ * Resolves source-chain native token decimals with caller overrides.
+ *
+ * @param {string} chainId - The chain identifier used for normalization or lookup.
+ * @param {Record<string, number> | undefined} configured - The caller-supplied configuration values.
+ * @returns {number} The configured or built-in native-token decimal count.
+ */
 export function nativeDecimalsForChain(chainId, configured) {
     const configuredValue = configured?.[chainId];
     if (configuredValue != null)
@@ -585,15 +732,36 @@ export function nativeDecimalsForChain(chainId, configured) {
         return 9;
     return 18;
 }
+/**
+ * Returns whether the requested source token is the chain native asset.
+ *
+ * @param {string} chainId - The chain identifier used for normalization or lookup.
+ * @param {string} token - The token identifier or metadata to process.
+ * @returns {boolean} Whether the inspected values satisfy the condition.
+ */
 function isNativeSource(chainId, token) {
     return isNativeTokenIdentifier(chainId, token);
 }
+/**
+ * Returns whether an optional integer-like value represents a non-zero amount.
+ *
+ * @param {string | number | bigint | undefined} value - The value to parse, normalize, or validate.
+ * @returns {boolean} Whether the inspected values satisfy the condition.
+ */
 function isNonZero(value) {
     if (value == null)
         return false;
     const raw = String(value).trim();
     return !/^0+(?:\.0+)?$/.test(raw);
 }
+/**
+ * Parses bps into its validated representation.
+ *
+ * @param {number | bigint} value - The value to parse, normalize, or validate.
+ * @param {string} field - The caller-facing field name used in validation errors.
+ * @returns {bigint} The parsed value.
+ * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
+ */
 function parseBps(value, field) {
     if (typeof value === 'number' && (!Number.isSafeInteger(value) || value < 0)) {
         throw new ButterConfigurationError(`${field} must be a non-negative integer`);

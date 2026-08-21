@@ -32,6 +32,13 @@ import type {
  * user asked for); the quote echoes it verbatim so `fromTokenAmount` can never
  * drift from the request due to a decimals-source mismatch. Output amounts use
  * the route-echoed destination decimals, which must be present.
+ *
+ * @param {ButterRoute} route - The Butter route to inspect or map.
+ * @param {() => number} now - The current Unix timestamp in seconds.
+ * @param {number | undefined} expiry - The route expiry timestamp when already resolved.
+ * @param {FeeContext} feeContext - The trusted chain, token, and decimals context used for fee mapping.
+ * @param {number | bigint} [requestedAmountIn] - The caller-requested source amount in base units.
+ * @returns {SwidgeQuote} The normalized WDK quote.
  */
 export function routeToQuote (route: ButterRoute, now: () => number, expiry: number | undefined, feeContext: FeeContext, requestedAmountIn?: number | bigint): SwidgeQuote {
   const destinationDecimals = decimalsOf(route.dstChain?.tokenOut ?? route.srcChain?.tokenOut, 'destination token')
@@ -39,6 +46,8 @@ export function routeToQuote (route: ButterRoute, now: () => number, expiry: num
   const fromTokenAmount = requestedAmountIn != null
     ? BigInt(requestedAmountIn)
     : parseTokenAmount(route.srcChain?.totalAmountIn ?? route.totalAmountIn, decimalsOf(route.srcChain?.tokenIn, 'source token'))
+  const estimatedDuration = finiteOrUndefined(route.timeEstimated ?? route.estimatedTime)
+  const priceImpact = finiteOrUndefined(route.priceImpact)
   return {
     fromTokenAmount,
     toTokenAmount: parseRequiredTokenAmount(
@@ -48,7 +57,7 @@ export function routeToQuote (route: ButterRoute, now: () => number, expiry: num
     ),
     toTokenAmountMin,
     fees: mapRouteFees(route, feeContext),
-    estimatedDuration: finiteOrUndefined(route.timeEstimated ?? route.estimatedTime),
+    ...(estimatedDuration != null ? { estimatedDuration } : {}),
     expiry: expiry ?? now() + 300,
     // Butter only reports priceImpact per route leg (dstChain/srcChain `route[]`),
     // with no documented unit or whole-operation aggregation. Picking one leg would
@@ -56,17 +65,29 @@ export function routeToQuote (route: ButterRoute, now: () => number, expiry: num
     // value when Butter provides an authoritative top-level one; otherwise undefined.
     // WDK expects a decimal price impact — confirm Butter's unit/aggregation before
     // deriving one from the per-leg values.
-    priceImpact: finiteOrUndefined(route.priceImpact)
+    ...(priceImpact != null ? { priceImpact } : {})
   }
 }
 
-/** Returns a finite number, or undefined when the value is absent or unparseable. */
+/**
+ * Returns a finite number, or undefined when the value is absent or unparseable.
+ *
+ * @param {string | number | undefined} value - The value to parse, normalize, or validate.
+ * @returns {number | undefined} The finite numeric value, or undefined when absent or invalid.
+ */
 function finiteOrUndefined (value: string | number | undefined): number | undefined {
   if (value == null) return undefined
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
+/**
+ * Maps Butter chain metadata to the WDK supported-chain contract.
+ *
+ * @param {ButterChainInfo} chain - The chain metadata to inspect.
+ * @param {ButterChainExecution} execution - The execution capability assigned to the chain.
+ * @returns {ButterSupportedChain} The normalized WDK supported-chain descriptor.
+ */
 export function chainToSupportedChain (chain: ButterChainInfo, execution: ButterChainExecution): ButterSupportedChain {
   const nativeToken = parseJsonMaybe<ButterTokenInfo>(chain.nativeToken)
   return {
@@ -82,7 +103,15 @@ export function chainToSupportedChain (chain: ButterChainInfo, execution: Butter
   }
 }
 
+/**
+ * Maps Butter token metadata to the WDK supported-token contract.
+ *
+ * @param {ButterTokenInfo} token - The token identifier or metadata to process.
+ * @param {string} chainId - The chain identifier used for normalization or lookup.
+ * @returns {SwidgeSupportedToken} The normalized WDK supported-token descriptor.
+ */
 export function tokenToSupportedToken (token: ButterTokenInfo, chainId: string): SwidgeSupportedToken {
+  const address = token.address ?? token.token
   return {
     token: token.address ?? token.token ?? '',
     chain: normalizeId(token.chainId ?? chainId),
@@ -90,11 +119,17 @@ export function tokenToSupportedToken (token: ButterTokenInfo, chainId: string):
     // Missing decimals yields NaN (not a silent 18); the discovery caller drops
     // such entries so a placeholder value is never surfaced as if authoritative.
     decimals: Number(token.decimals ?? token.decimal),
-    address: token.address ?? token.token,
-    name: token.name
+    ...(address != null ? { address } : {}),
+    ...(token.name != null ? { name: token.name } : {})
   }
 }
 
+/**
+ * Parses json maybe into its validated representation.
+ *
+ * @param {unknown} value - The value to parse, normalize, or validate.
+ * @returns {T | undefined} The parsed value.
+ */
 export function parseJsonMaybe<T> (value: unknown): T | undefined {
   if (typeof value !== 'string') return value as T | undefined
   try {
@@ -104,6 +139,12 @@ export function parseJsonMaybe<T> (value: unknown): T | undefined {
   }
 }
 
+/**
+ * Normalizes id for consistent processing.
+ *
+ * @param {string | number | undefined} id - The identifier to normalize or query.
+ * @returns {string} The normalized value.
+ */
 export function normalizeId (id: string | number | undefined): string {
   return id == null ? '' : String(id)
 }

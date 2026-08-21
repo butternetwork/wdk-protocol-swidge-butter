@@ -1,5 +1,9 @@
 # @butternetwork/wdk-protocol-swidge-butter
 
+<a href="https://docs.wdk.tether.io/">
+  <img src="./docs/assets/built-with-wdk.png" alt="Built with WDK" width="240" height="60">
+</a>
+
 Butter Network Swidge provider for WDK.
 
 This package adapts WDK's Swidge interface to Butter Smart Router's `/route`,

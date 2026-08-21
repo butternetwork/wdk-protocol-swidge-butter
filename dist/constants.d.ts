@@ -78,6 +78,10 @@ export declare const KNOWN_EVM_CHAIN_IDS: ReadonlySet<string>;
  * `'unknown'` is deliberately not `'evm'`: see {@link NON_EVM_CHAIN_FAMILIES}.
  * Callers must treat it as "cannot default the recipient", never as a family that
  * happens to match the source.
+ *
+ * @param {string} chainId - The chain identifier used for normalization or lookup.
+ * @param {ReadonlySet<string>} [extraEvmChainIds] - Additional chain identifiers the caller has confirmed as EVM.
+ * @returns {string} The known address family, or `unknown` when the chain is unclassified.
  */
 export declare function addressFamilyForChain(chainId: string, extraEvmChainIds?: ReadonlySet<string>): string;
 export declare const NATIVE_TOKEN_ADDRESSES: Set<string>;
