@@ -495,7 +495,7 @@ function validateBridgeRefundAddress(nestedData, requested) {
  *
  * Butter carries it as raw `bytes` because the destination chain decides the
  * encoding: an EVM address is the 20 raw bytes, while a non-EVM address
- * (base58 / bech32 / TON) is its UTF-8 text. Both readings are accepted; only a
+ * (such as base58 or bech32) is its UTF-8 text. Both readings are accepted; only a
  * value matching neither is a mismatch.
  *
  * @param {Hex} encoded - The encoded Router data to decode or validate.

@@ -419,8 +419,9 @@ const protocol = new ButterSwidgeProtocol(account, {
   the destination chain uses the same address format; bridging EVM→Solana/BTC
   without one would otherwise forward a `0x` address as the destination receiver.
   Address families are resolved from a best-effort table of Butter's non-EVM chain
-  ids (`constants.ts: NON_EVM_CHAIN_FAMILIES`) — unlisted chains are treated as
-  EVM, so **the table must be extended when Butter adds a non-EVM chain**. The
+  ids (`constants.ts: NON_EVM_CHAIN_FAMILIES`) — unlisted chains remain
+  `unknown`, so execution requires an explicit recipient unless the integrator
+  declares a new EVM chain through `evmChainIds`. The
   requirement applies only to `swidge`: `quoteSwidge` still prices a cross-VM route
   without a recipient, since asking a price before choosing a destination address
   is the normal flow.

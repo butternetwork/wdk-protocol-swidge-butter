@@ -103,6 +103,7 @@ const DEST_TOKEN = '0x00000000000000000000000000000000000000cc'
 const VALID_SENDER = '0x0000000000000000000000000000000000000111'
 const VALID_RECIPIENT = '0x0000000000000000000000000000000000000222'
 const ROUTER = '0xEE0319cF0BCa5d09333f9F6277743E8De31bD69A'
+const FORMER_TON_CHAIN_ID = '1360104473493505'
 const DEFAULT_TOKEN_DECIMALS = { '0xfrom': 18, '0xto': 6 }
 const ERC20_TOKEN_DECIMALS = { [ERC20_TOKEN]: 18, [DEST_TOKEN]: 6 }
 
@@ -157,8 +158,8 @@ function crossChainSwapData (sourceToken: `0x${string}`, amount: bigint, options
   const refundAddress = options.refundAddress ?? VALID_SENDER
   const bridgeAdapterData = options.bridgePayload ?? encodeAbiParameters(bridgeAdapterParamAbi, [{
     gasLimit: 500000n,
-    // An EVM refund destination travels as the raw 20 bytes; anything else (base58,
-    // bech32, TON) travels as UTF-8 text, exactly as the validator reads it.
+    // An EVM refund destination travels as the raw 20 bytes; anything else
+    // (such as base58 or bech32) travels as UTF-8 text, exactly as the validator reads it.
     refundAddress: isAddress(refundAddress, { strict: false })
       ? refundAddress as `0x${string}`
       : stringToHex(refundAddress),
@@ -1039,6 +1040,35 @@ describe('ButterSwidgeProtocol formal behavior', () => {
       new ButterSwidgeProtocol(account, config).swidge({ ...options, recipient: VALID_RECIPIENT }),
       (error: unknown) => error instanceof Error && /unexpected request/.test(error.message)
     )
+  })
+
+  it('treats the former TON chain id as an unknown destination family', async () => {
+    const fetch = makeFetch({})
+    const protocol = new ButterSwidgeProtocol(account, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch,
+      maxNativeFee: 0n,
+      evm: { walletClient: evmWallet(async () => '0xshould-not-send') }
+    })
+
+    await assert.rejects(protocol.swidge({
+      fromToken: NATIVE_TOKEN,
+      toToken: DEST_TOKEN,
+      toChain: FORMER_TON_CHAIN_ID,
+      fromTokenAmount: 1500000000000000000n,
+      slippage: 0.02
+    }), {
+      name: 'ButterActionRequiredError',
+      message: 'Butter requires an explicit recipient when the destination chain uses a different or unrecognized address format',
+      details: {
+        sourceChainId: '56',
+        sourceFamily: 'evm',
+        destinationChainId: FORMER_TON_CHAIN_ID,
+        destinationFamily: 'unknown'
+      }
+    })
+    assert.equal(fetch.calls.length, 0)
   })
 
   it('defaults the recipient to the sender for a same-family cross-chain swidge', async () => {
@@ -2275,6 +2305,61 @@ describe('ButterSwidgeProtocol formal behavior', () => {
       }),
       ButterApiError
     )
+  })
+
+  it('does not accept native Router calldata for the removed ton token alias', async () => {
+    const sent: unknown[] = []
+    const fetch = makeFetch({
+      '/route': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [quoteRoute({
+          srcChain: {
+            chainId: '56',
+            tokenIn: { address: 'ton', decimals: 18, symbol: 'TON' },
+            tokenOut: { address: DEST_TOKEN, decimals: 6, symbol: 'USDT' },
+            totalAmountIn: '1.5',
+            totalAmountOut: '10.25'
+          },
+          dstChain: undefined
+        })]
+      }),
+      '/swap': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [{
+          to: ROUTER,
+          value: '0',
+          chainId: '56',
+          data: sameChainSwapDataFor(NATIVE_TOKEN, 1500000000000000000n)
+        }]
+      })
+    })
+    const protocol = new ButterSwidgeProtocol(account, {
+      sourceChainId: 56,
+      entrance: 'wdk',
+      fetch,
+      tokenDecimals: { ton: 18 },
+      evm: {
+        walletClient: evmWallet(async (tx) => {
+          sent.push(tx)
+          return '0xshould-not-send'
+        })
+      }
+    })
+
+    await assert.rejects(protocol.swidge({
+      fromToken: 'ton',
+      toToken: DEST_TOKEN,
+      fromTokenAmount: 1500000000000000000n,
+      recipient: VALID_RECIPIENT,
+      slippage: 0.02
+    }), {
+      name: 'ButterTransactionValidationError',
+      message: 'Butter Router source token does not match quote',
+      details: { expected: 'ton', actual: NATIVE_TOKEN }
+    })
+    assert.deepEqual(sent, [])
   })
 
   it('rejects authenticated clients configured with non-HTTPS Butter base URLs', () => {
@@ -3866,8 +3951,24 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     )
   })
 
-  it('applies the TON strict slippage floor without a prior getSupportedChains call', async () => {
-    const fetch = makeFetch({})
+  it('treats the former TON chain id as an unknown chain without a strict slippage floor', async () => {
+    let requestedSlippage: string | null = null
+    const fetch = makeFetch({
+      '/route': async (url) => {
+        requestedSlippage = url.searchParams.get('slippage')
+        return {
+          errno: 0,
+          message: 'success',
+          data: [quoteRoute({
+            dstChain: {
+              chainId: FORMER_TON_CHAIN_ID,
+              tokenOut: { address: 'ton-usdt', decimals: 6, symbol: 'USDT' },
+              totalAmountOut: '10.25'
+            }
+          })]
+        }
+      }
+    })
     const protocol = new ButterSwidgeProtocol(undefined, {
       sourceChainId: 56,
       entrance: 'wdk',
@@ -3877,14 +3978,16 @@ describe('ButterSwidgeProtocol formal behavior', () => {
       tokenDecimals: { '0xfrom': 18 }
     })
 
-    await assert.rejects(protocol.quoteSwidge({
+    const quote = await protocol.quoteSwidge({
       fromToken: '0xfrom',
       toToken: 'ton-usdt',
-      toChain: '1360104473493505',
+      toChain: FORMER_TON_CHAIN_ID,
       fromTokenAmount: 1500000000000000000n,
       slippage: 0.02
-    }), (error: unknown) => error instanceof ButterActionRequiredError && error.message.includes('300 bps'))
-    assert.equal(fetch.calls.length, 0)
+    })
+
+    assert.equal(requestedSlippage, '200')
+    assert.equal(quote.toTokenAmount, 10250000n)
   })
 
   it('returns an inspectable quote even when a configured fee cap is exceeded', async () => {
@@ -4153,6 +4256,132 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     assert.equal(result.id, 'btc-tx')
   })
 
+  it('reports generic adapter capability for the former TON chain id', async () => {
+    const fetch = makeFetch({
+      '/supportedChainInfo': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [{
+          id: FORMER_TON_CHAIN_ID,
+          type: 'TON',
+          name: 'TON',
+          nativeToken: '{"symbol":"TON","decimals":9}'
+        }]
+      }),
+      '/api/queryChainList': async () => ({ code: 200, message: 'success', data: { chains: [] } })
+    })
+    const protocol = new ButterSwidgeProtocol(undefined, {
+      sourceChainId: FORMER_TON_CHAIN_ID,
+      entrance: 'wdk',
+      fetch,
+      transactionAdapters: {
+        [FORMER_TON_CHAIN_ID]: (swapTx) => swapTx
+      }
+    })
+
+    const chains = await protocol.getSupportedChains()
+
+    assert.deepEqual(chains, [{
+      id: FORMER_TON_CHAIN_ID,
+      name: 'TON',
+      type: 'ton',
+      nativeToken: 'TON',
+      execution: 'adapter'
+    }])
+  })
+
+  it('executes the former TON chain id through a generic adapter', async () => {
+    let requestedSlippage: string | null = null
+    const fetch = makeFetch({
+      '/route': async (url) => {
+        requestedSlippage = url.searchParams.get('slippage')
+        return {
+          errno: 0,
+          message: 'success',
+          data: [quoteRoute({
+            contract: undefined,
+            bridgeFee: undefined,
+            gasFee: undefined,
+            swapFee: undefined,
+            minAmountOut: { amount: '1.9', symbol: 'OUT' },
+            srcChain: {
+              chainId: FORMER_TON_CHAIN_ID,
+              tokenIn: { address: 'asset', decimals: 6, symbol: 'ASSET' },
+              tokenOut: { address: 'out', decimals: 6, symbol: 'OUT' },
+              totalAmountIn: '1',
+              totalAmountOut: '2'
+            },
+            dstChain: undefined
+          })]
+        }
+      },
+      '/swap': async () => ({
+        errno: 0,
+        message: 'success',
+        data: [{
+          to: 'adapter-target',
+          value: '1000',
+          memo: 'generic-unknown-chain',
+          chainId: FORMER_TON_CHAIN_ID
+        }]
+      })
+    })
+    const sent: unknown[] = []
+    const protocol = new ButterSwidgeProtocol({
+      async getAddress () { return 'unknown-chain-sender' },
+      async sendTransaction (tx) {
+        sent.push(tx)
+        return { hash: 'unknown-chain-hash' }
+      }
+    }, {
+      sourceChainId: FORMER_TON_CHAIN_ID,
+      entrance: 'wdk',
+      fetch,
+      now: () => 1000,
+      tokenDecimals: { asset: 6 },
+      transactionAdapters: {
+        [FORMER_TON_CHAIN_ID]: (swapTx) => ({
+          to: swapTx.to,
+          value: BigInt(swapTx.value),
+          memo: swapTx.memo
+        })
+      }
+    })
+
+    const result = await protocol.swidge({
+      fromToken: 'asset',
+      toToken: 'out',
+      fromTokenAmount: 1000000n,
+      recipient: 'unknown-chain-recipient',
+      slippage: 0.02
+    })
+
+    assert.equal(requestedSlippage, '200')
+    assert.deepEqual(sent, [{
+      to: 'adapter-target',
+      value: 1000n,
+      memo: 'generic-unknown-chain'
+    }])
+    assert.equal(result.id, 'unknown-chain-hash')
+    assert.equal(result.hash, 'unknown-chain-hash')
+    assert.deepEqual(result.fees, [{
+      type: 'network',
+      amount: 0n,
+      token: 'native',
+      chain: FORMER_TON_CHAIN_ID,
+      included: false,
+      description: 'Butter reported no fees for this route'
+    }])
+    assert.deepEqual(result.transactions, [{
+      hash: 'unknown-chain-hash',
+      chain: FORMER_TON_CHAIN_ID,
+      type: 'source'
+    }])
+    assert.equal(result.fromTokenAmount, 1000000n)
+    assert.equal(result.toTokenAmount, 2000000n)
+    assert.equal(result.toTokenAmountMin, 1900000n)
+  })
+
   it('returns the Router advertised token catalog without priming chain metadata', async () => {
     const fetch = makeFetch({
       '/supportedTokenList': async (url) => {
@@ -4191,7 +4420,8 @@ describe('ButterSwidgeProtocol formal behavior', () => {
     }])
   })
 
-  it('reports supported chains without a local executor as quote-only', async () => {
+  it('reports externally advertised TON metadata as a generic quote-only chain', async () => {
+    let requestedSlippage: string | null = null
     const fetch = makeFetch({
       '/supportedChainInfo': async () => ({
         errno: 0,
@@ -4200,7 +4430,7 @@ describe('ButterSwidgeProtocol formal behavior', () => {
       }),
       '/api/queryChainList': async () => ({ code: 200, message: 'success', data: { chains: [] } }),
       '/route': async (url) => {
-        assert.equal(url.searchParams.get('slippage'), '300')
+        requestedSlippage = url.searchParams.get('slippage')
         return {
           errno: 0,
           message: 'success',
@@ -4233,6 +4463,7 @@ describe('ButterSwidgeProtocol formal behavior', () => {
       fromTokenAmount: 1500000000000000000n
     })
 
+    assert.equal(requestedSlippage, '150')
     assert.equal((chains[0] as { execution?: string }).execution, 'quote-only')
   })
 
@@ -5958,8 +6189,8 @@ describe('helpers', () => {
     assert.throws(() => toButterSlippage(0.51), ButterUnsupportedError)
     assert.throws(() => toButterSlippage(0.01, { crossChain: true }), ButterActionRequiredError)
     assert.equal(toButterSlippage(0.02, { crossChain: true }), 200)
-    assert.equal(toButterSlippage(undefined, { crossChain: true, toChainId: 'ton' }), 300)
-    assert.throws(() => toButterSlippage(0.02, { crossChain: true, toChainId: 'ton' }), ButterActionRequiredError)
+    assert.equal(toButterSlippage(undefined, { crossChain: true, toChainId: 'ton' }), 150)
+    assert.equal(toButterSlippage(0.02, { crossChain: true, toChainId: 'ton' }), 200)
   })
 
   it('converts slippage decimals to exact basis points without floating point drift', () => {
