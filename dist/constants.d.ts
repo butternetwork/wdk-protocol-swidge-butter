@@ -46,7 +46,6 @@ export declare const STRICT_CHAIN_MIN_SLIPPAGE_BPS = 300;
 export declare const BTC_CHAIN_ID = "1360095883558913";
 export declare const SOLANA_CHAIN_ID = "1360108768460801";
 export declare const TRON_CHAIN_ID = "728126428";
-export declare const TON_CHAIN_ID = "1360104473493505";
 /**
  * Address family per non-EVM chain, used to decide whether the source sender is
  * a usable default recipient on the destination chain.

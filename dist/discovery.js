@@ -379,7 +379,7 @@ function isStrictSlippageChain(chain) {
     const values = [chain.chainType, chain.type, chain.name, chain.key];
     return values.some((value) => {
         const normalized = String(value ?? '').toLowerCase();
-        return normalized === 'btc' || normalized === 'ton' || normalized.includes('bitcoin') || normalized.includes('toncoin');
+        return normalized === 'btc' || normalized.includes('bitcoin');
     });
 }
 /**

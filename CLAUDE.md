@@ -202,7 +202,7 @@ Everything else is a focused collaborator it composes:
   map share one function; normalizing only the query made a checksummed config key unreachable from a
   lowercase request, masked by `/findToken`. Conflicting entries throw at construction. `tokenDecimals`
   never applies to native tokens — `decimalsFor` answers those from `NATIVE_TOKEN_ADDRESSES` and
-  `config.nativeTokenDecimals` first. Solana mints and signatures, Tron and TON addresses are Base58, where a
+  `config.nativeTokenDecimals` first. Solana mints and signatures and Tron addresses are Base58, where a
   character's case is part of the value. A blanket `toLowerCase()` simultaneously let a fee in a
   different mint pose as the source token (taking the caller's input as its denominator and passing a
   cap), let a route satisfy the token-intent check with a differently cased token, merged two mints in
@@ -300,7 +300,7 @@ Everything else is a focused collaborator it composes:
 - **Conservative status**: an unrecognized Butter state maps to `pending`, never a false terminal;
   a missing/absent state (invalid id) throws. Approval receipts fail closed on revert.
 - **Adapter path has a different trust boundary**: `transactionAdapters` (non-EVM / Tron / BTC /
-  Solana / TON execution) bypasses the Router V3 calldata validation used on the built-in EVM path —
+  Solana execution) bypasses the Router V3 calldata validation used on the built-in EVM path —
   only chain ID and required fields are checked. Keep this asymmetry documented, don't silently
   extend it or pretend it's equivalent to the EVM path's guarantees. **But** adapter output is still
   fully normalized and classified **before any transaction is broadcast** (`protocol.ts:
