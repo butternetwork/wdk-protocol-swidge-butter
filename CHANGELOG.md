@@ -11,6 +11,12 @@ and (once published) [Semantic Versioning](https://semver.org).
   expose `any`, deterministic tests exercise only the package entrypoint with
   concrete assertions, and repository checks and live E2E scenarios have
   dedicated `checks/` and `scripts/e2e/` entrypoints.
+- Split the protocol regression suite by public method, isolate stateful public
+  workflows under `tests/integration`, require exact error names and messages,
+  and use SDK-realistic EVM addresses and transaction hashes in fixtures.
+- Narrow the configurable EVM client contracts to Viem read parameters and the
+  package's `EvmTransactionRequest`, while preserving open-ended non-EVM adapter
+  payloads.
 - Remove unreachable exact-out execution branches while retaining the public
   fail-fast unsupported error, and split `swidge()` preparation, broadcasting,
   and result assembly into focused private stages without changing execution

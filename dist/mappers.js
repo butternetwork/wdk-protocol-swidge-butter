@@ -126,7 +126,7 @@ export function parseJsonMaybe(value) {
  * Converts an optional Butter identifier to a string.
  *
  * @param {string | number | undefined} id - The identifier to normalize or query.
- * @returns {string} The normalized value.
+ * @returns {string} The identifier converted to a string, or an empty string when absent.
  */
 export function normalizeId(id) {
     return id == null ? '' : String(id);

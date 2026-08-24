@@ -723,7 +723,7 @@ function sameRecipient(left, right) {
  *
  * @param {string} chainId - The chain identifier used for normalization or lookup.
  * @param {Record<string, number> | undefined} configured - The caller-supplied configuration values.
- * @returns {ReadonlyMap<string, number>} The normalized value.
+ * @returns {ReadonlyMap<string, number>} The chain-aware token keys mapped to their validated decimal counts.
  * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
  */
 function normalizedTokenDecimals(chainId, configured) {
@@ -780,7 +780,7 @@ function parseExecutionMarginSeconds(value) {
  * @param {number | undefined} value - The optional timeout or deadline value in milliseconds.
  * @param {string} label - The human-readable label used in validation errors.
  * @param {boolean} allowZero - Whether zero is accepted as a valid value.
- * @returns {number | undefined} The parsed value.
+ * @returns {number | undefined} The validated millisecond timeout, or undefined when omitted.
  * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
  */
 function parseTimeoutMs(value, label, allowZero) {

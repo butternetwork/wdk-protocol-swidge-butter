@@ -14,7 +14,7 @@ const SOL_MINT = 'So11111111111111111111111111111111111111112'
 const TRON_USDT = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'
 const TRON_USDT_HEX = '0xa614f803b6fd780986a42c78ec9c7f77e6ded13c'
 
-describe('chain-aware token identifiers', () => {
+describe('@butternetwork/wdk-protocol-swidge-butter', () => {
   it('rejects conflicting configured decimals across equivalent Tron forms', () => {
     assert.throws(
       () => new ButterSwidgeProtocol(undefined, {
@@ -23,13 +23,13 @@ describe('chain-aware token identifiers', () => {
         fetch: async () => jsonResponse({ errno: 0, data: [] }),
         tokenDecimals: { [TRON_USDT]: 6, [TRON_USDT_HEX]: 18 }
       }),
-      ButterConfigurationError
+      { name: 'ButterConfigurationError', message: 'tokenDecimals has conflicting entries for the same token' }
     )
   })
 
 })
 
-describe('chain-aware decimals discovery', () => {
+describe('@butternetwork/wdk-protocol-swidge-butter', () => {
   it('sends Butter the canonical Solana native identifier', async () => {
     const protocol = new ButterSwidgeProtocol(undefined, {
       sourceChainId: SOLANA_CHAIN_ID,
@@ -62,51 +62,6 @@ describe('chain-aware decimals discovery', () => {
       included: false,
       description: 'Estimated source chain gas fee'
     }])
-  })
-
-  it('reuses supported-token decimals and accepts a Tron hex route echo', async () => {
-    let findTokenCalls = 0
-    const fetch = async (rawUrl: string) => {
-      const url = new URL(rawUrl)
-      if (url.pathname === '/supportedTokenList') {
-        return jsonResponse({
-          errno: 0,
-          data: [{
-            chainId: TRON_CHAIN_ID,
-            tokens: [{ chainId: TRON_CHAIN_ID, address: TRON_USDT, decimals: 6, symbol: 'USDT' }]
-          }]
-        })
-      }
-      if (url.pathname === '/findToken') {
-        findTokenCalls += 1
-        return jsonResponse({ errno: 2002, message: 'The Token not found' })
-      }
-      if (url.pathname === '/route') {
-        assert.equal(url.searchParams.get('amount'), '1')
-        assert.equal(url.searchParams.get('tokenInAddress'), TRON_USDT)
-        return jsonResponse({ errno: 0, data: tronRoute(TRON_USDT_HEX) })
-      }
-      throw new Error(`unexpected request: ${url.pathname}`)
-    }
-    const protocol = new ButterSwidgeProtocol(undefined, {
-      sourceChainId: TRON_CHAIN_ID,
-      entrance: 'wdk',
-      fetch,
-      now: () => 1_000
-    })
-
-    const tokens = await protocol.getSupportedTokens()
-    assert.equal(tokens[0]?.decimals, 6)
-    const quote = await protocol.quoteSwidge({
-      fromToken: TRON_USDT,
-      toToken: ZERO_ADDRESS,
-      toChain: '137',
-      fromTokenAmount: 1_000_000n,
-      slippage: 0.02
-    })
-
-    assert.equal(findTokenCalls, 0)
-    assert.equal(quote.fromTokenAmount, 1_000_000n)
   })
 
   it('accepts Tron hex decimals metadata for a Base58Check request', async () => {
@@ -158,7 +113,7 @@ describe('chain-aware decimals discovery', () => {
       })
     })
 
-    await assert.rejects(protocol.getSupportedTokens(), ButterApiError)
+    await assert.rejects(protocol.getSupportedTokens(), { name: 'ButterApiError', message: 'Butter supported-token list returned conflicting decimals for the same token' })
   })
 })
 

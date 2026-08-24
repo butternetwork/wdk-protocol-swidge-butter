@@ -82,7 +82,7 @@ function validateDeployments(chainId, deployments) {
  * Requires a supported Router calldata validator version.
  *
  * @param {string} version - The Router validator version to validate.
- * @returns {void} Nothing; the function throws when validation fails.
+ * @returns {void} Returns when the deployment uses the supported `v3` validator.
  * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
  */
 function assertRouterVersion(version) {

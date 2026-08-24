@@ -211,7 +211,7 @@ function ensureTrailingSlash(url) {
  * Requires HTTPS when a Butter endpoint carries API credentials.
  *
  * @param {string} url - The Butter base URL to normalize or validate.
- * @returns {void} Nothing; the function throws when validation fails.
+ * @returns {void} Returns when the credential-bearing endpoint uses HTTPS.
  * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
  */
 function assertHttpsBaseUrl(url) {

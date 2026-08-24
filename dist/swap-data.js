@@ -34,7 +34,7 @@ const FEE_PARAM = parseAbiParameters('(uint8 feeType,address referrer,uint256 ra
  * Validates and normalizes the transaction list returned by Butter swap data.
  *
  * @param {unknown} swapData - The raw transaction data returned by Butter.
- * @param {SwapValidationContext} context - The validated context required by the operation.
+ * @param {SwapValidationContext} context - The quoted tokens, chains, amounts, recipients, Router allowlist, and fee bounds.
  * @returns {ButterSwapTx[]} The normalized Butter transactions after complete validation.
  * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
  * @throws {ButterTransactionValidationError} If Butter transaction data does not match the requested intent.
@@ -66,7 +66,7 @@ export function validateSwapTransactions(swapData, context) {
  * calldata amount must match exactly.
  *
  * @param {bigint} amount - The source amount decoded from Router calldata.
- * @param {SwapValidationContext} context - The validated context required by the operation.
+ * @param {SwapValidationContext} context - The exact caller input that the Router amount must equal.
  * @returns {bigint} The validated calldata source amount.
  * @throws {ButterTransactionValidationError} If Butter transaction data does not match the requested intent.
  */
@@ -107,7 +107,7 @@ function describeSwapTransaction(value, index) {
  * Validates one Butter transaction against the requested source-chain intent.
  *
  * @param {unknown} value - The untrusted `/swap` transaction entry.
- * @param {SwapValidationContext} context - The validated context required by the operation.
+ * @param {SwapValidationContext} context - The requested source chain and optional EVM Router validation policy.
  * @returns {ButterSwapTx} The normalized transaction after source-chain validation.
  * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
  * @throws {ButterTransactionValidationError} If Butter transaction data does not match the requested intent.
@@ -140,8 +140,8 @@ export function validateSwapTransaction(value, context) {
  * Validates EVM Router calldata, value bounds, and destination metadata.
  *
  * @param {Partial<ButterSwapTx> & Pick<ButterSwapTx, 'to' | 'value' | 'chainId'>} tx - The transaction request to validate or send.
- * @param {SwapValidationContext} context - The validated context required by the operation.
- * @returns {void} Nothing; the function throws when validation fails.
+ * @param {SwapValidationContext} context - The complete source intent and native-fee limits to compare with decoded calldata.
+ * @returns {void} Returns after Router calldata and native value satisfy every source-side bound.
  * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
  * @throws {ButterTransactionValidationError} If Butter transaction data does not match the requested intent.
  */
@@ -272,8 +272,8 @@ function validateEvmRouterTransaction(tx, context) {
  * or an unchecked `referrer` while only matching the rate.
  *
  * @param {Hex} feeData - The encoded Router fee tuple to validate.
- * @param {SwapValidationContext} context - The validated context required by the operation.
- * @returns {void} Nothing; the function throws when validation fails.
+ * @param {SwapValidationContext} context - The quoted fee tuple and recipient intent to compare with `feeData`.
+ * @returns {void} Returns when calldata carries exactly the quoted referrer fee tuple.
  * @throws {ButterTransactionValidationError} If Butter transaction data does not match the requested intent.
  */
 function validateFeeData(feeData, context) {
@@ -316,7 +316,7 @@ function validateFeeData(feeData, context) {
 /**
  * Converts route `feeConfig` metadata into the exact tuple expected in calldata.
  *
- * @param {ButterFeeConfig} config - The configuration used by the operation.
+ * @param {ButterFeeConfig} config - The partially trusted route fee tuple to parse for calldata comparison.
  * @returns {ParsedFeeConfig} The validated Router fee type and amount.
  * @throws {ButterTransactionValidationError} If Butter transaction data does not match the requested intent.
  */
@@ -349,7 +349,7 @@ function parseFeeConfigForValidation(config) {
 /**
  * True when the route's referrer fee config charges a non-zero fee.
  *
- * @param {ButterFeeConfig | undefined} config - The configuration used by the operation.
+ * @param {ButterFeeConfig | undefined} config - The optional route fee tuple whose amount determines whether `feeData` is required.
  * @returns {boolean} Whether the quoted fee configuration encodes a non-zero charge.
  */
 export function feeConfigChargesFee(config) {
@@ -367,8 +367,8 @@ export function feeConfigChargesFee(config) {
  * Validates same chain swap param against the required contract.
  *
  * @param {Hex} encoded - The encoded Router data to decode or validate.
- * @param {SwapValidationContext} context - The validated context required by the operation.
- * @returns {void} Nothing; the function throws when validation fails.
+ * @param {SwapValidationContext} context - The same-chain destination token, receiver, refund destination, and minimum output.
+ * @returns {void} Returns when decoded same-chain swap parameters match the caller's intent.
  * @throws {ButterTransactionValidationError} If Butter transaction data does not match the requested intent.
  */
 function validateSameChainSwapParam(encoded, context) {
@@ -405,7 +405,7 @@ function validateSameChainSwapParam(encoded, context) {
  * field is decoded and checked instead of assumed.
  *
  * @param {Hex} encodedBridge - The encoded bridge parameters to validate.
- * @param {SwapValidationContext} context - The validated context required by the operation.
+ * @param {SwapValidationContext} context - The requested destination chain and optional refund-address guarantee.
  * @returns {bigint} The validated destination minimum amount.
  * @throws {ButterTransactionValidationError} If Butter transaction data does not match the requested intent.
  */
@@ -442,7 +442,7 @@ function validateBridgeParams(encodedBridge, context) {
  *
  * @param {Hex} nestedData - The nested bridge payload containing refund metadata.
  * @param {string} requested - The caller-requested address or amount.
- * @returns {void} Nothing; the function throws when validation fails.
+ * @returns {void} Returns when the nested payload proves the requested refund destination.
  * @throws {ButterUnsupportedError} If the requested input or operation is unsupported.
  * @throws {ButterTransactionValidationError} If Butter transaction data does not match the requested intent.
  */
@@ -552,7 +552,7 @@ export function assertRouterAllowed(address, chainId, registry) {
  * @param {string} actual - The value returned by Butter.
  * @param {string} expected - The value required by the caller's intent.
  * @param {string} message - The human-readable error or validation message.
- * @returns {void} Nothing; the function throws when validation fails.
+ * @returns {void} Returns when both addresses are valid and equal after EVM normalization.
  * @throws {ButterTransactionValidationError} If Butter transaction data does not match the requested intent.
  */
 function assertAddressEqual(actual, expected, message) {
@@ -566,7 +566,7 @@ function assertAddressEqual(actual, expected, message) {
  * @param {string} actual - The value returned by Butter.
  * @param {string} expected - The value required by the caller's intent.
  * @param {string} message - The human-readable error or validation message.
- * @returns {void} Nothing; the function throws when validation fails.
+ * @returns {void} Returns when both identifiers denote the same EVM token or native sentinel.
  * @throws {ButterTransactionValidationError} If Butter transaction data does not match the requested intent.
  */
 function assertTokenEqual(actual, expected, message) {

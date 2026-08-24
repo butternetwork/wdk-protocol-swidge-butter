@@ -41,8 +41,8 @@ export declare function resolveFeeLimits(defaults: SwidgeProtocolConfig, overrid
 /**
  * Validates configured fee limits eagerly, rejecting malformed bps values.
  *
- * @param {SwidgeProtocolConfig} config - The configuration used by the operation.
- * @returns {void} Nothing; the function throws when validation fails.
+ * @param {SwidgeProtocolConfig} config - The constructor-level network and protocol fee caps to validate.
+ * @returns {void} Returns after every configured fee cap has been validated.
  */
 export declare function validateFeeLimits(config: SwidgeProtocolConfig): void;
 /**
@@ -58,7 +58,7 @@ export declare function validateFeeLimits(config: SwidgeProtocolConfig): void;
  * (which providers must not do); it needs a WDK PR #39 mapping-contract change.
  *
  * @param {ButterRoute} route - The Butter route to inspect or map.
- * @param {FeeContext} context - The validated context required by the operation.
+ * @param {FeeContext} context - The source chain, source token decimals, and warning sink used to map each fee.
  * @returns {SwidgeFee[]} The mapped provider result.
  */
 export declare function mapRouteFees(route: ButterRoute, context: FeeContext): SwidgeFee[];
@@ -71,7 +71,7 @@ export declare function mapRouteFees(route: ButterRoute, context: FeeContext): S
  * the bound by one wei, and the absolute `maxNativeFee` cap is unaffected.
  *
  * @param {ButterRoute} route - The Butter route to inspect or map.
- * @param {FeeContext} context - The validated context required by the operation.
+ * @param {FeeContext} context - The source chain and native-decimal overrides used to parse the fee.
  * @returns {bigint} The additional native protocol fee in source-chain base units.
  */
 export declare function routeNativeFee(route: ButterRoute, context: FeeContext): bigint;
@@ -79,9 +79,9 @@ export declare function routeNativeFee(route: ButterRoute, context: FeeContext):
  * Enforces WDK network and protocol fee caps before transaction construction.
  *
  * @param {ButterRoute} route - The Butter route to inspect or map.
- * @param {FeeContext} context - The validated context required by the operation.
+ * @param {FeeContext} context - The trusted source amount, decimals, and chain metadata used for valuation.
  * @param {ResolvedFeeLimits} limits - The resolved fee limits to enforce.
- * @returns {void} Nothing; the function throws when validation fails.
+ * @returns {void} Returns when every configured fee ratio is within its cap.
  */
 export declare function enforceFeeLimits(route: ButterRoute, context: FeeContext, limits: ResolvedFeeLimits): void;
 /**

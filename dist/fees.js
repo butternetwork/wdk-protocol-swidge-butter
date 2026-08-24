@@ -37,8 +37,8 @@ export function resolveFeeLimits(defaults, overrides) {
 /**
  * Validates configured fee limits eagerly, rejecting malformed bps values.
  *
- * @param {SwidgeProtocolConfig} config - The configuration used by the operation.
- * @returns {void} Nothing; the function throws when validation fails.
+ * @param {SwidgeProtocolConfig} config - The constructor-level network and protocol fee caps to validate.
+ * @returns {void} Returns after every configured fee cap has been validated.
  */
 export function validateFeeLimits(config) {
     resolveFeeLimits(config, {});
@@ -66,7 +66,7 @@ const DISPLAY_ROUNDING = { rounding: 'floor' };
  * (which providers must not do); it needs a WDK PR #39 mapping-contract change.
  *
  * @param {ButterRoute} route - The Butter route to inspect or map.
- * @param {FeeContext} context - The validated context required by the operation.
+ * @param {FeeContext} context - The source chain, source token decimals, and warning sink used to map each fee.
  * @returns {SwidgeFee[]} The mapped provider result.
  */
 export function mapRouteFees(route, context) {
@@ -140,7 +140,7 @@ export function mapRouteFees(route, context) {
  * never mask a real fee.
  *
  * @param {SwidgeFee[]} fees - The mapped WDK fees to inspect.
- * @param {FeeContext} context - The validated context required by the operation.
+ * @param {FeeContext} context - The source-chain native token identity and warning sink for caveat reporting.
  * @returns {SwidgeFee[]} The original fees after emitting any non-fatal caveat.
  */
 function reportFeeCaveats(fees, context) {
@@ -181,7 +181,7 @@ function reportFeeCaveats(fees, context) {
  * the bound by one wei, and the absolute `maxNativeFee` cap is unaffected.
  *
  * @param {ButterRoute} route - The Butter route to inspect or map.
- * @param {FeeContext} context - The validated context required by the operation.
+ * @param {FeeContext} context - The source chain and native-decimal overrides used to parse the fee.
  * @returns {bigint} The additional native protocol fee in source-chain base units.
  */
 export function routeNativeFee(route, context) {
@@ -191,9 +191,9 @@ export function routeNativeFee(route, context) {
  * Enforces WDK network and protocol fee caps before transaction construction.
  *
  * @param {ButterRoute} route - The Butter route to inspect or map.
- * @param {FeeContext} context - The validated context required by the operation.
+ * @param {FeeContext} context - The trusted source amount, decimals, and chain metadata used for valuation.
  * @param {ResolvedFeeLimits} limits - The resolved fee limits to enforce.
- * @returns {void} Nothing; the function throws when validation fails.
+ * @returns {void} Returns when every configured fee ratio is within its cap.
  */
 export function enforceFeeLimits(route, context, limits) {
     if (limits.maxNetworkFeeBps != null) {
@@ -207,7 +207,7 @@ export function enforceFeeLimits(route, context, limits) {
  * Builds the source-denominated or USD-denominated ratios used for the network fee cap.
  *
  * @param {ButterRoute} route - The Butter route to inspect or map.
- * @param {FeeContext} context - The validated context required by the operation.
+ * @param {FeeContext} context - The source token and trusted input used as the network-fee denominator.
  * @returns {Ratio[]} The ratios to enforce against the network fee cap.
  * @throws {ButterFeeValuationError} If a fee cannot be valued against a trustworthy denominator.
  */
@@ -233,7 +233,7 @@ function networkFeeRatios(route, context) {
  * Builds the per-component ratios used for the aggregate protocol fee cap.
  *
  * @param {ButterRoute} route - The Butter route to inspect or map.
- * @param {FeeContext} context - The validated context required by the operation.
+ * @param {FeeContext} context - The trusted source amount and decimal scales used to aggregate protocol fees.
  * @returns {Ratio[]} The ratios to aggregate against the protocol fee cap.
  * @throws {ButterFeeValuationError} If a fee cannot be valued against a trustworthy denominator.
  */
@@ -318,7 +318,7 @@ function protocolFeeRatios(route, context) {
  * token, so any scaling error cancels and no trusted value exists anyway.
  *
  * @param {BridgeFeeComponent} component - The fee component to inspect or value.
- * @param {FeeContext} context - The validated context required by the operation.
+ * @param {FeeContext} context - The source-token identity and resolved decimals used to price the component.
  * @returns {number} The trusted decimals used to parse the fee component.
  */
 function componentDecimals(component, context) {
@@ -452,7 +452,7 @@ function hasBridgeFeeComponents(fee) {
  *
  * @param {BridgeFeeComponent} component - The fee component to inspect or value.
  * @param {ButterRoute} route - The Butter route to inspect or map.
- * @param {FeeContext} context - The validated context required by the operation.
+ * @param {FeeContext} context - The caller's source token and exact input used when selecting a denominator.
  * @returns {Ratio} The fee component ratio and its same-token denominator.
  * @throws {ButterFeeValuationError} If a fee cannot be valued against a trustworthy denominator.
  */
@@ -550,7 +550,7 @@ function isSourceTokenComponent(token, sourceChainId, sourceToken) {
  * @param {'network' | 'protocol'} type - The fee or transaction category being processed.
  * @param {Ratio[]} ratios - The fee ratios to aggregate before enforcing the cap.
  * @param {bigint} maximumBps - The maximum allowed fee ratio in basis points.
- * @returns {void} Nothing; the function throws when validation fails.
+ * @returns {void} Returns when the aggregate ratio does not exceed the requested cap.
  * @throws {ButterFeeValuationError} If a fee cannot be valued against a trustworthy denominator.
  * @throws {ButterFeeLimitExceededError} If a configured fee cap is exceeded.
  */
@@ -609,7 +609,7 @@ function parseUsd(value, label) {
  * `decimals: 0` and shrink a 10 USDC fee from `10000000n` to `10n` — a
  * thousand-basis-point charge measured as one hundredth of one.
  *
- * @param {FeeContext} context - The validated context required by the operation.
+ * @param {FeeContext} context - The locally resolved source decimals that the route declaration must match.
  * @param {string | number | undefined} declared - The source decimals declared by the Butter route.
  * @param {string} label - The human-readable label used in validation errors.
  * @returns {number} The locally resolved source decimals after route consistency checks.
@@ -641,7 +641,7 @@ function trustedSourceDecimals(context, declared, label) {
 /**
  * Returns the trusted source-token amount used as a fee denominator.
  *
- * @param {FeeContext} context - The validated context required by the operation.
+ * @param {FeeContext} context - The execution fee context carrying the caller's exact source input.
  * @returns {bigint} The trusted source-token denominator in base units.
  * @throws {ButterFeeValuationError} If a fee cannot be valued against a trustworthy denominator.
  */
@@ -688,7 +688,7 @@ function requiredTokenId(value, label) {
 /**
  * Returns the configured source-native token identifier used for fee reporting.
  *
- * @param {FeeContext} context - The validated context required by the operation.
+ * @param {FeeContext} context - The source chain and source token used to identify native-fee denomination.
  * @returns {string | undefined} The source-native token identifier, or undefined when unavailable.
  */
 function nativeTokenId(context) {

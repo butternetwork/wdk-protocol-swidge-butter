@@ -30,7 +30,7 @@ export interface SwapValidationContext {
  * Validates and normalizes the transaction list returned by Butter swap data.
  *
  * @param {unknown} swapData - The raw transaction data returned by Butter.
- * @param {SwapValidationContext} context - The validated context required by the operation.
+ * @param {SwapValidationContext} context - The quoted tokens, chains, amounts, recipients, Router allowlist, and fee bounds.
  * @returns {ButterSwapTx[]} The normalized Butter transactions after complete validation.
  * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
  * @throws {ButterTransactionValidationError} If Butter transaction data does not match the requested intent.
@@ -40,7 +40,7 @@ export declare function validateSwapTransactions(swapData: unknown, context: Swa
  * Validates one Butter transaction against the requested source-chain intent.
  *
  * @param {unknown} value - The untrusted `/swap` transaction entry.
- * @param {SwapValidationContext} context - The validated context required by the operation.
+ * @param {SwapValidationContext} context - The requested source chain and optional EVM Router validation policy.
  * @returns {ButterSwapTx} The normalized transaction after source-chain validation.
  * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
  * @throws {ButterTransactionValidationError} If Butter transaction data does not match the requested intent.
@@ -49,7 +49,7 @@ export declare function validateSwapTransaction(value: unknown, context: SwapVal
 /**
  * True when the route's referrer fee config charges a non-zero fee.
  *
- * @param {ButterFeeConfig | undefined} config - The configuration used by the operation.
+ * @param {ButterFeeConfig | undefined} config - The optional route fee tuple whose amount determines whether `feeData` is required.
  * @returns {boolean} Whether the quoted fee configuration encodes a non-zero charge.
  */
 export declare function feeConfigChargesFee(config: ButterFeeConfig | undefined): boolean;

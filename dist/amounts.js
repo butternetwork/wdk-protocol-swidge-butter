@@ -152,7 +152,7 @@ export function assertBaseUnitAmount(value, field, options = {}) {
  * Requires token decimals to be an integer from 0 through 255.
  *
  * @param {number} decimals - The token decimal precision used for conversion.
- * @returns {void} Nothing; the function throws when validation fails.
+ * @returns {void} Returns when the decimal count is an integer from 0 through 255.
  * @throws {ButterApiError} If the decimal count is not an integer from 0 through 255.
  */
 function assertDecimals(decimals) {
