@@ -17,7 +17,7 @@ import { ButterActionRequiredError, ButterUnsupportedError } from './errors.js';
  * Converts WDK decimal slippage to Butter basis points and enforces minimums.
  *
  * @param {number | undefined} slippage - The maximum caller-approved slippage as a decimal fraction.
- * @param {SlippageOptions} [options] - The caller-supplied operation options (default: empty object).
+ * @param {SlippageOptions} [options] - Route topology and chain-specific minimum context (default: empty object).
  * @returns {number} The caller-approved slippage in integer basis points.
  * @throws {ButterUnsupportedError} If slippage is outside 0 through 0.5 or cannot be expressed at one-basis-point precision.
  * @throws {ButterActionRequiredError} If the requested slippage is below Butter's route-specific minimum.
@@ -47,7 +47,7 @@ export function toButterSlippage(slippage, options = {}) {
 /**
  * Returns the minimum Butter slippage in basis points for a route.
  *
- * @param {SlippageOptions} options - The caller-supplied operation options.
+ * @param {SlippageOptions} options - Route topology and chain-specific minimum context.
  * @returns {number} The minimum route slippage in basis points.
  */
 export function minimumSlippageBps(options) {
@@ -70,7 +70,7 @@ export function minimumSlippageBps(options) {
  * Non-finite or negative inputs return `NaN`/negative and fall through to the range
  * check in {@link toButterSlippage}.
  *
- * @param {number} value - The value to parse, normalize, or validate.
+ * @param {number} value - The decimal slippage fraction to truncate to basis points.
  * @returns {number} The decimal fraction truncated to integer basis points.
  */
 function decimalToBps(value) {
@@ -85,7 +85,7 @@ function decimalToBps(value) {
     return Number(whole) * 10000 + Number(fraction.slice(0, 4).padEnd(4, '0'));
 }
 /**
- * Normalizes id for consistent processing.
+ * Converts an optional chain id to its lowercase comparison form.
  *
  * @param {string | number | undefined} id - The identifier to normalize or query.
  * @returns {string | undefined} The normalized value.
@@ -97,7 +97,7 @@ function normalizeId(id) {
  * Returns whether a chain identifier requires the strict Butter slippage floor.
  *
  * @param {string | undefined} id - The identifier to normalize or query.
- * @returns {boolean} Whether the inspected values satisfy the condition.
+ * @returns {boolean} Whether the id is Butter's Bitcoin chain id or `btc` alias.
  */
 function isStrictChain(id) {
     return id === BTC_CHAIN_ID || id === 'btc';

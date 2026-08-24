@@ -12,12 +12,6 @@ export interface FeeContext {
      */
     requestedAmountIn?: bigint;
     /**
-     * Exact-out only: the caller's `maxFromTokenAmount`, used as the denominator's
-     * upper bound when {@link requestedAmountIn} cannot exist because the caller
-     * named the output instead of the input.
-     */
-    maxAmountIn?: bigint;
-    /**
      * Source-token decimals this package resolved (config / `/findToken` / native
      * default) and used to build the `/route` request.
      *
@@ -41,7 +35,7 @@ export interface ResolvedFeeLimits {
  *
  * @param {SwidgeProtocolConfig} defaults - The constructor-level defaults used when no override is present.
  * @param {SwidgeProtocolConfig} overrides - The per-call or per-chain overrides to apply.
- * @returns {ResolvedFeeLimits} The resolved result.
+ * @returns {ResolvedFeeLimits} The validated limits after per-call values override constructor defaults.
  */
 export declare function resolveFeeLimits(defaults: SwidgeProtocolConfig, overrides: SwidgeProtocolConfig): ResolvedFeeLimits;
 /**

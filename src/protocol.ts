@@ -77,12 +77,28 @@ import type {
   SwidgeFee,
   SwidgeOptions,
   SwidgeProtocolConfig,
+  SwidgeQuote,
   SwidgeResult,
   SwidgeStatusResult,
   SwidgeSupportedToken,
   SwidgeSupportedTokensOptions,
   SwidgeTransaction
 } from './types.js'
+
+interface PreparedExecution {
+  destinationChainId: string
+  receiver: string
+  cached: CachedRoute
+  quote: SwidgeQuote
+  requestedAmountIn: bigint
+  nativeSource: boolean
+  swapTransactions: ButterSwapTx[]
+}
+
+interface BroadcastExecution {
+  transactions: SwidgeTransaction[]
+  feeParts: (bigint | undefined)[]
+}
 
 /** Butter Smart Router implementation of the WDK Swidge protocol. */
 export class ButterSwidgeProtocol extends SwidgeProtocol {
@@ -189,7 +205,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
    * The returned quote carries `routeHash`; pass it back as `options.routeHash`
    * to {@link swidge} to pin this exact route instead of auto-re-quoting.
    *
-   * @param {SwidgeOptions} options - The caller-supplied operation options.
+   * @param {SwidgeOptions} options - The exact-in tokens, amount, destination, and price constraints to quote.
    * @returns {Promise<ButterSwidgeQuote>} The non-binding quote with Butter route hash and destination guarantees.
    * @throws {ButterExactOutUnsupportedError} If exact-out options are supplied.
    * @throws {ButterUnsupportedError} If required tokens or the exact-in amount are missing or invalid.
@@ -235,7 +251,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
   /**
    * Executes an exact-in operation after validating route fees and transaction intent.
    *
-   * @param {ButterSwidgeOptions} options - The caller-supplied operation options.
+   * @param {ButterSwidgeOptions} options - The exact-in intent, recipient, route pin, and native-fee bound to execute.
    * @param {SwidgeProtocolConfig} [config] - The configuration used by the operation (default: empty object).
    * @returns {Promise<SwidgeResult>} The executed WDK result and every broadcast transaction.
    * @throws {ButterExactOutUnsupportedError} If exact-out options are supplied.
@@ -255,20 +271,18 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
     this.assertQuoteOptions(options)
     this.assertExecutionCapability()
     const sender = await this.getSender()
-    // WDK defaults the recipient to the account address, which is only safe while
-    // the destination chain speaks the same address format. Across families the
-    // source sender is not a spendable address on the destination chain, and the
-    // /swap stage — where this default is first used as the destination receiver —
-    // would send it anyway. Enforced only here, never in quoteSwidge: quoting
-    // without a recipient is the normal way to ask a price.
+    const prepared = await this.prepareExecution(options, config, sender)
+    const broadcast = this.isBuiltInEvmExecution()
+      ? await this.broadcastEvmExecution(prepared, options, sender)
+      : await this.broadcastAdapterExecution(prepared, options, sender)
+    return this.completeExecution(prepared, broadcast)
+  }
+
+  /** @private */
+  private executionDestination (options: ButterSwidgeOptions, sender: string): { destinationChainId: string, receiver: string } {
     const destinationChainId = String(options.toChain ?? this.sourceChainId)
     const sourceFamily = addressFamilyForChain(this.sourceChainId, this.evmChainIds)
     const destinationFamily = addressFamilyForChain(destinationChainId, this.evmChainIds)
-    // An `unknown` family on either side also requires an explicit recipient, and
-    // must not be allowed to "match" the other side: two unknowns are not evidence
-    // of a shared address format. Butter adds chains without this package being
-    // republished, so an unrecognized destination is exactly where a silently
-    // reused `0x` sender would land somewhere unspendable.
     const unknownFamily = sourceFamily === 'unknown' || destinationFamily === 'unknown'
     if (options.recipient == null && (unknownFamily || sourceFamily !== destinationFamily)) {
       throw new ButterActionRequiredError('Butter requires an explicit recipient when the destination chain uses a different or unrecognized address format', {
@@ -278,14 +292,23 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
         destinationFamily
       })
     }
-    const receiver = options.recipient ?? sender
+    return { destinationChainId, receiver: options.recipient ?? sender }
+  }
+
+  /** @private */
+  private async prepareExecution (
+    options: ButterSwidgeOptions,
+    config: SwidgeProtocolConfig,
+    sender: string
+  ): Promise<PreparedExecution> {
+    const { destinationChainId, receiver } = this.executionDestination(options, sender)
     const maxNativeFee = parseMaxNativeFee(options.maxNativeFee) ?? this.maxNativeFee
     const pinnedHash = normalizeRouteHash(options.routeHash)
-    const cached: CachedRoute = pinnedHash != null
+    const cached = pinnedHash != null
       ? await this.routes.consumeRouteByHash(pinnedHash, options, sender)
       : await this.routes.getRoute(options, { forExecution: true, senderFallback: sender })
     this.routes.enforceMinAmountOut(options, cached.route)
-    // assertQuoteOptions guarantees a valid, positive exact-in amount.
+
     const requestedAmountIn = BigInt(options.fromTokenAmount as number | bigint)
     const feeContext: FeeContext = {
       ...this.feeContextFor(options.fromToken),
@@ -301,7 +324,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
       receiver
     })
     const nativeSource = isNativeTokenIdentifier(this.sourceChainId, options.fromToken)
-    const swapValidationContext: SwapValidationContext = {
+    const validationContext: SwapValidationContext = {
       sourceChainId: this.sourceChainId,
       destinationChainId,
       route: cached.route,
@@ -313,99 +336,117 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
       sourceToken: options.fromToken,
       destinationToken: options.toToken,
       requireRouterAllowlist: this.isBuiltInEvmExecution(),
-      // Only forwarded when the caller named one: an absent refundAddress leaves
-      // Butter's own default in place and the nested payload undecoded.
       ...(options.refundAddress ? { refundAddress: options.refundAddress } : {}),
       routerNativeFee: routeNativeFee(cached.route, feeContext),
       requestedAmountIn,
       ...(maxNativeFee != null ? { maxNativeFee } : {}),
       ...(cached.route.feeConfig ? { feeConfig: cached.route.feeConfig } : {})
     }
-    const swapTransactions = validateSwapTransactions(swapData, swapValidationContext)
+    return {
+      destinationChainId,
+      receiver,
+      cached,
+      quote,
+      requestedAmountIn,
+      nativeSource,
+      swapTransactions: validateSwapTransactions(swapData, validationContext)
+    }
+  }
+
+  /** @private */
+  private async broadcastEvmExecution (
+    prepared: PreparedExecution,
+    options: ButterSwidgeOptions,
+    sender: string
+  ): Promise<BroadcastExecution> {
     const transactions: SwidgeTransaction[] = []
-    // One entry per execution unit; undefined means that unit's gas was not
-    // measured. Only fold in a measured fee when EVERY unit reported one.
     const feeParts: (bigint | undefined)[] = []
-    const toChain = destinationChainId
-    if (this.isBuiltInEvmExecution()) {
-      // The built-in EVM path is exactly one Router transaction (enforced by
-      // validateSwapTransactions); executeEvmSwap adds any approval + the source.
-      for (const swapTx of swapTransactions) {
-        try {
-          const executed = await executeEvmSwap({
-            account: this.account,
-            config: this.config,
-            sender,
-            route: cached.route,
-            swapTx,
-            options,
-            sourceChainId: this.sourceChainId,
-            nativeSource,
-            // Exact-in: the caller's own input, which the calldata was validated to
-            // equal exactly. A caller-chosen bound, never Butter's.
-            approvalAmount: requestedAmountIn
-          })
-          transactions.push(...executed.transactions)
-          feeParts.push(executed.gasFee)
-        } catch (cause) {
-          // executeEvmSwap reports its own broadcast transactions; merge them
-          // with anything already sent so the caller sees the full picture.
-          if (cause instanceof ButterPartialExecutionError) {
-            transactions.push(...cause.transactions)
-            throw this.partialExecution(transactions, cause.cause, toChain, cause.failedType ?? 'source')
-          }
-          throw this.partialExecution(transactions, cause, toChain, 'source')
+    for (const swapTx of prepared.swapTransactions) {
+      try {
+        const executed = await executeEvmSwap({
+          account: this.account,
+          config: this.config,
+          sender,
+          route: prepared.cached.route,
+          swapTx,
+          options,
+          sourceChainId: this.sourceChainId,
+          nativeSource: prepared.nativeSource,
+          approvalAmount: prepared.requestedAmountIn
+        })
+        transactions.push(...executed.transactions)
+        feeParts.push(executed.gasFee)
+      } catch (cause) {
+        if (cause instanceof ButterPartialExecutionError) {
+          transactions.push(...cause.transactions)
+          throw this.partialExecution(
+            transactions,
+            cause.cause,
+            prepared.destinationChainId,
+            cause.failedType ?? 'source'
+          )
         }
-      }
-    } else {
-      const adapter = this.config.transactionAdapters?.[this.sourceChainId]
-      if (!adapter) throw new ButterUnsupportedError(`No transaction adapter configured for chain ${this.sourceChainId}`)
-      if (!this.account?.sendTransaction) throw new ButterUnsupportedError('An account with sendTransaction is required for adapter execution')
-      const sendTransaction = this.account.sendTransaction.bind(this.account)
-      // Normalize and CLASSIFY every adapter output BEFORE broadcasting any of
-      // them. A partial broadcast that then fails classification would leave
-      // already-sent transactions a retry could double-execute, so all validation
-      // (legal types, exactly one `source`) must complete before the first send.
-      const adapted = swapTransactions.map((swapTx) =>
-        normalizeAdapterResult(adapter(swapTx, { sender, receiver, route: cached.route, options })))
-      const classified = resolveAdapterTypes(adapted)
-      for (const entry of classified) {
-        // The whole body is guarded, not just the await: hashOf/feeOf can also
-        // throw AFTER the transaction has gone out.
-        try {
-          const result = await sendTransaction(entry.transaction)
-          transactions.push({ hash: hashOf(result), chain: this.sourceChainId, type: entry.type })
-          feeParts.push(feeOf(result))
-        } catch (cause) {
-          throw this.partialExecution(transactions, cause, toChain, entry.type)
-        }
+        throw this.partialExecution(transactions, cause, prepared.destinationChainId, 'source')
       }
     }
-    // Everything below runs with the transactions already on the wire, so any
-    // failure here — totalling the fees, assembling the result — must still
-    // report what was broadcast rather than propagating bare.
-    try {
-      const sourceTx = transactions.find((tx) => tx.type === 'source')
-      if (!sourceTx) {
-        // Every validated swap transaction produces a source entry; reaching
-        // this indicates a bug rather than a recoverable condition.
-        throw new ButterApiError('Butter execution produced no source transaction', { transactions })
+    return { transactions, feeParts }
+  }
+
+  /** @private */
+  private async broadcastAdapterExecution (
+    prepared: PreparedExecution,
+    options: ButterSwidgeOptions,
+    sender: string
+  ): Promise<BroadcastExecution> {
+    const adapter = this.config.transactionAdapters?.[this.sourceChainId]
+    if (!adapter) throw new ButterUnsupportedError(`No transaction adapter configured for chain ${this.sourceChainId}`)
+    if (!this.account?.sendTransaction) throw new ButterUnsupportedError('An account with sendTransaction is required for adapter execution')
+
+    const adapted = prepared.swapTransactions.map((swapTx) => normalizeAdapterResult(adapter(swapTx, {
+      sender,
+      receiver: prepared.receiver,
+      route: prepared.cached.route,
+      options
+    })))
+    const classified = resolveAdapterTypes(adapted)
+    const transactions: SwidgeTransaction[] = []
+    const feeParts: (bigint | undefined)[] = []
+    const sendTransaction = this.account.sendTransaction.bind(this.account)
+    for (const entry of classified) {
+      try {
+        const result = await sendTransaction(entry.transaction)
+        transactions.push({ hash: hashOf(result), chain: this.sourceChainId, type: entry.type })
+        feeParts.push(feeOf(result))
+      } catch (cause) {
+        throw this.partialExecution(transactions, cause, prepared.destinationChainId, entry.type)
       }
-      this.rememberOperationKind(sourceTx.hash, toChain)
+    }
+    return { transactions, feeParts }
+  }
+
+  /** @private */
+  private completeExecution (prepared: PreparedExecution, broadcast: BroadcastExecution): SwidgeResult {
+    const { transactions, feeParts } = broadcast
+    try {
+      const sourceTx = transactions.find((transaction) => transaction.type === 'source')
+      if (!sourceTx) throw new ButterApiError('Butter execution produced no source transaction', { transactions })
+      this.rememberOperationKind(sourceTx.hash, prepared.destinationChainId)
       const actualNetworkFee = feeParts.length > 0 && feeParts.every((fee) => fee != null)
         ? feeParts.reduce((total, fee) => total + (fee ?? 0n), 0n)
         : undefined
       return {
         id: sourceTx.hash,
         hash: sourceTx.hash,
-        fees: actualNetworkFee != null ? withMeasuredNetworkFee(quote.fees, actualNetworkFee, cached.route) : quote.fees,
+        fees: actualNetworkFee != null
+          ? withMeasuredNetworkFee(prepared.quote.fees, actualNetworkFee, prepared.cached.route)
+          : prepared.quote.fees,
         transactions,
-        fromTokenAmount: quote.fromTokenAmount,
-        toTokenAmount: quote.toTokenAmount,
-        toTokenAmountMin: quote.toTokenAmountMin
+        fromTokenAmount: prepared.quote.fromTokenAmount,
+        toTokenAmount: prepared.quote.toTokenAmount,
+        toTokenAmountMin: prepared.quote.toTokenAmountMin
       }
     } catch (cause) {
-      throw this.partialExecution(transactions, cause, toChain, 'source')
+      throw this.partialExecution(transactions, cause, prepared.destinationChainId, 'source')
     }
   }
 
@@ -417,7 +458,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
    * derived from the transaction receipt instead of the cross-chain APIs.
    *
    * @param {string} id - The identifier to normalize or query.
-   * @param {ButterSwidgeStatusOptions} [options] - The caller-supplied operation options (default: empty object).
+   * @param {ButterSwidgeStatusOptions} [options] - Lookup mode and optional source/destination chain hints (default: empty object).
    * @returns {Promise<SwidgeStatusResult>} The conservative WDK status and any reported source or destination transactions.
    * @throws {ButterApiError} If the id is empty, attribution fails, or Butter returns missing or inconsistent status data.
    * @throws {ButterConfigurationError} If same-chain receipt status cannot be queried with the configured clients.
@@ -572,7 +613,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
    * uses `fromChain`, then `toChain`, then the instance's source chain. Route-scoped
    * `fromToken` filtering is unavailable from Butter Router's per-chain listing.
    *
-   * @param {SwidgeSupportedTokensOptions} [options] - The caller-supplied operation options (default: empty object).
+   * @param {SwidgeSupportedTokensOptions} [options] - The chain selector for Butter's token catalog (default: empty object).
    * @returns {Promise<SwidgeSupportedToken[]>} The validated token catalog for the selected chain.
    * @throws {ButterApiError} If Butter returns malformed, wrong-chain, or conflicting token metadata.
    */
@@ -594,8 +635,8 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
     // "amount of source token" with no exactOut variant — so even the denomination
     // to send is unspecified. Advertising it would be advertising a feature that
     // does not work. `npm run example:probe-exact-out` re-checks both against the
-    // live API; the execution-side plumbing (maxAmountIn / assertSourceAmountIn) is
-    // retained and tested, so re-enabling is a small change once Butter confirms.
+    // live API. Supporting it later requires a new, evidence-backed input-bound
+    // contract rather than dormant exact-out branches in the exact-in validator.
     if (hasOutput) throw new ButterExactOutUnsupportedError()
     if (hasInput === hasOutput) {
       throw new ButterUnsupportedError('fromTokenAmount is required')
@@ -683,7 +724,7 @@ function hashOf (result: string | { hash?: string }): string {
  * object carrying a `transaction` property is the explicit form; anything else
  * is treated as a bare transaction with an unknown role.
  *
- * @param {unknown} value - The value to parse, normalize, or validate.
+ * @param {unknown} value - The raw host adapter return value.
  * @returns {NormalizedAdapterResult} The transaction payload and its optional declared role.
  */
 function normalizeAdapterResult (value: unknown): NormalizedAdapterResult {
@@ -712,8 +753,8 @@ const ADAPTER_TYPES: ReadonlySet<string> = new Set(['source', 'destination', 'ap
 /**
  * Returns whether a host adapter declared a legal transaction role.
  *
- * @param {unknown} value - The value to parse, normalize, or validate.
- * @returns {boolean} Whether the inspected values satisfy the condition.
+ * @param {unknown} value - The transaction role declared by a host adapter.
+ * @returns {boolean} Whether the role is a legal WDK `SwidgeTransaction` type.
  */
 function isAdapterType (value: unknown): value is AdapterTransactionType {
   return typeof value === 'string' && ADAPTER_TYPES.has(value)
@@ -798,7 +839,7 @@ function withMeasuredNetworkFee (fees: SwidgeFee[], measured: bigint, route: But
  *
  * @param {string} left - The first value to compare.
  * @param {string} right - The second value to compare.
- * @returns {boolean} Whether the inspected values satisfy the condition.
+ * @returns {boolean} Whether both EVM addresses are equal ignoring hex case.
  */
 function sameRecipient (left: string, right: string): boolean {
   return left.toLowerCase() === right.toLowerCase()
@@ -842,8 +883,8 @@ function normalizedTokenDecimals (
 /**
  * Validates and normalizes the optional maxNativeFee cap to native base units.
  *
- * @param {number | bigint | undefined} value - The value to parse, normalize, or validate.
- * @returns {bigint | undefined} The parsed value.
+ * @param {number | bigint | undefined} value - The optional native-fee cap in source-chain base units.
+ * @returns {bigint | undefined} The validated bigint cap, or undefined when no cap was supplied.
  * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
  */
 function parseMaxNativeFee (value: number | bigint | undefined): bigint | undefined {
@@ -859,8 +900,8 @@ function parseMaxNativeFee (value: number | bigint | undefined): bigint | undefi
 /**
  * Validates the optional execution-path route freshness margin, in seconds.
  *
- * @param {number | undefined} value - The value to parse, normalize, or validate.
- * @returns {number | undefined} The parsed value.
+ * @param {number | undefined} value - The optional minimum seconds a cached route must remain valid for execution.
+ * @returns {number | undefined} The validated whole-second margin, or undefined when omitted.
  * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
  */
 function parseExecutionMarginSeconds (value: number | undefined): number | undefined {
@@ -876,7 +917,7 @@ function parseExecutionMarginSeconds (value: number | undefined): number | undef
 /**
  * Validates a millisecond deadline supplied by an integrator.
  *
- * @param {number | undefined} value - The value to parse, normalize, or validate.
+ * @param {number | undefined} value - The optional timeout or deadline value in milliseconds.
  * @param {string} label - The human-readable label used in validation errors.
  * @param {boolean} allowZero - Whether zero is accepted as a valid value.
  * @returns {number | undefined} The parsed value.
@@ -894,8 +935,8 @@ function parseTimeoutMs (value: number | undefined, label: string, allowZero: bo
 /**
  * Treats a blank or whitespace-only configuration string as absent.
  *
- * @param {string | undefined} value - The value to parse, normalize, or validate.
- * @returns {string | undefined} The normalized value.
+ * @param {string | undefined} value - The optional configuration string to trim.
+ * @returns {string | undefined} The trimmed string, or undefined when blank or absent.
  */
 function normalizeOptionalText (value: string | undefined): string | undefined {
   if (value == null) return undefined
@@ -906,8 +947,8 @@ function normalizeOptionalText (value: string | undefined): string | undefined {
 /**
  * Normalizes recipient once so route keys, requests, and execution share its semantics.
  *
- * @param {T} options - The caller-supplied operation options.
- * @returns {T} The normalized value.
+ * @param {T} options - The quote or execution options whose recipient may be blank.
+ * @returns {T} The options with a blank recipient omitted.
  */
 function normalizeRecipient<T extends SwidgeOptions> (options: T): T {
   const recipient = normalizeOptionalText(options.recipient)
@@ -924,8 +965,8 @@ function normalizeRecipient<T extends SwidgeOptions> (options: T): T {
  * or unusable: a malformed value would otherwise hand the integrator's share
  * away silently, with a successful swap and no error to notice.
  *
- * @param {string | undefined} value - The value to parse, normalize, or validate.
- * @returns {string | undefined} The parsed value.
+ * @param {string | undefined} value - The optional `<nickname>[:rate]` affiliate string.
+ * @returns {string | undefined} The trimmed validated affiliate, or undefined when absent.
  * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
  */
 function parseAffiliate (value: string | undefined): string | undefined {
@@ -945,8 +986,8 @@ function parseAffiliate (value: string | undefined): string | undefined {
 /**
  * Normalizes the optional Butter `routeHash` pin, treating empty strings as absent.
  *
- * @param {string | undefined} hash - The transaction or route hash to process.
- * @returns {string | undefined} The normalized value.
+ * @param {string | undefined} hash - The optional Butter route hash to pin for execution.
+ * @returns {string | undefined} The trimmed route hash, or undefined when blank or absent.
  */
 function normalizeRouteHash (hash: string | undefined): string | undefined {
   return typeof hash === 'string' && hash.length > 0 ? hash : undefined

@@ -33,7 +33,7 @@ export declare class ButterSwidgeProtocol extends SwidgeProtocol {
      * The returned quote carries `routeHash`; pass it back as `options.routeHash`
      * to {@link swidge} to pin this exact route instead of auto-re-quoting.
      *
-     * @param {SwidgeOptions} options - The caller-supplied operation options.
+     * @param {SwidgeOptions} options - The exact-in tokens, amount, destination, and price constraints to quote.
      * @returns {Promise<ButterSwidgeQuote>} The non-binding quote with Butter route hash and destination guarantees.
      * @throws {ButterExactOutUnsupportedError} If exact-out options are supplied.
      * @throws {ButterUnsupportedError} If required tokens or the exact-in amount are missing or invalid.
@@ -48,7 +48,7 @@ export declare class ButterSwidgeProtocol extends SwidgeProtocol {
     /**
      * Executes an exact-in operation after validating route fees and transaction intent.
      *
-     * @param {ButterSwidgeOptions} options - The caller-supplied operation options.
+     * @param {ButterSwidgeOptions} options - The exact-in intent, recipient, route pin, and native-fee bound to execute.
      * @param {SwidgeProtocolConfig} [config] - The configuration used by the operation (default: empty object).
      * @returns {Promise<SwidgeResult>} The executed WDK result and every broadcast transaction.
      * @throws {ButterExactOutUnsupportedError} If exact-out options are supplied.
@@ -64,6 +64,16 @@ export declare class ButterSwidgeProtocol extends SwidgeProtocol {
      * @throws {ButterApiError} If Butter returns malformed or inconsistent data or a sender reports invalid metadata.
      */
     swidge(options: ButterSwidgeOptions, config?: SwidgeProtocolConfig): Promise<SwidgeResult>;
+    /** @private */
+    private executionDestination;
+    /** @private */
+    private prepareExecution;
+    /** @private */
+    private broadcastEvmExecution;
+    /** @private */
+    private broadcastAdapterExecution;
+    /** @private */
+    private completeExecution;
     /**
      * Retrieves a Butter operation by source hash or, when requested, order ID.
      *
@@ -72,7 +82,7 @@ export declare class ButterSwidgeProtocol extends SwidgeProtocol {
      * derived from the transaction receipt instead of the cross-chain APIs.
      *
      * @param {string} id - The identifier to normalize or query.
-     * @param {ButterSwidgeStatusOptions} [options] - The caller-supplied operation options (default: empty object).
+     * @param {ButterSwidgeStatusOptions} [options] - Lookup mode and optional source/destination chain hints (default: empty object).
      * @returns {Promise<SwidgeStatusResult>} The conservative WDK status and any reported source or destination transactions.
      * @throws {ButterApiError} If the id is empty, attribution fails, or Butter returns missing or inconsistent status data.
      * @throws {ButterConfigurationError} If same-chain receipt status cannot be queried with the configured clients.
@@ -106,7 +116,7 @@ export declare class ButterSwidgeProtocol extends SwidgeProtocol {
      * uses `fromChain`, then `toChain`, then the instance's source chain. Route-scoped
      * `fromToken` filtering is unavailable from Butter Router's per-chain listing.
      *
-     * @param {SwidgeSupportedTokensOptions} [options] - The caller-supplied operation options (default: empty object).
+     * @param {SwidgeSupportedTokensOptions} [options] - The chain selector for Butter's token catalog (default: empty object).
      * @returns {Promise<SwidgeSupportedToken[]>} The validated token catalog for the selected chain.
      * @throws {ButterApiError} If Butter returns malformed, wrong-chain, or conflicting token metadata.
      */

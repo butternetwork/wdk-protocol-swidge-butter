@@ -38,9 +38,9 @@ export class RouteManager {
     /**
      * Returns a fresh or reusable Butter route matching the caller options.
      *
-     * @param {SwidgeOptions} options - The caller-supplied operation options.
+     * @param {SwidgeOptions} options - The exact-in route intent and caller constraints.
      * @param {RouteLookupOptions} [lookupOptions] - The cache and sender options used for route lookup (default: empty object).
-     * @returns {Promise<CachedRoute>} The resolved result.
+     * @returns {Promise<CachedRoute>} A matching fresh cached route or newly requested route.
      * @throws {ButterNoRouteError} If Butter provides no liquid route for the request.
      */
     async getRoute(options, lookupOptions = {}) {
@@ -103,8 +103,8 @@ export class RouteManager {
      * cannot be silently re-fetched the way {@link getRoute} does — that would
      * execute a price the caller never saw. It is rejected instead.
      *
-     * @param {string} hash - The transaction or route hash to process.
-     * @param {SwidgeOptions} options - The caller-supplied operation options.
+     * @param {string} hash - The Butter route hash approved by the caller.
+     * @param {SwidgeOptions} options - The execution intent that must match the pinned quote.
      * @param {string} [senderFallback] - The sender used when the route requires a receiver fallback.
      * @returns {Promise<CachedRoute>} The pinned route removed from the cache for one execution attempt.
      * @throws {ButterActionRequiredError} If caller action is required before the operation can continue.
@@ -163,7 +163,7 @@ export class RouteManager {
      * so fee valuation can use exactly the same number instead of the route's own
      * `srcChain.tokenIn.decimals`, which is untrusted.
      *
-     * @param {SwidgeOptions} options - The caller-supplied operation options.
+     * @param {SwidgeOptions} options - The exact-in route intent to encode for Butter.
      * @param {string} [senderFallback] - The sender used when the route requires a receiver fallback.
      * @returns {Promise<RouteRequestResult>} The normalized request and trusted source-token decimals.
      * @throws {ButterActionRequiredError} If caller action is required before the operation can continue.
@@ -225,9 +225,9 @@ export class RouteManager {
         };
     }
     /**
-     * Enforces min amount out.
+     * Requires Butter's quoted minimum output to satisfy the caller's floor.
      *
-     * @param {SwidgeOptions} options - The caller-supplied operation options.
+     * @param {SwidgeOptions} options - The options containing the optional caller minimum.
      * @param {ButterRoute} route - The Butter route to inspect or map.
      * @returns {void} Nothing; the function throws when validation fails.
      * @throws {ButterActionRequiredError} If caller action is required before the operation can continue.
@@ -324,7 +324,7 @@ export function routeExpiresAt(route, now) {
  * malformed data, so we fail rather than silently defaulting to 18 (which
  * would misscale amounts by orders of magnitude).
  *
- * @param {{ decimals?: string | number } | undefined} token - The token identifier or metadata to process.
+ * @param {{ decimals?: string | number } | undefined} token - The route token whose decimal metadata is required.
  * @param {string} [label] - The human-readable label used in validation errors (default: 'token').
  * @returns {number} The validated token decimal count.
  * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
@@ -340,7 +340,7 @@ export function decimalsOf(token, label = 'token') {
  * Builds the canonical cache key for a route request and caller constraints.
  *
  * @param {Record<string, unknown>} request - The normalized Butter route request.
- * @param {SwidgeOptions} options - The caller-supplied operation options.
+ * @param {SwidgeOptions} options - The caller constraints that affect route identity.
  * @returns {string} The deterministic route-cache key.
  */
 function stableRouteKey(request, options) {
@@ -351,7 +351,7 @@ function stableRouteKey(request, options) {
     });
 }
 /**
- * Normalizes id for consistent processing.
+ * Converts an optional Butter identifier to a string.
  *
  * @param {string | number | undefined} id - The identifier to normalize or query.
  * @returns {string} The normalized value.
@@ -368,7 +368,7 @@ function normalizeId(id) {
  * @param {string} chainId - The chain identifier used for normalization or lookup.
  * @param {string} a - The first token identifier to compare.
  * @param {string} b - The second token identifier to compare.
- * @returns {boolean} Whether the inspected values satisfy the condition.
+ * @returns {boolean} Whether both identifiers denote the same token on the chain.
  */
 function sameToken(chainId, a, b) {
     return sameTokenIdentifier(chainId, a, b);

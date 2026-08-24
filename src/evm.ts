@@ -13,17 +13,23 @@
 // limitations under the License.
 
 import { encodeFunctionData, erc20Abi, TransactionNotFoundError, TransactionReceiptNotFoundError } from 'viem'
+import type { PublicClient, WalletClient } from 'viem'
 import { APPROVAL_TIMEOUT_MS, NATIVE_TOKEN_ADDRESSES } from './constants.js'
 import { parseIntegerAmount } from './amounts.js'
 import { ButterApiError, ButterConfigurationError, ButterPartialExecutionError } from './errors.js'
 import { classifyReceiptStatus } from './status.js'
 import type { ButterAccount, ButterRoute, ButterSwapTx, ButterSwidgeProtocolConfig, EvmPublicClient, EvmTransactionData, EvmTransactionReceipt, EvmTransactionRequest, EvmWalletClient, SwidgeOptions, ViemPublicClientLike, ViemWalletClientLike } from './types.js'
 
+type ViemSendTransactionArgs = Parameters<WalletClient['sendTransaction']>[0]
+type ViemReadContractArgs = Parameters<PublicClient['readContract']>[0]
+type ViemWaitForReceiptArgs = Parameters<PublicClient['waitForTransactionReceipt']>[0]
+type ViemGetReceiptArgs = Parameters<PublicClient['getTransactionReceipt']>[0]
+type ViemGetTransactionArgs = Parameters<PublicClient['getTransaction']>[0]
+
 /**
- * Adapts a viem wallet client to the provider's {@link EvmWalletClient}. A raw
- * viem client is not structurally assignable (its `sendTransaction` parameter is
- * strongly typed), so wrap it here. The client must have a bound account; the
- * adapter surfaces that as the required `account.address`.
+ * Adapts a viem wallet client to the provider's {@link EvmWalletClient}. The
+ * wrapper validates that the client has a bound account and narrows viem's rich
+ * transaction surface to the capabilities this provider consumes.
  *
  * @param {ViemWalletClientLike} client - The viem client to adapt.
  * @returns {EvmWalletClient} The provider-compatible EVM wallet client.
@@ -41,9 +47,9 @@ export function toEvmWalletClient (client: ViemWalletClientLike): EvmWalletClien
      *
      * @param {unknown} args - The request arguments forwarded to the wrapped viem client.
      * @returns {Promise<`0x${string}`>} A promise resolving to the submitted transaction hash.
-     */
+    */
     async sendTransaction (args) {
-      return client.sendTransaction(args)
+      return client.sendTransaction(args as ViemSendTransactionArgs)
     }
   }
 }
@@ -62,7 +68,7 @@ export function toEvmWalletClient (client: ViemWalletClientLike): EvmWalletClien
  *
  * @param {unknown} error - The error value to classify.
  * @param {string} name - The viem error class name to match.
- * @returns {boolean} Whether the inspected values satisfy the condition.
+ * @returns {boolean} Whether the error has the requested viem name and BaseError shape.
  */
 function isViemErrorNamed (error: unknown, name: string): boolean {
   if (!(error instanceof Error) || error.name !== name) return false
@@ -91,7 +97,7 @@ export function toEvmPublicClient (client: ViemPublicClientLike): EvmPublicClien
      * @returns {Promise<bigint>} A promise resolving to the integer contract-read result.
      */
     async readContract (args) {
-      return await client.readContract(args) as bigint
+      return await client.readContract(args as ViemReadContractArgs) as bigint
     },
     /**
      * Waits for for transaction receipt.
@@ -100,17 +106,17 @@ export function toEvmPublicClient (client: ViemPublicClientLike): EvmPublicClien
      * @returns {Promise<EvmTransactionReceipt>} A promise resolving to the confirmed transaction receipt.
      */
     async waitForTransactionReceipt (args) {
-      return client.waitForTransactionReceipt(args)
+      return client.waitForTransactionReceipt(args as ViemWaitForReceiptArgs)
     },
     /**
      * Returns a viem transaction receipt, mapping only genuine not-found errors to null.
      *
-     * @param {string} hash - The transaction or route hash to process.
-     * @returns {Promise<EvmTransactionReceipt | null>} The resolved result.
+     * @param {string} hash - The EVM transaction hash whose receipt is requested.
+     * @returns {Promise<EvmTransactionReceipt | null>} The receipt, or null only for a genuine viem not-found response.
      */
     async getTransactionReceipt (hash) {
       try {
-        return await client.getTransactionReceipt({ hash })
+        return await client.getTransactionReceipt({ hash } as ViemGetReceiptArgs)
       } catch (error) {
         if (error instanceof TransactionReceiptNotFoundError) return null
         if (isViemErrorNamed(error, 'TransactionReceiptNotFoundError')) return null
@@ -120,12 +126,12 @@ export function toEvmPublicClient (client: ViemPublicClientLike): EvmPublicClien
     /**
      * Returns the transaction fields needed for Router attribution, or null when not found.
      *
-     * @param {string} hash - The transaction or route hash to process.
+     * @param {string} hash - The EVM transaction hash to load for Router attribution.
      * @returns {Promise<EvmTransactionData | null>} The attribution fields, or null when the transaction is not found.
      */
     async getTransaction (hash) {
       try {
-        const tx = await client.getTransaction({ hash })
+        const tx = await client.getTransaction({ hash } as ViemGetTransactionArgs)
         const result: EvmTransactionData = {}
         if (tx.input != null) result.input = tx.input
         if (tx.to != null) result.to = tx.to
@@ -144,8 +150,8 @@ const APPROVAL_POLL_INTERVAL_MS = 2_000
 /**
  * Returns true when the token identifier denotes a chain's native asset.
  *
- * @param {string} token - The token identifier or metadata to process.
- * @returns {boolean} Whether the inspected values satisfy the condition.
+ * @param {string} token - The token identifier to compare against native aliases.
+ * @returns {boolean} Whether the identifier is one of the package's native-token aliases.
  */
 export function isNativeToken (token: string): boolean {
   return NATIVE_TOKEN_ADDRESSES.has(token.toLowerCase())
@@ -170,8 +176,7 @@ interface ExecuteEvmSwapContext {
   nativeSource: boolean
   /**
    * Exact ERC-20 allowance to grant the router, in source-token base units. The
-   * caller resolves it because exact-out has no `fromTokenAmount` to read - it is
-   * the caller's `maxFromTokenAmount` bound there, and the exact input for exact-in.
+   * caller resolves it from the validated exact-in amount.
    */
   approvalAmount: bigint
 }
@@ -309,7 +314,7 @@ function assertApprovalConfirmable (context: {
  * Sends an exact `approve(router, value)` and waits for it to confirm.
  *
  * @param {{ account: ButterAccount | undefined config: ButterSwidgeProtocolConfig swapTx: ButterSwapTx options: SwidgeOptions sourceChainId: string }} context - The validated context required by the operation.
- * @param {bigint} value - The value to parse, normalize, or validate.
+ * @param {bigint} value - The exact ERC-20 allowance to submit.
  * @param {RecordSend} record - The callback that records a broadcast transaction.
  * @returns {Promise<void>} A promise that resolves after the operation completes.
  */
@@ -350,7 +355,7 @@ async function approveExact (context: {
  * timeout) rather than assumed successful.
  *
  * @param {{ account: ButterAccount | undefined config: ButterSwidgeProtocolConfig }} context - The validated context required by the operation.
- * @param {string} hash - The transaction or route hash to process.
+ * @param {string} hash - The approval transaction hash to confirm.
  * @returns {Promise<void>} A promise that resolves after the operation completes.
  * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
  */
@@ -400,7 +405,7 @@ async function waitForApproval (context: {
  *
  * @param {() => Promise<T>} operation - The asynchronous operation constrained by the deadline.
  * @param {number} deadline - The absolute millisecond deadline for the operation.
- * @param {string} hash - The transaction or route hash to process.
+ * @param {string} hash - The approval transaction hash included in timeout diagnostics.
  * @param {number} timeoutMs - The operation timeout in milliseconds.
  * @returns {Promise<T>} The lookup result produced before the deadline.
  */
@@ -423,7 +428,7 @@ async function beforeApprovalDeadline<T> (operation: () => Promise<T>, deadline:
 /**
  * Creates the configuration error reported when approval confirmation exceeds its deadline.
  *
- * @param {string} hash - The transaction or route hash to process.
+ * @param {string} hash - The approval transaction hash that exceeded its deadline.
  * @param {number} timeoutMs - The operation timeout in milliseconds.
  * @returns {ButterConfigurationError} The typed approval timeout error.
  */
@@ -487,7 +492,7 @@ function normalizeSend (result: string | { hash?: string, fee?: bigint }): EvmSe
  * number surfaces as a raw `TypeError` and an empty string silently produces an
  * unusable `id: ''`.
  *
- * @param {unknown} value - The value to parse, normalize, or validate.
+ * @param {unknown} value - The transaction hash returned by a host sender.
  * @returns {string} The validated non-empty transaction hash.
  * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
  */

@@ -99,8 +99,8 @@ EVM execution requires **both**:
 
 The account resolves the sender address and (optionally) confirms approval
 receipts via `getTransactionReceipt`; it is never used to submit EVM calldata.
-Wrap a viem wallet client with the exported `toEvmWalletClient` adapter (a raw
-viem client is not structurally assignable). An optional `evm.publicClient`
+Wrap a viem wallet client with the exported `toEvmWalletClient` adapter so its
+bound account is validated and its transaction surface is normalized. An optional `evm.publicClient`
 enables ERC20 allowance checks (without one, an approval is always submitted and
 confirmed through a receipt lookup). When **every** send reports the gas fee it
 paid, the executed `SwidgeResult` reports that measured source gas; otherwise it
@@ -163,11 +163,9 @@ this package from offering it:
   amount denominates is unspecified, and guessing would misprice the trade.
 
 `npm run example:probe-exact-out` re-checks both against the live API (read-only, no
-funded account, `exactIn` used as a control). If it reports exactOut accepted and
-settles the denomination, re-enabling is a small change: the execution-side
-machinery — the source-amount upper bound, and the `min(cap, route-reported input)`
-fee denominator that keeps an inflated route from understating a fee ratio — is
-retained and unit-tested.
+funded account, `exactIn` used as a control). If Butter later documents and supports
+the denomination, exact-out needs a fresh input-bound design and security review;
+the exact-in validator intentionally contains no dormant exact-out branch.
 
 ## Behavior
 
@@ -630,6 +628,7 @@ process.
 
 ```sh
 npm test
+npm run check:repo
 npm run typecheck
 npm run build
 npm pack --dry-run

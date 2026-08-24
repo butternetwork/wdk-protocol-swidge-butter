@@ -77,8 +77,8 @@ const CHAIN_NATIVE_SYMBOL = new Map<string, string>([
  * token symbols, chain names and status strings are legitimately case-insensitive
  * and are compared with plain `toLowerCase()` at their own sites.
  *
- * @param {string} value - The value to parse, normalize, or validate.
- * @returns {string} The normalized value.
+ * @param {string} value - The on-chain identifier to trim and conditionally lowercase.
+ * @returns {string} The lowercase EVM hex identifier or otherwise case-preserved value.
  */
 export function normalizeIdentifier (value: string): string {
   const trimmed = value.trim()
@@ -94,7 +94,7 @@ export function normalizeIdentifier (value: string): string {
  *
  * @param {string | undefined} left - The first value to compare.
  * @param {string | undefined} right - The second value to compare.
- * @returns {boolean} Whether the inspected values satisfy the condition.
+ * @returns {boolean} Whether both non-empty identifiers are equivalent after format-safe normalization.
  */
 export function sameIdentifier (left: string | undefined, right: string | undefined): boolean {
   return sameUnder(normalizeIdentifier, left, right)
@@ -110,8 +110,8 @@ export function sameIdentifier (left: string | undefined, right: string | undefi
  * chain (or `btc` on Solana) from being mistaken for that chain's native asset.
  *
  * @param {string | number} chainId - The chain identifier used for normalization or lookup.
- * @param {string} value - The value to parse, normalize, or validate.
- * @returns {string} The normalized value.
+ * @param {string} value - The token identifier to canonicalize within the named chain.
+ * @returns {string} The chain-scoped canonical token identity.
  */
 export function normalizeTokenIdentifier (chainId: string | number, value: string): string {
   const chain = String(chainId)
@@ -135,7 +135,7 @@ export function normalizeTokenIdentifier (chainId: string | number, value: strin
  * @param {string | number} chainId - The chain identifier used for normalization or lookup.
  * @param {string | undefined} left - The first value to compare.
  * @param {string | undefined} right - The second value to compare.
- * @returns {boolean} Whether the inspected values satisfy the condition.
+ * @returns {boolean} Whether both values denote the same non-empty token on the chain.
  */
 export function sameTokenIdentifier (
   chainId: string | number,
@@ -149,8 +149,8 @@ export function sameTokenIdentifier (
  * True when the identifier denotes the named chain's native asset.
  *
  * @param {string | number} chainId - The chain identifier used for normalization or lookup.
- * @param {string} token - The token identifier or metadata to process.
- * @returns {boolean} Whether the inspected values satisfy the condition.
+ * @param {string} token - The token identifier to test against chain-native aliases and sentinels.
+ * @returns {boolean} Whether the identifier denotes the named chain's native asset.
  */
 export function isNativeTokenIdentifier (chainId: string | number, token: string): boolean {
   const chain = String(chainId)
@@ -162,8 +162,8 @@ export function isNativeTokenIdentifier (chainId: string | number, token: string
  * Fee-component symbol fallback uses this narrower rule by design.
  *
  * @param {string | number} chainId - The chain identifier used for normalization or lookup.
- * @param {string} token - The token identifier or metadata to process.
- * @returns {boolean} Whether the inspected values satisfy the condition.
+ * @param {string} token - The token identifier to test for a textual native alias.
+ * @returns {boolean} Whether the identifier is `native` or the named chain's native symbol.
  */
 export function isSymbolicNativeTokenIdentifier (chainId: string | number, token: string): boolean {
   const lowered = token.trim().toLowerCase()
@@ -175,7 +175,7 @@ export function isSymbolicNativeTokenIdentifier (chainId: string | number, token
  * Returns the representation Butter expects when the caller used a native alias.
  *
  * @param {string | number} chainId - The chain identifier used for normalization or lookup.
- * @param {string} token - The token identifier or metadata to process.
+ * @param {string} token - The caller-provided token identifier or native alias.
  * @returns {string} The canonical token identifier expected by Butter.
  */
 export function toButterTokenIdentifier (chainId: string | number, token: string): string {
@@ -202,8 +202,8 @@ export function toButterTokenIdentifier (chainId: string | number, token: string
  * Base58 signatures remain exact — see {@link BARE_HEX_TX_HASH} for why 64 is the
  * length that keeps them out.
  *
- * @param {string} value - The value to parse, normalize, or validate.
- * @returns {string} The normalized value.
+ * @param {string} value - The transaction hash to normalize under hash-specific rules.
+ * @returns {string} The case-normalized hex hash or otherwise case-preserved value.
  */
 export function normalizeTransactionHash (value: string): string {
   const trimmed = value.trim()
@@ -216,7 +216,7 @@ export function normalizeTransactionHash (value: string): string {
  *
  * @param {string | undefined} left - The first value to compare.
  * @param {string | undefined} right - The second value to compare.
- * @returns {boolean} Whether the inspected values satisfy the condition.
+ * @returns {boolean} Whether both non-empty values denote the same transaction hash.
  */
 export function sameTransactionHash (left: string | undefined, right: string | undefined): boolean {
   return sameUnder(normalizeTransactionHash, left, right)
@@ -228,7 +228,7 @@ export function sameTransactionHash (left: string | undefined, right: string | u
  * @param {(value: string) => string} normalize - The format-specific normalization function.
  * @param {string | undefined} left - The first value to compare.
  * @param {string | undefined} right - The second value to compare.
- * @returns {boolean} Whether the inspected values satisfy the condition.
+ * @returns {boolean} Whether normalization produces the same non-empty identifier for both values.
  */
 function sameUnder (
   normalize: (value: string) => string,
@@ -257,8 +257,8 @@ function sameUnder (
  * not here.
  *
  * @param {string | number} chainId - The chain identifier used for normalization or lookup.
- * @param {string} token - The token identifier or metadata to process.
- * @returns {string} The normalized value.
+ * @param {string} token - The configured token identifier to turn into a map key.
+ * @returns {string} The chain-aware canonical token key.
  */
 export function normalizeTokenKey (chainId: string | number, token: string): string {
   return normalizeTokenIdentifier(chainId, token)
@@ -267,7 +267,7 @@ export function normalizeTokenKey (chainId: string | number, token: string): str
 /**
  * Decodes a Tron address into its canonical hexadecimal account identifier.
  *
- * @param {string} token - The token identifier or metadata to process.
+ * @param {string} token - The Tron Base58Check, `41`-hex, or `0x` address to decode.
  * @returns {string | undefined} The lowercase hexadecimal account identifier, or undefined when decoding fails.
  */
 function tronAccountId (token: string): string | undefined {

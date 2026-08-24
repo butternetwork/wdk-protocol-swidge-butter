@@ -11,7 +11,8 @@ the `SwidgeProtocol` interface WDK expects. It is a library (published to `dist/
 ## Commands
 
 ```sh
-npm test                    # runs test/*.test.ts via node:test + tsx
+npm test                    # runs tests/*.test.ts via node:test + tsx
+npm run check:repo          # runs repository policy and harness checks
 npm run typecheck           # tsc --noEmit for src/ and examples/
 npm run build               # compiles src/ -> dist/ (ESM + .d.ts + source maps)
 npm run lint                # alias for typecheck
@@ -21,8 +22,8 @@ npm pack --dry-run          # verify published package contents
 Run a single test file or case:
 
 ```sh
-node --import tsx --test test/butter-swidge-protocol.test.ts
-node --import tsx --test --test-name-pattern="ERC20 allowance" test/*.test.ts
+node --import tsx --test tests/butter-swidge-protocol.test.ts
+node --import tsx --test --test-name-pattern="ERC20 allowance" tests/*.test.ts
 ```
 
 Run examples against live Butter APIs (optional `examples/.env`, see `examples/README.md`):
@@ -34,7 +35,7 @@ npm run example:status
 npm run example:swap   # sends a real transaction; requires EXECUTION_CONFIRMATION
 ```
 
-Before submitting changes: `npm test`, `npm run typecheck`, `npm run build`, and commit the
+Before submitting changes: `npm test`, `npm run check:repo`, `npm run typecheck`, `npm run build`, and commit the
 regenerated `dist/` output (it is published and must stay in sync with `src/`).
 
 ## Architecture
@@ -231,12 +232,9 @@ Everything else is a focused collaborator it composes:
   delegation path. Butter documents `type: exactOut`, but the default production endpoint answers
   `errno 2000` ("Parameter error") while the same request succeeds as `exactIn`, and `/route` defines
   `amount` only as "amount of source token" with no exactOut variant — so the denomination to send is
-  unspecified too. `npm run example:probe-exact-out` re-checks both against the live API. The
-  execution-side machinery is deliberately **retained and unit-tested** for re-enablement:
-  `swap-data.ts: maxAmountIn`/`assertSourceAmountIn` (calldata `amount <= cap` — the only inequality
-  in that check, and it must stay confined to the exact-out branch) and `fees.ts: sourceDenominator`'s
-  `min(cap, route-reported input)` fallback. Don't delete them, and don't re-enable exact-out on
-  documentation alone.
+  unspecified too. `npm run example:probe-exact-out` re-checks both against the live API. Re-enabling
+  exact-out requires a fresh input-bound design and security review; the exact-in calldata and fee
+  validators intentionally contain no dormant exact-out branch.
 - **Source-denominated fee caps fix both the denominator and the scale**: the numerator must be
   parsed with `FeeContext.sourceTokenDecimals` — resolved by this package when building the `/route`
   request and carried on `CachedRoute.sourceDecimals` — never with `route.srcChain.tokenIn.decimals`.
@@ -249,7 +247,7 @@ Everything else is a focused collaborator it composes:
   (`SYMBOLIC_NATIVE_TOKEN_IDS`) — use that closed set, not a `0x` shape test, or a Solana mint counts
   as symbolic. This has failed in three directions across three reviews (too strict; symbol beating a
   declared address; an ungated fallback letting any component name the source address in its
-  `symbol`), so the full matrix is pinned by a table-driven test in `test/fees.test.ts` — **extend
+  `symbol`), so the full matrix is pinned by a table-driven test in `tests/fees.test.ts` — **extend
   the table, don't add another one-off case**. A trusted denominator is not automatically a
   meaningful one.
   Matching a component to a route **leg** (`sameTokenAddress`) requires an address on both sides,
@@ -340,7 +338,7 @@ small validation helpers at trust boundaries over inline checks.
 `node:test` + `node:assert/strict`, no external test framework. Name test cases by observable
 behavior (e.g. `it('rejects a status response with no swidge info or state', ...)`). Mock Butter
 HTTP responses and transaction adapters — unit tests must never require live credentials or
-on-chain funds; `test/butter-swidge-protocol.test.ts` has reusable `makeFetch`/`quoteRoute`/
+on-chain funds; `tests/butter-swidge-protocol.test.ts` has reusable `makeFetch`/`quoteRoute`/
 `sourceChainWithToken` helpers for building fixtures. Live-network checks belong in `examples/`,
 gated behind env vars and (for `swap.ts`) an explicit `EXECUTION_CONFIRMATION` string.
 

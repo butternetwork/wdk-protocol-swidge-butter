@@ -62,33 +62,15 @@ export function validateSwapTransactions(swapData, context) {
 /**
  * Validates the calldata's source amount and returns what is actually being spent.
  *
- * Exact-in: the caller named the input, so the calldata must match it **exactly**.
+ * The provider supports exact-in only, so the caller's amount and the Router
+ * calldata amount must match exactly.
  *
- * Exact-out: the caller named the *output*, so the required input is not knowable
- * up front and can only be bounded. It is bounded by `maxAmountIn`, which comes
- * from the caller — deliberately not by `route.srcChain.totalAmountIn`, which is
- * Butter-reported and would let the response validate itself. This is the one
- * place the source-amount check is an inequality, and it must stay confined to the
- * exact-out branch.
- *
- * @param {bigint} amount - The token amount to process.
+ * @param {bigint} amount - The source amount decoded from Router calldata.
  * @param {SwapValidationContext} context - The validated context required by the operation.
  * @returns {bigint} The validated calldata source amount.
  * @throws {ButterTransactionValidationError} If Butter transaction data does not match the requested intent.
  */
 function assertSourceAmountIn(amount, context) {
-    if (context.maxAmountIn != null) {
-        if (amount > context.maxAmountIn) {
-            throw new ButterTransactionValidationError('Butter Router source amount exceeds maxFromTokenAmount', {
-                maxFromTokenAmount: context.maxAmountIn.toString(),
-                actual: amount.toString()
-            });
-        }
-        return amount;
-    }
-    if (context.requestedAmountIn == null) {
-        throw new ButterTransactionValidationError('Butter /swap cannot be validated without the quoted input amount');
-    }
     if (amount !== context.requestedAmountIn) {
         throw new ButterTransactionValidationError('Butter Router source amount does not match quote', {
             expected: context.requestedAmountIn.toString(),
@@ -103,7 +85,7 @@ function assertSourceAmountIn(amount, context) {
  * Runs on untrusted input that has failed no check yet, so every field is read
  * defensively — this must never throw and mask the error it is describing.
  *
- * @param {unknown} value - The value to parse, normalize, or validate.
+ * @param {unknown} value - The untrusted `/swap` array entry to summarize.
  * @param {number} index - The transaction index used in diagnostic details.
  * @returns {Record<string, unknown>} The bounded diagnostic description of the transaction value.
  */
@@ -124,7 +106,7 @@ function describeSwapTransaction(value, index) {
 /**
  * Validates one Butter transaction against the requested source-chain intent.
  *
- * @param {unknown} value - The value to parse, normalize, or validate.
+ * @param {unknown} value - The untrusted `/swap` transaction entry.
  * @param {SwapValidationContext} context - The validated context required by the operation.
  * @returns {ButterSwapTx} The normalized transaction after source-chain validation.
  * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
@@ -234,9 +216,6 @@ function validateEvmRouterTransaction(tx, context) {
     // `/swap` returns tx.value as a hex integer, so a sub-wei formatting artifact in
     // that round-trip would otherwise reject a perfectly good transaction.
     const routerNativeFee = context.routerNativeFee ?? 0n;
-    // Exact-out uses the amount the calldata actually spends (already bounded above
-    // by maxFromTokenAmount) rather than the cap itself: a route needing less than
-    // the cap is the normal case, and requiring the full cap would reject it.
     const inputPart = context.nativeSource ? effectiveAmountIn : 0n;
     // The input half is a hard lower bound: anything less would under-fund the swap.
     if (nativeValue < inputPart) {
@@ -335,7 +314,7 @@ function validateFeeData(feeData, context) {
     }
 }
 /**
- * Parses fee config for validation into its validated representation.
+ * Converts route `feeConfig` metadata into the exact tuple expected in calldata.
  *
  * @param {ButterFeeConfig} config - The configuration used by the operation.
  * @returns {ParsedFeeConfig} The validated Router fee type and amount.
@@ -547,9 +526,9 @@ export function routerFunctionName(data) {
     return undefined;
 }
 /**
- * Validates router allowed and rejects invalid values.
+ * Resolves a Router address against the effective chain allowlist.
  *
- * @param {string} address - The address or identifier to process.
+ * @param {string} address - The Router address returned by Butter.
  * @param {string} chainId - The chain identifier used for normalization or lookup.
  * @param {ButterRouterRegistry} registry - The effective Butter Router allowlist.
  * @returns {ReturnType<typeof routerDeploymentsForChain>[number]} The allowlisted deployment matching the Router address.
@@ -568,7 +547,7 @@ export function assertRouterAllowed(address, chainId, registry) {
     return deployment;
 }
 /**
- * Validates address equal and rejects invalid values.
+ * Requires two EVM addresses to identify the same account.
  *
  * @param {string} actual - The value returned by Butter.
  * @param {string} expected - The value required by the caller's intent.
@@ -582,7 +561,7 @@ function assertAddressEqual(actual, expected, message) {
     }
 }
 /**
- * Validates token equal and rejects invalid values.
+ * Requires two EVM token identifiers to match, including native aliases.
  *
  * @param {string} actual - The value returned by Butter.
  * @param {string} expected - The value required by the caller's intent.
@@ -601,17 +580,17 @@ function assertTokenEqual(actual, expected, message) {
 /**
  * Returns whether a string is valid even-length hexadecimal calldata.
  *
- * @param {string} value - The value to parse, normalize, or validate.
- * @returns {boolean} Whether the inspected values satisfy the condition.
+ * @param {string} value - The candidate Router calldata string.
+ * @returns {boolean} Whether the value is `0x`-prefixed, even-length hexadecimal data.
  */
 function isHexData(value) {
     return /^0x(?:[0-9a-fA-F]{2})*$/.test(value);
 }
 /**
- * Normalizes address for consistent processing.
+ * Lowercases an EVM address for case-insensitive comparison.
  *
- * @param {string} address - The address or identifier to process.
- * @returns {string} The normalized value.
+ * @param {string} address - The EVM address to normalize.
+ * @returns {string} The lowercase EVM address.
  */
 export function normalizeAddress(address) {
     return address.toLowerCase();

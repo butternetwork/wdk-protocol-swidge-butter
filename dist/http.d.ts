@@ -14,7 +14,7 @@ export declare class ButterHttpClient {
     /**
      * Creates a butter http client instance.
      *
-     * @param {ButterHttpClientOptions} options - The caller-supplied operation options.
+     * @param {ButterHttpClientOptions} options - Base URLs, integration metadata, credentials, fetch, and timeout configuration.
      * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
      */
     constructor(options: ButterHttpClientOptions);

@@ -35,7 +35,7 @@ export class ButterHttpClient {
   /**
    * Creates a butter http client instance.
    *
-   * @param {ButterHttpClientOptions} options - The caller-supplied operation options.
+   * @param {ButterHttpClientOptions} options - Base URLs, integration metadata, credentials, fetch, and timeout configuration.
    * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
    */
   constructor (options: ButterHttpClientOptions) {
@@ -217,7 +217,7 @@ function ensureTrailingSlash (url: string): string {
 }
 
 /**
- * Validates https base url and rejects invalid values.
+ * Requires HTTPS when a Butter endpoint carries API credentials.
  *
  * @param {string} url - The Butter base URL to normalize or validate.
  * @returns {void} Nothing; the function throws when validation fails.
@@ -233,8 +233,8 @@ function assertHttpsBaseUrl (url: string): void {
 /**
  * Returns whether the value is a non-null, non-array record.
  *
- * @param {unknown} value - The value to parse, normalize, or validate.
- * @returns {boolean} Whether the inspected values satisfy the condition.
+ * @param {unknown} value - The candidate API envelope or details value.
+ * @returns {boolean} Whether the value is a non-null object and not an array.
  */
 function isRecord (value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === 'object' && !Array.isArray(value)
@@ -243,7 +243,7 @@ function isRecord (value: unknown): value is Record<string, unknown> {
 /**
  * Extracts a non-empty message from a partially trusted error payload.
  *
- * @param {unknown} value - The value to parse, normalize, or validate.
+ * @param {unknown} value - The partially trusted Butter error payload.
  * @returns {string | undefined} The response message, or undefined when missing.
  */
 function messageOf (value: unknown): string | undefined {

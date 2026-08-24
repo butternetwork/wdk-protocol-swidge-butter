@@ -6,7 +6,7 @@ export interface SwapValidationContext {
     route: ButterRoute;
     routerRegistry: ButterRouterRegistry;
     nativeSource: boolean;
-    requestedAmountIn?: bigint;
+    requestedAmountIn: bigint;
     minimumAmountOut?: bigint;
     sender: string;
     receiver: string;
@@ -25,12 +25,6 @@ export interface SwapValidationContext {
     feeConfig?: ButterFeeConfig;
     /** Absolute cap (native base units) on routerNativeFee + bridgeNativeFee; required cross-chain. */
     maxNativeFee?: bigint;
-    /**
-     * Exact-out only: upper bound on the calldata's source amount, from the caller's
-     * `maxFromTokenAmount`. Mutually exclusive with {@link requestedAmountIn}, which
-     * demands exact equality; see `assertSourceAmountIn`.
-     */
-    maxAmountIn?: bigint;
 }
 /**
  * Validates and normalizes the transaction list returned by Butter swap data.
@@ -45,7 +39,7 @@ export declare function validateSwapTransactions(swapData: unknown, context: Swa
 /**
  * Validates one Butter transaction against the requested source-chain intent.
  *
- * @param {unknown} value - The value to parse, normalize, or validate.
+ * @param {unknown} value - The untrusted `/swap` transaction entry.
  * @param {SwapValidationContext} context - The validated context required by the operation.
  * @returns {ButterSwapTx} The normalized transaction after source-chain validation.
  * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
@@ -69,9 +63,9 @@ export declare function feeConfigChargesFee(config: ButterFeeConfig | undefined)
  */
 export declare function routerFunctionName(data: string | undefined): 'swapAndCall' | 'swapAndBridge' | undefined;
 /**
- * Validates router allowed and rejects invalid values.
+ * Resolves a Router address against the effective chain allowlist.
  *
- * @param {string} address - The address or identifier to process.
+ * @param {string} address - The Router address returned by Butter.
  * @param {string} chainId - The chain identifier used for normalization or lookup.
  * @param {ButterRouterRegistry} registry - The effective Butter Router allowlist.
  * @returns {ReturnType<typeof routerDeploymentsForChain>[number]} The allowlisted deployment matching the Router address.
@@ -80,10 +74,10 @@ export declare function routerFunctionName(data: string | undefined): 'swapAndCa
  */
 export declare function assertRouterAllowed(address: string, chainId: string, registry: ButterRouterRegistry): ReturnType<typeof routerDeploymentsForChain>[number];
 /**
- * Normalizes address for consistent processing.
+ * Lowercases an EVM address for case-insensitive comparison.
  *
- * @param {string} address - The address or identifier to process.
- * @returns {string} The normalized value.
+ * @param {string} address - The EVM address to normalize.
+ * @returns {string} The lowercase EVM address.
  */
 export declare function normalizeAddress(address: string): string;
 //# sourceMappingURL=swap-data.d.ts.map
