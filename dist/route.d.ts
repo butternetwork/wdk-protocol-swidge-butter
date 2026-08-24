@@ -45,7 +45,7 @@ export declare class RouteManager {
     /**
      * Creates a route manager instance.
      *
-     * @param {RouteRequestContext} context - The validated context required by the operation.
+     * @param {RouteRequestContext} context - The source-chain request dependencies, decimals, cache clock, and routing metadata.
      */
     constructor(context: RouteRequestContext);
     /** @private */
@@ -104,7 +104,7 @@ export declare class RouteManager {
      *
      * @param {SwidgeOptions} options - The options containing the optional caller minimum.
      * @param {ButterRoute} route - The Butter route to inspect or map.
-     * @returns {void} Nothing; the function throws when validation fails.
+     * @returns {void} Returns when the quoted minimum meets or exceeds the caller's floor.
      * @throws {ButterActionRequiredError} If caller action is required before the operation can continue.
      */
     enforceMinAmountOut(options: SwidgeOptions, route: ButterRoute): void;

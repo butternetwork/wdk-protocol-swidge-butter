@@ -42,7 +42,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.examples.json && tsc -p tsconfig.test.json",
-    "test": "node --import tsx --test tests/*.test.ts",
+    "test": "node --import tsx --test tests/*.test.ts tests/integration/*.test.ts",
     "check:repo": "node --import tsx --test checks/*.test.ts",
     "test:e2e:read-only": "npm run build --silent && node --env-file-if-exists=.env.e2e --import tsx --test --test-concurrency=1 scripts/e2e/read-only.test.ts",
     "test:e2e:same-native": "npm run build --silent && node --env-file-if-exists=.env.e2e --import tsx --test --test-concurrency=1 scripts/e2e/same-native.test.ts",

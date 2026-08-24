@@ -39,7 +39,7 @@ export class DiscoveryService {
   /**
    * Creates a discovery service instance.
    *
-   * @param {ButterSwidgeProtocolConfig} config - The configuration used by the operation.
+   * @param {ButterSwidgeProtocolConfig} config - Adapter and Router configuration used to report each chain's execution capability.
    * @param {<T>(path: string, params?: Record<string, unknown>) => Promise<T>} requestRouter - The injected requester for Butter Router endpoints.
    * @param {<T>(path: string, params?: Record<string, unknown>) => Promise<T>} requestToken - The injected requester for Butter token endpoints.
    * @param {Set<string>} strictSlippageChainIds - The chain identifiers requiring the strict slippage floor.
@@ -400,7 +400,7 @@ function isStrictSlippageChain (chain: ButterChainInfo): boolean {
  * Returns the execution capability available for a discovered chain.
  *
  * @param {string} chainId - The chain identifier used for normalization or lookup.
- * @param {ButterSwidgeProtocolConfig} config - The configuration used by the operation.
+ * @param {ButterSwidgeProtocolConfig} config - The transaction adapters that can execute on otherwise unsupported chains.
  * @param {ButterRouterRegistry} registry - The effective Butter Router allowlist.
  * @returns {ButterChainExecution} The chain execution capability for this provider instance.
  */

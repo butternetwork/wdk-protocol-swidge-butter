@@ -43,7 +43,7 @@ export declare function parseJsonMaybe<T>(value: unknown): T | undefined;
  * Converts an optional Butter identifier to a string.
  *
  * @param {string | number | undefined} id - The identifier to normalize or query.
- * @returns {string} The normalized value.
+ * @returns {string} The identifier converted to a string, or an empty string when absent.
  */
 export declare function normalizeId(id: string | number | undefined): string;
 //# sourceMappingURL=mappers.d.ts.map

@@ -90,7 +90,7 @@ export class RouteManager {
   /**
    * Creates a route manager instance.
    *
-   * @param {RouteRequestContext} context - The validated context required by the operation.
+   * @param {RouteRequestContext} context - The source-chain request dependencies, decimals, cache clock, and routing metadata.
    */
   constructor (context: RouteRequestContext) {
     this.context = context
@@ -297,7 +297,7 @@ export class RouteManager {
    *
    * @param {SwidgeOptions} options - The options containing the optional caller minimum.
    * @param {ButterRoute} route - The Butter route to inspect or map.
-   * @returns {void} Nothing; the function throws when validation fails.
+   * @returns {void} Returns when the quoted minimum meets or exceeds the caller's floor.
    * @throws {ButterActionRequiredError} If caller action is required before the operation can continue.
    */
   enforceMinAmountOut (options: SwidgeOptions, route: ButterRoute): void {
@@ -426,7 +426,7 @@ function stableRouteKey (request: Record<string, unknown>, options: SwidgeOption
  * Converts an optional Butter identifier to a string.
  *
  * @param {string | number | undefined} id - The identifier to normalize or query.
- * @returns {string} The normalized value.
+ * @returns {string} The identifier converted to a string, or an empty string when absent.
  */
 function normalizeId (id: string | number | undefined): string {
   return id == null ? '' : String(id)

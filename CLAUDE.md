@@ -11,7 +11,7 @@ the `SwidgeProtocol` interface WDK expects. It is a library (published to `dist/
 ## Commands
 
 ```sh
-npm test                    # runs tests/*.test.ts via node:test + tsx
+npm test                    # runs unit + tests/integration suites via node:test + tsx
 npm run check:repo          # runs repository policy and harness checks
 npm run typecheck           # tsc --noEmit for src/ and examples/
 npm run build               # compiles src/ -> dist/ (ESM + .d.ts + source maps)
@@ -22,7 +22,7 @@ npm pack --dry-run          # verify published package contents
 Run a single test file or case:
 
 ```sh
-node --import tsx --test tests/butter-swidge-protocol.test.ts
+node --import tsx --test tests/protocol-execution.test.ts
 node --import tsx --test --test-name-pattern="ERC20 allowance" tests/*.test.ts
 ```
 
@@ -338,7 +338,7 @@ small validation helpers at trust boundaries over inline checks.
 `node:test` + `node:assert/strict`, no external test framework. Name test cases by observable
 behavior (e.g. `it('rejects a status response with no swidge info or state', ...)`). Mock Butter
 HTTP responses and transaction adapters — unit tests must never require live credentials or
-on-chain funds; `tests/butter-swidge-protocol.test.ts` has reusable `makeFetch`/`quoteRoute`/
+on-chain funds; `tests/helpers/protocol-fixtures.ts` has reusable `makeFetch`/`quoteRoute`/
 `sourceChainWithToken` helpers for building fixtures. Live-network checks belong in `examples/`,
 gated behind env vars and (for `swap.ts`) an explicit `EXECUTION_CONFIRMATION` string.
 

@@ -88,7 +88,7 @@ function decimalToBps(value) {
  * Converts an optional chain id to its lowercase comparison form.
  *
  * @param {string | number | undefined} id - The identifier to normalize or query.
- * @returns {string | undefined} The normalized value.
+ * @returns {string | undefined} The lowercase chain identifier, or undefined when absent.
  */
 function normalizeId(id) {
     return id == null ? undefined : String(id).toLowerCase();

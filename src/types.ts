@@ -172,10 +172,14 @@ interface ViemTransactionData {
   to?: string | null
 }
 
+type BivariantAsyncMethod<TArgs, TResult> = {
+  bivarianceHack(args: TArgs): Promise<TResult>
+}['bivarianceHack']
+
 /** Read-only EVM client capabilities needed for allowance and receipt checks. */
 export interface EvmPublicClient {
   /** Reads an ERC-20 allowance or another integer contract value. */
-  readContract: (args: unknown) => Promise<bigint>
+  readContract: BivariantAsyncMethod<Parameters<PublicClient['readContract']>[0], bigint>
   /** Waits for a submitted transaction to reach the requested confirmation count. */
   waitForTransactionReceipt?: (args: { hash: string, confirmations?: number, timeout?: number }) => Promise<EvmTransactionReceipt>
   /** Fetches a receipt without waiting; used for same-chain status lookups. */
@@ -196,12 +200,8 @@ export interface EvmWalletClient {
   /** The account bound to every transaction submitted by the client. */
   account: { address: string }
   /** Submits an EVM transaction with calldata and optional chain metadata. */
-  sendTransaction: (args: unknown) => Promise<string | { hash?: string, fee?: bigint }>
+  sendTransaction: (args: EvmTransactionRequest) => Promise<string | { hash?: string, fee?: bigint }>
 }
-
-type BivariantAsyncMethod<TArgs, TResult> = {
-  bivarianceHack(args: TArgs): Promise<TResult>
-}['bivarianceHack']
 
 /** Minimal viem wallet-client capabilities accepted by {@link toEvmWalletClient}. */
 export interface ViemWalletClientLike {
@@ -570,37 +570,37 @@ export interface ButterSwapTx {
 
 /** Chain metadata returned by Butter discovery APIs. */
 export interface ButterChainInfo {
-  /** The id value carried by butter chain info metadata. */
+  /** The fallback chain identifier returned by the token API. */
   id?: string | number
-  /** The chain id value carried by butter chain info metadata. */
+  /** The Router chain identifier, which may be encoded as a string or number. */
   chainId?: string | number
-  /** The chain type value carried by butter chain info metadata. */
+  /** The Router's VM-family label for the chain. */
   chainType?: string
-  /** The type value carried by butter chain info metadata. */
+  /** The token API's fallback VM-family label. */
   type?: string
-  /** The name value carried by butter chain info metadata. */
+  /** The human-readable chain name shown during discovery. */
   name?: string
-  /** The key value carried by butter chain info metadata. */
+  /** The token API's short machine-readable chain key. */
   key?: string
-  /** The native token value carried by butter chain info metadata. */
+  /** Native-token metadata, either embedded directly or JSON encoded. */
   nativeToken?: string | ButterTokenInfo
 }
 
 /** Token metadata returned by Butter discovery APIs. */
 export interface ButterTokenInfo {
-  /** The chain id value carried by butter token info metadata. */
+  /** The chain on which this token identifier is valid. */
   chainId?: string | number
-  /** The address value carried by butter token info metadata. */
+  /** The preferred token address returned by Butter. */
   address?: string
-  /** The token value carried by butter token info metadata. */
+  /** Alternate token identifier used by some Butter endpoints. */
   token?: string
-  /** The decimals value carried by butter token info metadata. */
+  /** The preferred decimal precision field. */
   decimals?: number | string
-  /** The decimal value carried by butter token info metadata. */
+  /** Alternate singular decimal precision field used by the token API. */
   decimal?: number | string
-  /** The symbol value carried by butter token info metadata. */
+  /** The human-readable token ticker. */
   symbol?: string
-  /** The name value carried by butter token info metadata. */
+  /** The optional human-readable token name. */
   name?: string
 }
 
@@ -618,17 +618,17 @@ export interface EvmTransactionRequest {
 
 /** Internal cached route envelope. */
 export interface CachedRoute {
-  /** The key value carried by cached route metadata. */
+  /** Deterministic request key used to match this route to caller options. */
   key: string
-  /** The route value carried by cached route metadata. */
+  /** The validated Butter route retained for quoting or execution. */
   route: ButterRoute
-  /** The slippage bps value carried by cached route metadata. */
+  /** Integer slippage sent to both `/route` and `/swap`. */
   slippageBps: number
   /**
    * Source-token decimals resolved by this package (config / `/findToken` / native
    * default) and used to build the request — NOT the route's own reported value.
    */
   sourceDecimals: number
-  /** The expires at value carried by cached route metadata. */
+  /** Unix timestamp after which this route cannot be reused. */
   expiresAt: number
 }

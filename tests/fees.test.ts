@@ -120,7 +120,7 @@ const options = {
   slippage: 0.02
 }
 
-describe('Butter fee handling through the public protocol API', () => {
+describe('@butternetwork/wdk-protocol-swidge-butter', () => {
   it('maps every reported fee with its own token decimals', async () => {
     const quote = await quoteProtocol(feeRoute()).quoteSwidge(options)
 
@@ -183,7 +183,7 @@ describe('Butter fee handling through the public protocol API', () => {
     })
     const { protocol, swapCalls } = executionProtocol(route, { maxProtocolFeeBps: 99n })
 
-    await assert.rejects(protocol.swidge(options), ButterFeeLimitExceededError)
+    await assert.rejects(protocol.swidge(options), { name: 'ButterFeeLimitExceededError', message: 'Butter protocol fee exceeds the configured limit' })
     assert.deepEqual(swapCalls, [])
   })
 
@@ -201,7 +201,7 @@ describe('Butter fee handling through the public protocol API', () => {
     })
     const { protocol, swapCalls } = executionProtocol(route, { maxProtocolFeeBps: 199n })
 
-    await assert.rejects(protocol.swidge(options), ButterFeeLimitExceededError)
+    await assert.rejects(protocol.swidge(options), { name: 'ButterFeeLimitExceededError', message: 'Butter protocol fee exceeds the configured limit' })
     assert.deepEqual(swapCalls, [])
   })
 
@@ -213,7 +213,7 @@ describe('Butter fee handling through the public protocol API', () => {
     })
     const { protocol, swapCalls } = executionProtocol(route, { maxProtocolFeeBps: 0n })
 
-    await assert.rejects(protocol.swidge(options), ButterFeeValuationError)
+    await assert.rejects(protocol.swidge(options), { name: 'ButterFeeValuationError', message: 'Cannot enforce the Butter protocol fee cap: the cross-chain route reports no in/out/affiliate bridge fee amount' })
     assert.deepEqual(swapCalls, [])
   })
 
@@ -225,6 +225,6 @@ describe('Butter fee handling through the public protocol API', () => {
       }
     })
 
-    await assert.rejects(quoteProtocol(route).quoteSwidge(options), ButterApiError)
+    await assert.rejects(quoteProtocol(route).quoteSwidge(options), { name: 'ButterFeeValuationError', message: 'Butter route reports source token decimals that disagree with the resolved value; refusing to value the token protocol fee' })
   })
 })

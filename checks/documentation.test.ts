@@ -51,25 +51,29 @@ describe('WDK documentation requirements', () => {
 
   it('keeps package behavior tests on the root public API', async () => {
     const testDirectory = join(repositoryRoot, 'tests')
-    const testFiles = (await readdir(testDirectory))
-      .filter((file) => file.endsWith('.ts'))
-      .sort()
+    const testFiles = await typescriptFiles(testDirectory)
     const violations: string[] = []
 
     for (const file of testFiles) {
-      const source = await readFile(join(testDirectory, file), 'utf8')
+      const source = await readFile(file, 'utf8')
+      const relative = file.slice(testDirectory.length + 1)
       const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
       if (/\bassert\.(?:ok|match|doesNotMatch|doesNotThrow)\s*\(/.test(source)) {
-        violations.push(`${file}: uses a broad assertion instead of an exact value`)
+        violations.push(`${relative}: uses a broad assertion instead of an exact value`)
       }
       if (/\(error:\s*unknown\)\s*=>[^\n]*(?:\.test\(error\.message\)|error\.message\.includes)/.test(source)) {
-        violations.push(`${file}: uses a pattern or substring instead of an exact error message`)
+        violations.push(`${relative}: uses a pattern or substring instead of an exact error message`)
       }
+      if (/assert\.equal\([^\n]*(?:\btypeof\b|\binstanceof\b|\.some\(|\.every\(|\.includes\()/.test(source)) {
+        violations.push(`${relative}: asserts a property or type instead of a concrete value`)
+      }
+      collectTestViolations(sourceFile, relative, violations)
       for (const statement of sourceFile.statements) {
-        if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue
-        const imported = statement.moduleSpecifier.text
-        if (imported.startsWith('../src/') && imported !== '../src/index.ts') {
-          violations.push(`${file}: imports internal module ${imported}`)
+        if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
+          const imported = statement.moduleSpecifier.text
+          if (imported.includes('/src/') && !imported.endsWith('/src/index.ts')) {
+            violations.push(`${relative}: imports internal module ${imported}`)
+          }
         }
       }
     }
@@ -334,8 +338,81 @@ function placeholderComment (comment: string | ts.NodeArray<ts.JSDocComment> | u
     comment.includes('Whether the inspected values satisfy the condition') ||
     comment.includes('The resolved result') ||
     comment.includes('caller-supplied operation options') ||
+    comment.includes('The parsed value.') ||
+    comment.includes('The normalized value.') ||
+    comment.includes('Nothing; the function throws when validation fails.') ||
+    comment.includes('The validated context required by the operation.') ||
+    comment.includes('The configuration used by the operation.') ||
+    /The .* value carried by .* metadata\./.test(comment) ||
     /^Parses .* into its validated representation\.$/.test(comment) ||
     comment === 'Normalizes id for consistent processing.' ||
     /^Validates .* and rejects invalid values\.$/.test(comment)
   )
+}
+
+async function typescriptFiles (directory: string): Promise<string[]> {
+  const entries = await readdir(directory, { withFileTypes: true })
+  const files = await Promise.all(entries.map(async (entry) => {
+    const path = join(directory, entry.name)
+    if (entry.isDirectory()) return typescriptFiles(path)
+    return entry.isFile() && entry.name.endsWith('.ts') ? [path] : []
+  }))
+  return files.flat().sort()
+}
+
+function collectTestViolations (sourceFile: ts.SourceFile, file: string, violations: string[]): void {
+  const sutMethods = new Set([
+    'quoteSwidge',
+    'swidge',
+    'getSupportedChains',
+    'getSupportedTokens',
+    'getSwidgeStatus',
+    'swap',
+    'quoteSwap',
+    'bridge',
+    'quoteBridge'
+  ])
+  const integration = file.startsWith('integration/')
+
+  function visit (node: ts.Node): void {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
+      ts.isIdentifier(node.expression.expression) && node.expression.expression.text === 'assert' &&
+      (node.expression.name.text === 'throws' || node.expression.name.text === 'rejects')) {
+      const matcher = node.arguments[1]
+      const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1
+      if (matcher == null || ts.isIdentifier(matcher)) {
+        violations.push(`${file}:${line}: error assertion requires an exact matcher with a message`)
+      } else if (ts.isObjectLiteralExpression(matcher)) {
+        const fields = new Set(matcher.properties.flatMap((property) => {
+          if (ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property)) {
+            return [property.name.getText(sourceFile)]
+          }
+          return []
+        }))
+        if (!fields.has('name') || !fields.has('message')) {
+          violations.push(`${file}:${line}: error object matcher requires exact name and message`)
+        }
+      }
+    }
+
+    if (!integration && ts.isCallExpression(node) && ts.isIdentifier(node.expression) &&
+      (node.expression.text === 'it' || node.expression.text === 'test')) {
+      const callback = node.arguments.find((argument) => ts.isArrowFunction(argument) || ts.isFunctionExpression(argument))
+      if (callback != null) {
+        let calls = 0
+        function countCalls (child: ts.Node): void {
+          if (ts.isCallExpression(child) && ts.isPropertyAccessExpression(child.expression) && sutMethods.has(child.expression.name.text)) calls += 1
+          ts.forEachChild(child, countCalls)
+        }
+        countCalls(callback)
+        if (calls > 1) {
+          const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1
+          violations.push(`${file}:${line}: unit test calls ${calls} public protocol methods; move the flow to integration or split it`)
+        }
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+
+  visit(sourceFile)
 }

@@ -186,6 +186,10 @@ interface ExecuteEvmSwapResult {
   gasFee: bigint | undefined
 }
 
+type EvmClientContext = Pick<ExecuteEvmSwapContext, 'account' | 'config'>
+type ApprovalContext = Pick<ExecuteEvmSwapContext, 'account' | 'config' | 'sender' | 'swapTx' | 'options' | 'sourceChainId' | 'approvalAmount'>
+type ApprovalSendContext = Pick<ExecuteEvmSwapContext, 'account' | 'config' | 'swapTx' | 'options' | 'sourceChainId'>
+
 /**
  * Executes a validated Butter swap transaction (plus ERC-20 approval when needed) on an EVM chain.
  *
@@ -197,7 +201,7 @@ interface ExecuteEvmSwapResult {
  * frame; a caller that blindly retried would otherwise re-approve or re-swap on top
  * of transactions already on-chain.
  *
- * @param {ExecuteEvmSwapContext} context - The validated context required by the operation.
+ * @param {ExecuteEvmSwapContext} context - The validated route, sender, swap transaction, and approval bound for one EVM execution.
  * @returns {Promise<ExecuteEvmSwapResult>} The broadcast transactions and measured gas total.
  * @throws {ButterPartialExecutionError} If execution fails after at least one transaction was broadcast.
  */
@@ -246,25 +250,16 @@ export async function executeEvmSwap (context: ExecuteEvmSwapContext): Promise<E
  * than returning the list) is what lets a failure of the second `approve` still
  * surface the first one's hash.
  *
- * @param {{ account: ButterAccount | undefined config: ButterSwidgeProtocolConfig sender: string route: ButterRoute swapTx: ButterSwapTx options: SwidgeOptions sourceChainId: string approvalAmount: bigint }} context - The validated context required by the operation.
+ * @param {ApprovalContext} context - The account, EVM clients, source token, Router, and exact allowance target.
  * @param {RecordSend} record - The callback that records a broadcast transaction.
  * @returns {Promise<void>} A promise that resolves after the operation completes.
  */
-async function approveIfNeeded (context: {
-  account: ButterAccount | undefined
-  config: ButterSwidgeProtocolConfig
-  sender: string
-  route: ButterRoute
-  swapTx: ButterSwapTx
-  options: SwidgeOptions
-  sourceChainId: string
-  approvalAmount: bigint
-}, record: RecordSend): Promise<void> {
+async function approveIfNeeded (context: ApprovalContext, record: RecordSend): Promise<void> {
   const publicClient = context.config.evm?.publicClient
   const amount = context.approvalAmount
   if (publicClient) {
     const allowance = await publicClient.readContract({
-      address: context.options.fromToken,
+      address: context.options.fromToken as `0x${string}`,
       abi: erc20Abi,
       functionName: 'allowance',
       args: [context.sender, context.swapTx.to]
@@ -291,14 +286,11 @@ async function approveIfNeeded (context: {
  * still follow. Requires `publicClient.waitForTransactionReceipt` or the
  * account's `getTransactionReceipt`.
  *
- * @param {{ account: ButterAccount | undefined config: ButterSwidgeProtocolConfig }} context - The validated context required by the operation.
- * @returns {void} Nothing; the function throws when validation fails.
+ * @param {EvmClientContext} context - The configured receipt sources available after an approval broadcast.
+ * @returns {void} Returns after confirming that at least one receipt source is configured.
  * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
  */
-function assertApprovalConfirmable (context: {
-  account: ButterAccount | undefined
-  config: ButterSwidgeProtocolConfig
-}): void {
+function assertApprovalConfirmable (context: EvmClientContext): void {
   const canConfirm = Boolean(
     context.config.evm?.publicClient?.waitForTransactionReceipt ||
     context.account?.getTransactionReceipt
@@ -313,18 +305,12 @@ function assertApprovalConfirmable (context: {
 /**
  * Sends an exact `approve(router, value)` and waits for it to confirm.
  *
- * @param {{ account: ButterAccount | undefined config: ButterSwidgeProtocolConfig swapTx: ButterSwapTx options: SwidgeOptions sourceChainId: string }} context - The validated context required by the operation.
+ * @param {ApprovalSendContext} context - The account, EVM client, source token, Router transaction, and source chain.
  * @param {bigint} value - The exact ERC-20 allowance to submit.
  * @param {RecordSend} record - The callback that records a broadcast transaction.
  * @returns {Promise<void>} A promise that resolves after the operation completes.
  */
-async function approveExact (context: {
-  account: ButterAccount | undefined
-  config: ButterSwidgeProtocolConfig
-  swapTx: ButterSwapTx
-  options: SwidgeOptions
-  sourceChainId: string
-}, value: bigint, record: RecordSend): Promise<void> {
+async function approveExact (context: ApprovalSendContext, value: bigint, record: RecordSend): Promise<void> {
   const sent = await sendEvmTransaction(context, {
     to: context.options.fromToken,
     value: 0n,
@@ -354,15 +340,12 @@ async function approveExact (context: {
  * unknown/uninterpretable status is treated as not-yet-final (keep polling until
  * timeout) rather than assumed successful.
  *
- * @param {{ account: ButterAccount | undefined config: ButterSwidgeProtocolConfig }} context - The validated context required by the operation.
+ * @param {EvmClientContext} context - The public client or WDK account used to obtain the approval receipt.
  * @param {string} hash - The approval transaction hash to confirm.
  * @returns {Promise<void>} A promise that resolves after the operation completes.
  * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
  */
-async function waitForApproval (context: {
-  account: ButterAccount | undefined
-  config: ButterSwidgeProtocolConfig
-}, hash: string): Promise<void> {
+async function waitForApproval (context: EvmClientContext, hash: string): Promise<void> {
   const timeoutMs = context.config.evm?.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS
   const deadline = Date.now() + timeoutMs
   const publicClient = context.config.evm?.publicClient
@@ -445,15 +428,12 @@ function approvalTimeoutError (hash: string, timeoutMs: number): ButterConfigura
  * bound `account.address` (validated against the WDK account) so the signer,
  * calldata initiator, and allowance owner cannot split.
  *
- * @param {{ account: ButterAccount | undefined config: ButterSwidgeProtocolConfig }} context - The validated context required by the operation.
+ * @param {EvmClientContext} context - The configured wallet client used to submit calldata.
  * @param {EvmTransactionRequest} tx - The transaction request to validate or send.
  * @returns {Promise<EvmSendResult>} The submitted transaction hash and optional measured fee.
  * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
  */
-async function sendEvmTransaction (context: {
-  account: ButterAccount | undefined
-  config: ButterSwidgeProtocolConfig
-}, tx: EvmTransactionRequest): Promise<EvmSendResult> {
+async function sendEvmTransaction (context: EvmClientContext, tx: EvmTransactionRequest): Promise<EvmSendResult> {
   const walletClient = context.config.evm?.walletClient
   if (walletClient) return normalizeSend(await walletClient.sendTransaction(tx))
   throw new ButterConfigurationError('EVM execution requires evm.walletClient to carry the transaction calldata')
