@@ -2,7 +2,7 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": true,
-    // Tests import source directly through `tsx`, which resolves the real `.ts`
+    // Test and check runners import source directly through `tsx`, which resolves the real `.ts`
     // files; only safe alongside `noEmit`.
     "allowImportingTsExtensions": true,
     "declaration": false,
@@ -10,6 +10,6 @@
     "sourceMap": false,
     "rootDir": "."
   },
-  "include": ["test/**/*.ts"],
+  "include": ["tests/**/*.ts", "checks/**/*.ts", "scripts/e2e/**/*.ts"],
   "exclude": ["node_modules"]
 }

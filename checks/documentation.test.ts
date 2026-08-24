@@ -49,6 +49,34 @@ describe('WDK documentation requirements', () => {
     assert.deepEqual(violations, [])
   })
 
+  it('keeps package behavior tests on the root public API', async () => {
+    const testDirectory = join(repositoryRoot, 'tests')
+    const testFiles = (await readdir(testDirectory))
+      .filter((file) => file.endsWith('.ts'))
+      .sort()
+    const violations: string[] = []
+
+    for (const file of testFiles) {
+      const source = await readFile(join(testDirectory, file), 'utf8')
+      const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+      if (/\bassert\.(?:ok|match|doesNotMatch|doesNotThrow)\s*\(/.test(source)) {
+        violations.push(`${file}: uses a broad assertion instead of an exact value`)
+      }
+      if (/\(error:\s*unknown\)\s*=>[^\n]*(?:\.test\(error\.message\)|error\.message\.includes)/.test(source)) {
+        violations.push(`${file}: uses a pattern or substring instead of an exact error message`)
+      }
+      for (const statement of sourceFile.statements) {
+        if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue
+        const imported = statement.moduleSpecifier.text
+        if (imported.startsWith('../src/') && imported !== '../src/index.ts') {
+          violations.push(`${file}: imports internal module ${imported}`)
+        }
+      }
+    }
+
+    assert.deepEqual(violations, [])
+  })
+
   it('provides installation, configuration, a complete example, and discovery guidance', async () => {
     const readme = await readFile(join(repositoryRoot, 'README.md'), 'utf8')
 
@@ -301,6 +329,13 @@ function placeholderComment (comment: string | ts.NodeArray<ts.JSDocComment> | u
   return (
     /^Computes .* from the supplied inputs\.$/.test(comment) ||
     comment.includes('value consumed by the operation') ||
-    comment === 'The computed result.'
+    comment === 'The computed result.' ||
+    comment.includes('The value to parse, normalize, or validate') ||
+    comment.includes('Whether the inspected values satisfy the condition') ||
+    comment.includes('The resolved result') ||
+    comment.includes('caller-supplied operation options') ||
+    /^Parses .* into its validated representation\.$/.test(comment) ||
+    comment === 'Normalizes id for consistent processing.' ||
+    /^Validates .* and rejects invalid values\.$/.test(comment)
   )
 }

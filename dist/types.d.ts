@@ -1,4 +1,5 @@
 import type { SwidgeFee, SwidgeOptions, SwidgeProtocolConfig, SwidgeQuote, SwidgeResult, SwidgeStatusOptions, SwidgeStatusResult, SwidgeSupportedChain, SwidgeSupportedToken, SwidgeSupportedTokensOptions, SwidgeTransaction } from '@tetherto/wdk-wallet/protocols';
+import type { PublicClient, WalletClient } from 'viem';
 export type { SwidgeFee, SwidgeOptions, SwidgeProtocolConfig, SwidgeQuote, SwidgeResult, SwidgeStatusOptions, SwidgeStatusResult, SwidgeSupportedChain, SwidgeSupportedToken, SwidgeSupportedTokensOptions, SwidgeTransaction };
 /**
  * How far `toTokenAmountMin` is actually guaranteed at execution time.
@@ -161,25 +162,28 @@ export interface EvmWalletClient {
         fee?: bigint;
     }>;
 }
-/** Loose shape of a viem-style wallet client accepted by {@link toEvmWalletClient}. */
+type BivariantAsyncMethod<TArgs, TResult> = {
+    bivarianceHack(args: TArgs): Promise<TResult>;
+}['bivarianceHack'];
+/** Minimal viem wallet-client capabilities accepted by {@link toEvmWalletClient}. */
 export interface ViemWalletClientLike {
     /** The optional account bound to the viem wallet client. */
     account?: {
         address: string;
     } | null;
     /** Submits a transaction through the wrapped viem wallet client. */
-    sendTransaction: (args: any) => Promise<`0x${string}`>;
+    sendTransaction: BivariantAsyncMethod<Parameters<WalletClient['sendTransaction']>[0], `0x${string}`>;
 }
-/** Loose shape of a viem-style public client accepted by `toEvmPublicClient`. */
+/** Minimal viem public-client capabilities accepted by {@link toEvmPublicClient}. */
 export interface ViemPublicClientLike {
     /** Reads a contract through the wrapped viem public client. */
-    readContract: (args: any) => Promise<unknown>;
+    readContract: BivariantAsyncMethod<Parameters<PublicClient['readContract']>[0], unknown>;
     /** Waits for a transaction receipt through viem. */
-    waitForTransactionReceipt: (args: any) => Promise<EvmTransactionReceipt>;
+    waitForTransactionReceipt: BivariantAsyncMethod<Parameters<PublicClient['waitForTransactionReceipt']>[0], EvmTransactionReceipt>;
     /** Fetches a transaction receipt through viem. */
-    getTransactionReceipt: (args: any) => Promise<EvmTransactionReceipt>;
+    getTransactionReceipt: BivariantAsyncMethod<Parameters<PublicClient['getTransactionReceipt']>[0], EvmTransactionReceipt>;
     /** Fetches transaction calldata and target metadata through viem. */
-    getTransaction: (args: any) => Promise<ViemTransactionData>;
+    getTransaction: BivariantAsyncMethod<Parameters<PublicClient['getTransaction']>[0], ViemTransactionData>;
 }
 /**
  * An adapter's result: the transaction to send, plus its role. When an adapter

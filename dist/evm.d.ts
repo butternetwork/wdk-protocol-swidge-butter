@@ -1,9 +1,8 @@
 import type { ButterAccount, ButterRoute, ButterSwapTx, ButterSwidgeProtocolConfig, EvmPublicClient, EvmWalletClient, SwidgeOptions, ViemPublicClientLike, ViemWalletClientLike } from './types.js';
 /**
- * Adapts a viem wallet client to the provider's {@link EvmWalletClient}. A raw
- * viem client is not structurally assignable (its `sendTransaction` parameter is
- * strongly typed), so wrap it here. The client must have a bound account; the
- * adapter surfaces that as the required `account.address`.
+ * Adapts a viem wallet client to the provider's {@link EvmWalletClient}. The
+ * wrapper validates that the client has a bound account and narrows viem's rich
+ * transaction surface to the capabilities this provider consumes.
  *
  * @param {ViemWalletClientLike} client - The viem client to adapt.
  * @returns {EvmWalletClient} The provider-compatible EVM wallet client.
@@ -27,8 +26,8 @@ export declare function toEvmPublicClient(client: ViemPublicClientLike): EvmPubl
 /**
  * Returns true when the token identifier denotes a chain's native asset.
  *
- * @param {string} token - The token identifier or metadata to process.
- * @returns {boolean} Whether the inspected values satisfy the condition.
+ * @param {string} token - The token identifier to compare against native aliases.
+ * @returns {boolean} Whether the identifier is one of the package's native-token aliases.
  */
 export declare function isNativeToken(token: string): boolean;
 interface ExecuteEvmSwapContext {
@@ -42,8 +41,7 @@ interface ExecuteEvmSwapContext {
     nativeSource: boolean;
     /**
      * Exact ERC-20 allowance to grant the router, in source-token base units. The
-     * caller resolves it because exact-out has no `fromTokenAmount` to read - it is
-     * the caller's `maxFromTokenAmount` bound there, and the exact input for exact-in.
+     * caller resolves it from the validated exact-in amount.
      */
     approvalAmount: bigint;
 }
@@ -82,7 +80,7 @@ export declare function executeEvmSwap(context: ExecuteEvmSwapContext): Promise<
  * number surfaces as a raw `TypeError` and an empty string silently produces an
  * unusable `id: ''`.
  *
- * @param {unknown} value - The value to parse, normalize, or validate.
+ * @param {unknown} value - The transaction hash returned by a host sender.
  * @returns {string} The validated non-empty transaction hash.
  * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
  */

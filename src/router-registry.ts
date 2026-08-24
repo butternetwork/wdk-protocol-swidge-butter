@@ -98,7 +98,7 @@ function validateDeployments (
 }
 
 /**
- * Validates router version and rejects invalid values.
+ * Requires a supported Router calldata validator version.
  *
  * @param {string} version - The Router validator version to validate.
  * @returns {void} Nothing; the function throws when validation fails.

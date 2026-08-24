@@ -27,20 +27,20 @@ export declare function chainToSupportedChain(chain: ButterChainInfo, execution:
 /**
  * Maps Butter token metadata to the WDK supported-token contract.
  *
- * @param {ButterTokenInfo} token - The token identifier or metadata to process.
+ * @param {ButterTokenInfo} token - The Butter token metadata to map.
  * @param {string} chainId - The chain identifier used for normalization or lookup.
  * @returns {SwidgeSupportedToken} The normalized WDK supported-token descriptor.
  */
 export declare function tokenToSupportedToken(token: ButterTokenInfo, chainId: string): SwidgeSupportedToken;
 /**
- * Parses json maybe into its validated representation.
+ * Parses a possibly JSON-encoded Butter metadata field.
  *
- * @param {unknown} value - The value to parse, normalize, or validate.
- * @returns {T | undefined} The parsed value.
+ * @param {unknown} value - The direct value or JSON string to decode.
+ * @returns {T | undefined} The decoded value, or undefined for malformed JSON.
  */
 export declare function parseJsonMaybe<T>(value: unknown): T | undefined;
 /**
- * Normalizes id for consistent processing.
+ * Converts an optional Butter identifier to a string.
  *
  * @param {string | number | undefined} id - The identifier to normalize or query.
  * @returns {string} The normalized value.

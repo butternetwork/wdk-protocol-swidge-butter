@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { ButterPartialExecutionError } from '../src/errors.js'
+import { ButterPartialExecutionError } from '../src/index.js'
 import {
   FUNDED_EXECUTION_CONFIRMATION,
   GuardedTransactionSender,
@@ -24,8 +24,8 @@ import {
   serializeE2eResult,
   validateFundedExecution,
   writeE2eResult
-} from './e2e/harness.js'
-import { parseFundedScenarioConfig } from './e2e/funded.js'
+} from '../scripts/e2e/harness.js'
+import { parseFundedScenarioConfig } from '../scripts/e2e/funded.js'
 
 const SENDER = '0x1111111111111111111111111111111111111111'
 const RECIPIENT = '0x2222222222222222222222222222222222222222'
@@ -585,7 +585,7 @@ describe('E2E result serialization', () => {
 
 describe('E2E command and CI safety', () => {
   it('uses a viable default amount without relaxing the protocol fee cap', async () => {
-    const runner = await readFile(join(process.cwd(), 'test/e2e/read-only.test.ts'), 'utf8')
+    const runner = await readFile(join(process.cwd(), 'scripts/e2e/read-only.test.ts'), 'utf8')
     const example = await readFile(join(process.cwd(), '.env.e2e.example'), 'utf8')
 
     assert.match(runner, /withDefault\('E2E_READ_AMOUNT', '10000000000000000'\)/)
@@ -605,7 +605,7 @@ describe('E2E command and CI safety', () => {
   })
 
   it('keeps the read-only runner anonymous when funded credentials share its env file', async () => {
-    const runner = await readFile(join(process.cwd(), 'test/e2e/read-only.test.ts'), 'utf8')
+    const runner = await readFile(join(process.cwd(), 'scripts/e2e/read-only.test.ts'), 'utf8')
 
     assert.doesNotMatch(runner, /BUTTER_API_KEY_ID|BUTTER_API_SECRET/)
     assert.match(runner, /authMode:\s*'optional'/)

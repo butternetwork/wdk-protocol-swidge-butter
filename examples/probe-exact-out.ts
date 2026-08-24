@@ -28,10 +28,8 @@
  *     unspecified, and sending the wrong side would misprice the trade.
  *
  * Sends no transaction and needs no funded account. If this reports that exactOut
- * succeeds AND settles which side `amount` refers to, re-enabling exact-out is a
- * small change: the execution-side plumbing (`maxAmountIn`,
- * `assertSourceAmountIn`, the `min(cap, reported)` fee denominator) is retained and
- * unit-tested.
+ * succeeds AND settles which side `amount` refers to, re-enabling exact-out still
+ * requires a fresh input-bound design and security review.
  */
 
 import { butterAuthFromEnv, envOrDefault, printJson, runExample } from './shared.js'

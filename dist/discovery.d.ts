@@ -20,7 +20,7 @@ export declare class DiscoveryService {
     /**
      * Returns the chains currently advertised by Butter with this provider's execution capability.
      *
-     * @returns {Promise<ButterSupportedChain[]>} The resolved result.
+     * @returns {Promise<ButterSupportedChain[]>} The validated WDK chain descriptors advertised by both Butter APIs.
      */
     getSupportedChains(): Promise<ButterSupportedChain[]>;
     /**
@@ -49,8 +49,8 @@ export declare class DiscoveryService {
      * unknown token.
      *
      * @param {string} chainId - The chain identifier used for normalization or lookup.
-     * @param {string} address - The address or identifier to process.
-     * @returns {Promise<number | undefined>} The resolved result.
+     * @param {string} address - The requested token address in its chain-specific format.
+     * @returns {Promise<number | undefined>} The matching token decimals, or undefined for an affirmative not-found response.
      * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
      */
     findTokenDecimals(chainId: string, address: string): Promise<number | undefined>;
@@ -64,7 +64,7 @@ export declare class DiscoveryService {
      * Returns Butter's non-exhaustive token catalog for the selected chain.
      *
      * @param {string} chainId - The chain identifier used for normalization or lookup.
-     * @returns {Promise<SwidgeSupportedToken[]>} The resolved result.
+     * @returns {Promise<SwidgeSupportedToken[]>} The deduplicated, valid token descriptors for the requested chain.
      * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
      */
     getSupportedTokens(chainId: string): Promise<SwidgeSupportedToken[]>;

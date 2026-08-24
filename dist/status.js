@@ -162,7 +162,7 @@ function mapButterStatus(state) {
 /**
  * Extracts a chain identifier from scalar or nested Butter metadata.
  *
- * @param {unknown} value - The value to parse, normalize, or validate.
+ * @param {unknown} value - The scalar chain id or nested `{ chainId }` metadata.
  * @returns {string | undefined} The chain identifier, or undefined when unusable.
  */
 function chainIdOf(value) {
@@ -178,7 +178,7 @@ function chainIdOf(value) {
 /**
  * Converts a scalar status value to a string while rejecting structured values.
  *
- * @param {unknown} value - The value to parse, normalize, or validate.
+ * @param {unknown} value - The optional scalar status field.
  * @returns {string | undefined} The scalar string value, or undefined for structured data.
  */
 function stringValue(value) {

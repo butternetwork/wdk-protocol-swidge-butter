@@ -72,7 +72,7 @@ export function routeToQuote (route: ButterRoute, now: () => number, expiry: num
 /**
  * Returns a finite number, or undefined when the value is absent or unparseable.
  *
- * @param {string | number | undefined} value - The value to parse, normalize, or validate.
+ * @param {string | number | undefined} value - The optional numeric metadata returned by Butter.
  * @returns {number | undefined} The finite numeric value, or undefined when absent or invalid.
  */
 function finiteOrUndefined (value: string | number | undefined): number | undefined {
@@ -106,7 +106,7 @@ export function chainToSupportedChain (chain: ButterChainInfo, execution: Butter
 /**
  * Maps Butter token metadata to the WDK supported-token contract.
  *
- * @param {ButterTokenInfo} token - The token identifier or metadata to process.
+ * @param {ButterTokenInfo} token - The Butter token metadata to map.
  * @param {string} chainId - The chain identifier used for normalization or lookup.
  * @returns {SwidgeSupportedToken} The normalized WDK supported-token descriptor.
  */
@@ -125,10 +125,10 @@ export function tokenToSupportedToken (token: ButterTokenInfo, chainId: string):
 }
 
 /**
- * Parses json maybe into its validated representation.
+ * Parses a possibly JSON-encoded Butter metadata field.
  *
- * @param {unknown} value - The value to parse, normalize, or validate.
- * @returns {T | undefined} The parsed value.
+ * @param {unknown} value - The direct value or JSON string to decode.
+ * @returns {T | undefined} The decoded value, or undefined for malformed JSON.
  */
 export function parseJsonMaybe<T> (value: unknown): T | undefined {
   if (typeof value !== 'string') return value as T | undefined
@@ -140,7 +140,7 @@ export function parseJsonMaybe<T> (value: unknown): T | undefined {
 }
 
 /**
- * Normalizes id for consistent processing.
+ * Converts an optional Butter identifier to a string.
  *
  * @param {string | number | undefined} id - The identifier to normalize or query.
  * @returns {string} The normalized value.

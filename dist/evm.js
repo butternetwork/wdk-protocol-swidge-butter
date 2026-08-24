@@ -17,10 +17,9 @@ import { parseIntegerAmount } from './amounts.js';
 import { ButterApiError, ButterConfigurationError, ButterPartialExecutionError } from './errors.js';
 import { classifyReceiptStatus } from './status.js';
 /**
- * Adapts a viem wallet client to the provider's {@link EvmWalletClient}. A raw
- * viem client is not structurally assignable (its `sendTransaction` parameter is
- * strongly typed), so wrap it here. The client must have a bound account; the
- * adapter surfaces that as the required `account.address`.
+ * Adapts a viem wallet client to the provider's {@link EvmWalletClient}. The
+ * wrapper validates that the client has a bound account and narrows viem's rich
+ * transaction surface to the capabilities this provider consumes.
  *
  * @param {ViemWalletClientLike} client - The viem client to adapt.
  * @returns {EvmWalletClient} The provider-compatible EVM wallet client.
@@ -38,7 +37,7 @@ export function toEvmWalletClient(client) {
          *
          * @param {unknown} args - The request arguments forwarded to the wrapped viem client.
          * @returns {Promise<`0x${string}`>} A promise resolving to the submitted transaction hash.
-         */
+        */
         async sendTransaction(args) {
             return client.sendTransaction(args);
         }
@@ -58,7 +57,7 @@ export function toEvmWalletClient(client) {
  *
  * @param {unknown} error - The error value to classify.
  * @param {string} name - The viem error class name to match.
- * @returns {boolean} Whether the inspected values satisfy the condition.
+ * @returns {boolean} Whether the error has the requested viem name and BaseError shape.
  */
 function isViemErrorNamed(error, name) {
     if (!(error instanceof Error) || error.name !== name)
@@ -101,8 +100,8 @@ export function toEvmPublicClient(client) {
         /**
          * Returns a viem transaction receipt, mapping only genuine not-found errors to null.
          *
-         * @param {string} hash - The transaction or route hash to process.
-         * @returns {Promise<EvmTransactionReceipt | null>} The resolved result.
+         * @param {string} hash - The EVM transaction hash whose receipt is requested.
+         * @returns {Promise<EvmTransactionReceipt | null>} The receipt, or null only for a genuine viem not-found response.
          */
         async getTransactionReceipt(hash) {
             try {
@@ -119,7 +118,7 @@ export function toEvmPublicClient(client) {
         /**
          * Returns the transaction fields needed for Router attribution, or null when not found.
          *
-         * @param {string} hash - The transaction or route hash to process.
+         * @param {string} hash - The EVM transaction hash to load for Router attribution.
          * @returns {Promise<EvmTransactionData | null>} The attribution fields, or null when the transaction is not found.
          */
         async getTransaction(hash) {
@@ -146,8 +145,8 @@ const APPROVAL_POLL_INTERVAL_MS = 2_000;
 /**
  * Returns true when the token identifier denotes a chain's native asset.
  *
- * @param {string} token - The token identifier or metadata to process.
- * @returns {boolean} Whether the inspected values satisfy the condition.
+ * @param {string} token - The token identifier to compare against native aliases.
+ * @returns {boolean} Whether the identifier is one of the package's native-token aliases.
  */
 export function isNativeToken(token) {
     return NATIVE_TOKEN_ADDRESSES.has(token.toLowerCase());
@@ -266,7 +265,7 @@ function assertApprovalConfirmable(context) {
  * Sends an exact `approve(router, value)` and waits for it to confirm.
  *
  * @param {{ account: ButterAccount | undefined config: ButterSwidgeProtocolConfig swapTx: ButterSwapTx options: SwidgeOptions sourceChainId: string }} context - The validated context required by the operation.
- * @param {bigint} value - The value to parse, normalize, or validate.
+ * @param {bigint} value - The exact ERC-20 allowance to submit.
  * @param {RecordSend} record - The callback that records a broadcast transaction.
  * @returns {Promise<void>} A promise that resolves after the operation completes.
  */
@@ -300,7 +299,7 @@ async function approveExact(context, value, record) {
  * timeout) rather than assumed successful.
  *
  * @param {{ account: ButterAccount | undefined config: ButterSwidgeProtocolConfig }} context - The validated context required by the operation.
- * @param {string} hash - The transaction or route hash to process.
+ * @param {string} hash - The approval transaction hash to confirm.
  * @returns {Promise<void>} A promise that resolves after the operation completes.
  * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
  */
@@ -347,7 +346,7 @@ async function waitForApproval(context, hash) {
  *
  * @param {() => Promise<T>} operation - The asynchronous operation constrained by the deadline.
  * @param {number} deadline - The absolute millisecond deadline for the operation.
- * @param {string} hash - The transaction or route hash to process.
+ * @param {string} hash - The approval transaction hash included in timeout diagnostics.
  * @param {number} timeoutMs - The operation timeout in milliseconds.
  * @returns {Promise<T>} The lookup result produced before the deadline.
  */
@@ -372,7 +371,7 @@ async function beforeApprovalDeadline(operation, deadline, hash, timeoutMs) {
 /**
  * Creates the configuration error reported when approval confirmation exceeds its deadline.
  *
- * @param {string} hash - The transaction or route hash to process.
+ * @param {string} hash - The approval transaction hash that exceeded its deadline.
  * @param {number} timeoutMs - The operation timeout in milliseconds.
  * @returns {ButterConfigurationError} The typed approval timeout error.
  */
@@ -432,7 +431,7 @@ function normalizeSend(result) {
  * number surfaces as a raw `TypeError` and an empty string silently produces an
  * unusable `id: ''`.
  *
- * @param {unknown} value - The value to parse, normalize, or validate.
+ * @param {unknown} value - The transaction hash returned by a host sender.
  * @returns {string} The validated non-empty transaction hash.
  * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
  */

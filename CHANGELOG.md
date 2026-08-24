@@ -7,6 +7,14 @@ and (once published) [Semantic Versioning](https://semver.org).
 ## [Unreleased]
 
 ### Fixed
+- Align the package with WDK review conventions: public Viem adapters no longer
+  expose `any`, deterministic tests exercise only the package entrypoint with
+  concrete assertions, and repository checks and live E2E scenarios have
+  dedicated `checks/` and `scripts/e2e/` entrypoints.
+- Remove unreachable exact-out execution branches while retaining the public
+  fail-fast unsupported error, and split `swidge()` preparation, broadcasting,
+  and result assembly into focused private stages without changing execution
+  ordering or partial-execution reporting.
 - Remove built-in TON chain metadata, native aliases, address-family handling,
   and strict-slippage behavior. Unrecognized chains continue through the generic
   unknown-chain path instead of receiving chain-specific treatment.
@@ -18,6 +26,9 @@ and (once published) [Semantic Versioning](https://semver.org).
   optional-property declarations without changing populated results.
 
 ### Documentation
+- Replace generated-style JSDoc wording with domain-specific parameter and return
+  contracts, and reject placeholder wording or internal-module test imports in
+  the AST compliance checks.
 - Add Tether's reviewed "Built with WDK" badge to the README and published
   package contents.
 - Complete JSDoc descriptions, parameters, return values, and thrown-error
