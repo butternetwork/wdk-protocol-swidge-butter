@@ -6,10 +6,14 @@ require credentials, RPC access, or funds.
 
 ## Read-only CI
 
-Configure these non-sensitive GitHub Repository Variables:
+The workflow has safe, non-sensitive defaults:
 
-- `BUTTER_E2E_ENTRANCE`
-- `E2E_READ_MAX_NATIVE_FEE`, in source-chain native base units
+- `BUTTER_E2E_ENTRANCE=butter+`
+- `E2E_READ_MAX_NATIVE_FEE=20000000000000000`, or `0.02 BNB` for the
+  default BSC source chain
+
+The matching GitHub Repository Variables are optional overrides. Set them when
+the integration entrance or source-chain native-fee budget needs to differ.
 
 The pull-request workflow performs discovery, obtains a cross-chain quote, asks
 Butter to assemble `/swap` calldata, runs the provider's transaction validators,
@@ -26,6 +30,9 @@ Run the same check locally with:
 cp .env.e2e.example .env.e2e
 npm run test:e2e:read-only
 ```
+
+The copied defaults are immediately runnable for the default BSC-to-Polygon
+scenario. Change both the source chain and its native-fee budget together.
 
 ## Funded local tests
 

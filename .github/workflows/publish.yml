@@ -31,6 +31,7 @@ jobs:
       - run: npm test
       - run: npm run check:repo
       - run: npm run typecheck
+      - run: npm run test:bare
       - run: npm run build
       - run: npm pack --dry-run
       - name: Verify release tag

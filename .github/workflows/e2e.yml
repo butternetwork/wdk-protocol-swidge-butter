@@ -18,8 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      BUTTER_E2E_ENTRANCE: ${{ vars.BUTTER_E2E_ENTRANCE }}
-      E2E_READ_MAX_NATIVE_FEE: ${{ vars.E2E_READ_MAX_NATIVE_FEE }}
+      BUTTER_E2E_ENTRANCE: ${{ vars.BUTTER_E2E_ENTRANCE || 'butter+' }}
+      E2E_READ_MAX_NATIVE_FEE: ${{ vars.E2E_READ_MAX_NATIVE_FEE || '20000000000000000' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
