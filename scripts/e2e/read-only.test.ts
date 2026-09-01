@@ -29,7 +29,7 @@ test('live Butter discovery, quote, and swap assembly stop before broadcast', { 
   const recipient = isTronSource ? createEphemeralEvmAddress() : readOnlyAddress
   const fromToken = envOrDefault('E2E_READ_FROM_TOKEN', NATIVE_TOKEN)
   const toToken = envOrDefault('E2E_READ_TO_TOKEN', NATIVE_TOKEN)
-  const amount = parsePositiveBigInt(withDefault('E2E_READ_AMOUNT', '10000000000000000'), 'E2E_READ_AMOUNT')
+  const amount = parsePositiveBigInt(withDefault('E2E_READ_AMOUNT', '100000000000000000'), 'E2E_READ_AMOUNT')
   const maxNativeFee = parseNonNegativeBigInt(process.env, 'E2E_READ_MAX_NATIVE_FEE')
   const maxNetworkFeeBps = parseNonNegativeSafeInteger(
     withDefault('E2E_READ_MAX_NETWORK_FEE_BPS', '1000'),

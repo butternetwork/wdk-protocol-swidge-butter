@@ -12,6 +12,8 @@ and (once published) [Semantic Versioning](https://semver.org).
   a clean consumer directory and checks the package's public exports.
 - Give the anonymous read-only E2E workflow non-sensitive `butter+` and native-fee
   defaults while retaining Repository Variables as explicit overrides.
+- Raise the read-only BSC quote default to `0.1 BNB` and expose it as an
+  overridable Repository Variable so the live route covers current bridge fees.
 - Align the package with WDK review conventions: public Viem adapters no longer
   expose `any`, deterministic tests exercise only the package entrypoint with
   concrete assertions, and repository checks and live E2E scenarios have

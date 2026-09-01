@@ -11,9 +11,12 @@ The workflow has safe, non-sensitive defaults:
 - `BUTTER_E2E_ENTRANCE=butter+`
 - `E2E_READ_MAX_NATIVE_FEE=20000000000000000`, or `0.02 BNB` for the
   default BSC source chain
+- `E2E_READ_AMOUNT=100000000000000000`, or `0.1 BNB` for the default
+  BSC native-token input
 
 The matching GitHub Repository Variables are optional overrides. Set them when
-the integration entrance or source-chain native-fee budget needs to differ.
+the integration entrance, source-chain native-fee budget, or live API minimum
+input needs to differ.
 
 The pull-request workflow performs discovery, obtains a cross-chain quote, asks
 Butter to assemble `/swap` calldata, runs the provider's transaction validators,
