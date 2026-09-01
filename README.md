@@ -8,6 +8,12 @@ Butter Network Swidge provider for WDK.
 
 This package adapts WDK's Swidge interface to Butter Smart Router's `/route`,
 `/swap`, `/supportedChainInfo`, token-discovery, and Butter swap-data APIs.
+It implements `ISwidgeProtocol` from `@tetherto/wdk-wallet`. Declared peer
+compatibility is `>=1.0.0-beta.15 <2.0.0`; CI and development currently test
+against `1.0.0-beta.17`.
+
+The package exposes its standard ESM entry in Node.js and a `bare` conditional
+entry that loads the Node compatibility runtime when imported from Bare.
 
 See [CHANGELOG.md](./CHANGELOG.md) for release notes, breaking changes, and known
 upstream issues, and [Known limitations](#known-limitations) for what this provider
@@ -313,6 +319,27 @@ affiliate cap, and leaving the share unbounded bites hardest when you do *not* s
 `affiliate` — Butter then substitutes its own wallet, so your users pay a cut you
 never chose. `maxProtocolFeeBps` is the only knob available to bound it.
 
+The cap is enforced before `/swap` during `swidge`; quoting reports the same
+components but does not reject a route over the cap. Enforcement converts each
+component into a dimensionless fee-to-value ratio, sums the ratios, and compares
+that exact sum with `maxProtocolFeeBps / 10_000`:
+
+- `swapFee.tokenFee / requestedAmountIn`;
+- for a native source, `swapFee.nativeFee / requestedAmountIn`;
+- for a non-native source,
+  `(swapFee.nativeFee / gasFee.amount) × (gasFee.inUSD / totalAmountInUSD)`;
+- each `bridgeFee.in`, `bridgeFee.out`, and `bridgeFee.affiliate` component
+  divided by `requestedAmountIn` when it is charged in the source token;
+- otherwise, each bridge component divided by a route-leg amount carrying the
+  same token address, with inbound components matched inbound-first and outbound
+  and affiliate components matched outbound-first.
+
+Different token amounts are never added directly. Missing source decimals,
+same-token route amounts, required USD metadata, or bridge-component metadata
+needed for valuation makes a configured cap fail closed with
+`ButterFeeValuationError`; the package does not silently treat an unvalued fee as
+zero.
+
 `swapFee` is Butter's authoritative actual fee result and already includes the fee
 configured by `feeConfig`. Fee mapping and `maxProtocolFeeBps` therefore read only
 `swapFee`; `feeConfig` is never added, used as a fallback, or compared with it. The
@@ -344,6 +371,25 @@ const protocol = new ButterSwidgeProtocol(account, {
 // -> 'bridge-fee-components-missing' when a bridge fee summary cannot be split
 //                                    from its affiliate share
 ```
+
+## Errors
+
+All typed errors below are exported from the package root. `details` contains
+structured context where the error class provides it.
+
+| Error | When thrown | User-actionable? | Recommended handling |
+| --- | --- | --- | --- |
+| `ButterApiError` | Butter, a sender, or a response mapper returns malformed, inconsistent, timed-out, or unsuccessful data. | Sometimes | Preserve `details`; retry transient transport failures, otherwise report the response or integration fault. |
+| `ButterUnsupportedError` | The requested operation, option, adapter result, or transaction shape is unsupported. | Yes | Change the request or configure a supported adapter; do not force execution. |
+| `ButterConfigurationError` | Required provider, signer, router, timeout, credential, or execution configuration is missing or invalid. | Yes | Correct the integration configuration before retrying. |
+| `ButterActionRequiredError` | Execution needs a fresh quote, explicit recipient, valid slippage, or another caller decision. | Yes | Surface the requested action and retry only after the caller resolves it. |
+| `ButterFeeLimitExceededError` | A route's aggregate network or protocol fee ratio exceeds the configured cap. | Yes | Choose another route or explicitly review the cap; never loosen it automatically. |
+| `ButterFeeValuationError` | Quote mapping cannot safely parse source-denominated fee metadata, or a configured cap cannot value a fee against a trustworthy denominator. | Usually no | Requote or report the route; do not bypass fail-closed parsing or valuation. |
+| `ButterNoRouteError` | Butter explicitly reports no route or every candidate lacks liquidity. | Yes | Change the pair or amount, or retry later. |
+| `ButterPartialExecutionError` | Execution fails after at least one transaction was already broadcast. | Yes, with care | Inspect every entry in `transactions` and the preserved `cause`; never blindly retry. |
+| `ButterReadOnlyAccountError` | Execution has no send-capable WDK account or EVM wallet client. | Yes | Configure the required signer and ensure its address matches the WDK account. |
+| `ButterExactOutUnsupportedError` | The caller supplies an exact-out request. | Yes | Use an exact-in amount; exact-out is rejected before any network request. |
+| `ButterTransactionValidationError` | `/swap` calldata or transaction metadata does not match the quoted intent or configured limits. | Usually no | Reject the transaction, requote once if appropriate, and report repeated mismatches. |
 
 ## Safety Defaults
 
@@ -617,6 +663,12 @@ vulnerable old Router, operators must remove it (or temporarily configure `[]`)
 and notify integrators; the static defaults cannot dynamically revoke a formerly
 trusted deployment.
 
+## Support
+
+For non-security integration and usage questions, email
+[business@butternetwork.io](mailto:business@butternetwork.io). A `[SECURITY]`
+subject prefix is not needed for ordinary support requests.
+
 ## Security
 
 Report suspected vulnerabilities privately. Do not include vulnerability details
@@ -628,6 +680,7 @@ process.
 
 ```sh
 npm test
+npm run test:bare
 npm run check:repo
 npm run typecheck
 npm run build

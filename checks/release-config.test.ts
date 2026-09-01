@@ -11,7 +11,11 @@ interface PackageManifest {
   bugs?: { url?: string }
   homepage?: string
   publishConfig?: { access?: string, registry?: string }
+  exports?: Record<string, Record<string, string>>
   files?: string[]
+  scripts?: Record<string, string>
+  dependencies?: Record<string, string>
+  devDependencies?: Record<string, string>
 }
 
 const repositoryRoot = process.cwd()
@@ -56,6 +60,37 @@ describe('npm release configuration', () => {
     assert.equal(packageJson.files?.includes('docs/assets/built-with-wdk.png'), true)
   })
 
+  it('publishes and tests the Bare conditional entry with direct runtime support', async () => {
+    const packageJson = JSON.parse(
+      await readFile(join(repositoryRoot, 'package.json'), 'utf8')
+    ) as PackageManifest
+
+    assert.deepEqual(packageJson.exports?.['.'], {
+      types: './dist/index.d.ts',
+      bare: './bare.js',
+      import: './dist/index.js',
+      default: './dist/index.js'
+    })
+    assert.equal(packageJson.dependencies?.['bare-node-runtime'], '^1.4.0')
+    assert.equal(packageJson.devDependencies?.bare, '1.31.2')
+    assert.equal(packageJson.files?.includes('bare.js'), true)
+    assert.equal(
+      packageJson.scripts?.['test:bare'],
+      'npm run build --silent && node scripts/check-package-exports.mjs && bare scripts/check-package-exports.mjs && node scripts/check-packed-package.mjs'
+    )
+
+    const packedPackageCheck = await readFile(
+      join(repositoryRoot, 'scripts/check-packed-package.mjs'),
+      'utf8'
+    )
+
+    assert.match(packedPackageCheck, /npmExecutable\(\), \['pack', '--silent', '--pack-destination', temporaryRoot\]/)
+    assert.match(packedPackageCheck, /archivePath,\n\s+'@tetherto\/wdk-wallet@1\.0\.0-beta\.17'/)
+    assert.match(packedPackageCheck, /await run\(process\.execPath, \[smokeTestPath\], consumerRoot\)/)
+    assert.match(packedPackageCheck, /await run\(bareExecutable\(\), \[smokeTestPath\], consumerRoot\)/)
+    assert.match(packedPackageCheck, /await rm\(temporaryRoot, \{ recursive: true, force: true \}\)/)
+  })
+
   it('publishes GitHub Releases through OIDC without a long-lived npm token', async () => {
     const workflow = await readFile(
       join(repositoryRoot, '.github/workflows/publish.yml'),
@@ -74,12 +109,14 @@ describe('npm release configuration', () => {
     assert.match(workflow, /npm ci/)
     assert.match(workflow, /npm test/)
     assert.match(workflow, /npm run typecheck/)
+    assert.match(workflow, /npm run test:bare/)
     assert.match(workflow, /npm run build/)
     assert.match(workflow, /npm pack --dry-run/)
     assert.match(workflow, /node scripts\/check-release-tag\.mjs "\$RELEASE_TAG"/)
     assert.match(workflow, /github\.event\.release\.prerelease && 'next' \|\| 'latest'/)
     assert.match(workflow, /npm publish --tag "\$NPM_TAG"/)
     assert.doesNotMatch(workflow, /NODE_AUTH_TOKEN|NPM_TOKEN|secrets\./)
+    assert.ok(workflow.indexOf('npm run test:bare') < workflow.indexOf('npm publish --tag'))
   })
 
   it('skips an identical published version and fails closed on registry ambiguity', async () => {

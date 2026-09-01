@@ -7,6 +7,11 @@ and (once published) [Semantic Versioning](https://semver.org).
 ## [Unreleased]
 
 ### Fixed
+- Add a published Bare conditional entry backed by `bare-node-runtime`, with a
+  release-gated Node/Bare import smoke test that installs the packed artifact in
+  a clean consumer directory and checks the package's public exports.
+- Give the anonymous read-only E2E workflow non-sensitive `butter+` and native-fee
+  defaults while retaining Repository Variables as explicit overrides.
 - Align the package with WDK review conventions: public Viem adapters no longer
   expose `any`, deterministic tests exercise only the package entrypoint with
   concrete assertions, and repository checks and live E2E scenarios have
@@ -32,6 +37,9 @@ and (once published) [Semantic Versioning](https://semver.org).
   optional-property declarations without changing populated results.
 
 ### Documentation
+- State the implemented WDK interface and tested version, document every exported
+  typed error and its recovery path, add a non-security support channel, and spell
+  out how affiliate and other protocol fee ratios are capped.
 - Replace generated-style JSDoc wording with domain-specific parameter and return
   contracts, and reject placeholder wording or internal-module test imports in
   the AST compliance checks.

@@ -20,11 +20,13 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
+      "bare": "./bare.js",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     }
   },
   "files": [
+    "bare.js",
     "dist/*.js",
     "dist/*.js.map",
     "dist/*.d.ts",
@@ -43,6 +45,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.examples.json && tsc -p tsconfig.test.json",
     "test": "node --import tsx --test tests/*.test.ts tests/integration/*.test.ts",
+    "test:bare": "npm run build --silent && node scripts/check-package-exports.mjs && bare scripts/check-package-exports.mjs && node scripts/check-packed-package.mjs",
     "check:repo": "node --import tsx --test checks/*.test.ts",
     "test:e2e:read-only": "npm run build --silent && node --env-file-if-exists=.env.e2e --import tsx --test --test-concurrency=1 scripts/e2e/read-only.test.ts",
     "test:e2e:same-native": "npm run build --silent && node --env-file-if-exists=.env.e2e --import tsx --test --test-concurrency=1 scripts/e2e/same-native.test.ts",
@@ -70,6 +73,7 @@
   "dependencies": {
     "@noble/hashes": "^1.8.0",
     "@scure/base": "^1.2.6",
+    "bare-node-runtime": "^1.4.0",
     "viem": "^2.43.1"
   },
   "peerDependencies": {
@@ -78,6 +82,7 @@
   "devDependencies": {
     "@types/node": "^22.14.0",
     "@tetherto/wdk-wallet": "1.0.0-beta.17",
+    "bare": "1.31.2",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"
   }

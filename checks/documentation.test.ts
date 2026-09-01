@@ -148,6 +148,49 @@ describe('WDK documentation requirements', () => {
     assert.match(mapping, /No reported fees[^\n]*\| `network` \| `fee` \|/)
   })
 
+  it('documents every typed error exported from the package root', async () => {
+    const readme = await readFile(join(repositoryRoot, 'README.md'), 'utf8')
+    const index = await readFile(join(repositoryRoot, 'src/index.ts'), 'utf8')
+    const sourceFile = ts.createSourceFile('index.ts', index, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+    const exportedErrors = sourceFile.statements.flatMap((statement) => {
+      if (!ts.isExportDeclaration(statement)) return []
+      const moduleSpecifier = statement.moduleSpecifier
+      const exportClause = statement.exportClause
+      if (moduleSpecifier == null || !ts.isStringLiteral(moduleSpecifier) || moduleSpecifier.text !== './errors.js') return []
+      if (exportClause == null || !ts.isNamedExports(exportClause)) return []
+      return exportClause.elements.map((element) => element.name.text)
+    }).sort()
+    const errors = section(readme, '## Errors', '## Safety Defaults')
+    const documentedErrors = errors.split('\n').flatMap((line) => {
+      const match = /^\| `([^`]+)` \|/.exec(line)
+      return match?.[1] == null ? [] : [match[1]]
+    }).sort()
+
+    assert.equal(errors.includes('| Error | When thrown | User-actionable? | Recommended handling |'), true)
+    assert.deepEqual(documentedErrors, exportedErrors)
+    assert.match(
+      errors,
+      /\| `ButterFeeValuationError` \| Quote mapping cannot safely parse source-denominated fee metadata, or a configured cap cannot value a fee against a trustworthy denominator\./
+    )
+  })
+
+  it('states compatibility, fee-cap calculation, and non-security support contracts', async () => {
+    const readme = await readFile(join(repositoryRoot, 'README.md'), 'utf8')
+    const mapping = section(readme, '## Status & fee mapping', '## Errors')
+    const support = section(readme, '## Support', '## Security')
+
+    assert.equal(readme.includes('It implements `ISwidgeProtocol` from `@tetherto/wdk-wallet`.'), true)
+    assert.equal(readme.includes('compatibility is `>=1.0.0-beta.15 <2.0.0`'), true)
+    assert.equal(readme.includes('currently test\nagainst `1.0.0-beta.17`'), true)
+    assert.equal(readme.includes('a `bare` conditional\nentry'), true)
+    assert.equal(mapping.includes('`swapFee.tokenFee / requestedAmountIn`'), true)
+    assert.equal(mapping.includes('`(swapFee.nativeFee / gasFee.amount) × (gasFee.inUSD / totalAmountInUSD)`'), true)
+    assert.equal(mapping.includes('each `bridgeFee.in`, `bridgeFee.out`, and `bridgeFee.affiliate`'), true)
+    assert.equal(mapping.includes('compares\nthat exact sum with `maxProtocolFeeBps / 10_000`'), true)
+    assert.equal(support.includes('[business@butternetwork.io](mailto:business@butternetwork.io)'), true)
+    assert.equal(support.includes('A `[SECURITY]`\nsubject prefix is not needed'), true)
+  })
+
   it('keeps unreleased changes ahead of the published SemVer release', async () => {
     const changelog = await readFile(join(repositoryRoot, 'CHANGELOG.md'), 'utf8')
     const unreleased = changelog.indexOf('## [Unreleased]')

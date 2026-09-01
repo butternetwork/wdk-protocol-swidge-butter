@@ -596,12 +596,18 @@ describe('E2E command and CI safety', () => {
 
   it('keeps the pull-request workflow read-only and secret-free', async () => {
     const workflow = await readFile(join(process.cwd(), '.github/workflows/e2e.yml'), 'utf8')
+    const example = await readFile(join(process.cwd(), '.env.e2e.example'), 'utf8')
 
     assert.match(workflow, /pull_request:/)
     assert.doesNotMatch(workflow, /pull_request_target/)
-    assert.match(workflow, /vars\.BUTTER_E2E_ENTRANCE/)
+    assert.match(workflow, /BUTTER_E2E_ENTRANCE: \$\{\{ vars\.BUTTER_E2E_ENTRANCE \|\| 'butter\+' \}\}/)
+    assert.match(workflow, /E2E_READ_MAX_NATIVE_FEE: \$\{\{ vars\.E2E_READ_MAX_NATIVE_FEE \|\| '20000000000000000' \}\}/)
+    assert.match(example, /^BUTTER_E2E_ENTRANCE=butter\+$/m)
+    assert.match(example, /^E2E_READ_MAX_NATIVE_FEE=20000000000000000$/m)
     assert.doesNotMatch(workflow, /secrets\./)
     assert.doesNotMatch(workflow, /PRIVATE_KEY/)
+    assert.doesNotMatch(workflow, /continue-on-error/)
+    assert.doesNotMatch(workflow, /^\s+if:/m)
   })
 
   it('keeps the read-only runner anonymous when funded credentials share its env file', async () => {
