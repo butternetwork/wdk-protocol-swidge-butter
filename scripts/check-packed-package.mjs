@@ -20,13 +20,20 @@ import { fileURLToPath } from 'node:url'
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const packageJson = JSON.parse(await readFile(join(repositoryRoot, 'package.json'), 'utf8'))
+const minimumWdkVersion = '1.0.0-beta.17'
+const expectedWdkPeerRange = `>=${minimumWdkVersion} <2.0.0`
 const archiveName = `${packageJson.name.replace(/^@/, '').replace('/', '-')}-${packageJson.version}.tgz`
 const temporaryRoot = await mkdtemp(join(tmpdir(), 'wdk-swidge-butter-package-'))
 
 try {
+  if (packageJson.peerDependencies?.['@tetherto/wdk-wallet'] !== expectedWdkPeerRange) {
+    throw new Error(`Expected @tetherto/wdk-wallet peer range ${expectedWdkPeerRange}`)
+  }
+
   const consumerRoot = join(temporaryRoot, 'consumer')
   const archivePath = join(temporaryRoot, archiveName)
   const smokeTestPath = join(consumerRoot, 'check-package-exports.mjs')
+  const typeTestPath = join(consumerRoot, 'check-package-types.ts')
 
   await run(npmExecutable(), ['pack', '--silent', '--pack-destination', temporaryRoot], repositoryRoot)
   await mkdir(consumerRoot)
@@ -38,11 +45,23 @@ try {
     '--no-fund',
     '--no-package-lock',
     archivePath,
-    '@tetherto/wdk-wallet@1.0.0-beta.17'
+    `@tetherto/wdk-wallet@${minimumWdkVersion}`,
+    `@tetherto/wdk-wallet-evm@${minimumWdkVersion}`
   ], consumerRoot)
   await copyFile(join(repositoryRoot, 'scripts/check-package-exports.mjs'), smokeTestPath)
+  await copyFile(join(repositoryRoot, 'scripts/check-package-types.ts'), typeTestPath)
   await run(process.execPath, [smokeTestPath], consumerRoot)
   await run(bareExecutable(), [smokeTestPath], consumerRoot)
+  await run(typescriptExecutable(), [
+    '--noEmit',
+    '--strict',
+    '--exactOptionalPropertyTypes',
+    '--skipLibCheck',
+    '--target', 'ES2022',
+    '--module', 'NodeNext',
+    '--moduleResolution', 'NodeNext',
+    typeTestPath
+  ], consumerRoot)
 } finally {
   await rm(temporaryRoot, { recursive: true, force: true })
 }
@@ -57,6 +76,15 @@ function bareExecutable () {
     'node_modules',
     '.bin',
     process.platform === 'win32' ? 'bare.cmd' : 'bare'
+  )
+}
+
+function typescriptExecutable () {
+  return join(
+    repositoryRoot,
+    'node_modules',
+    '.bin',
+    process.platform === 'win32' ? 'tsc.cmd' : 'tsc'
   )
 }
 

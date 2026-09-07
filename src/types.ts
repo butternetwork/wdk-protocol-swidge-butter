@@ -25,7 +25,7 @@ import type {
   SwidgeSupportedTokensOptions,
   SwidgeTransaction
 } from '@tetherto/wdk-wallet/protocols'
-import type { PublicClient, WalletClient } from 'viem'
+import type { PublicClient } from 'viem'
 
 export type {
   SwidgeFee,
@@ -107,22 +107,22 @@ export interface ButterSwidgeExecutionOptions {
 /** WDK swidge options plus Butter's provider-specific execution fields. */
 export type ButterSwidgeOptions = SwidgeOptions & ButterSwidgeExecutionOptions
 
+type ButterSendResult = { hash?: string, fee?: bigint } | string
+
 /**
  * Structural subset of a WDK wallet account used by the Butter provider.
  *
  * Mirrors `IWalletAccountReadOnly` / `IWalletAccount` from `@tetherto/wdk-wallet`:
  * read-only accounts expose {@link getAddress} and {@link getTransactionReceipt},
  * while full accounts additionally expose {@link sendTransaction}. Execution
- * always requires a full account; the built-in EVM path additionally requires
- * `evm.walletClient` to carry calldata, because the WDK `Transaction` type is
- * only `{ to, value }`. The account is used for the sender address and approval
- * receipts, never to submit swap/approval calldata.
+ * always requires a full account. Built-in EVM execution requires a WDK EVM
+ * account whose transaction implementation accepts Router calldata.
  */
 export interface ButterAccount {
   /** Returns the account's address (present on every WDK account shape). */
   getAddress: () => Promise<string> | string
   /** Sends a transaction; present only on full (send-capable) accounts. */
-  sendTransaction?: (tx: unknown) => Promise<{ hash?: string, fee?: bigint } | string>
+  sendTransaction?: BivariantAsyncMethod<unknown, ButterSendResult>
   /** Returns a transaction's receipt, or null while unconfirmed. */
   getTransactionReceipt?: (hash: string) => Promise<unknown | null>
 }
@@ -189,26 +189,6 @@ export interface EvmPublicClient {
    * classify a swidge as same- or cross-chain when status hints are omitted.
    */
   getTransaction?: (hash: string) => Promise<EvmTransactionData | null>
-}
-
-/**
- * EVM wallet client capabilities needed for transaction submission. `account` is
- * required — the sender address must be resolvable. A raw viem wallet client is
- * not structurally assignable to this; wrap it with {@link toEvmWalletClient}.
- */
-export interface EvmWalletClient {
-  /** The account bound to every transaction submitted by the client. */
-  account: { address: string }
-  /** Submits an EVM transaction with calldata and optional chain metadata. */
-  sendTransaction: (args: EvmTransactionRequest) => Promise<string | { hash?: string, fee?: bigint }>
-}
-
-/** Minimal viem wallet-client capabilities accepted by {@link toEvmWalletClient}. */
-export interface ViemWalletClientLike {
-  /** The optional account bound to the viem wallet client. */
-  account?: { address: string } | null
-  /** Submits a transaction through the wrapped viem wallet client. */
-  sendTransaction: BivariantAsyncMethod<Parameters<WalletClient['sendTransaction']>[0], `0x${string}`>
 }
 
 /** Minimal viem public-client capabilities accepted by {@link toEvmPublicClient}. */
@@ -412,13 +392,6 @@ export interface ButterSwidgeProtocolConfig extends SwidgeProtocolConfig {
      * provider skips the allowance read and always submits an approval.
      */
     publicClient?: EvmPublicClient
-    /**
-     * EVM-capable sender that carries the swap/approval calldata. Required for
-     * built-in EVM execution. Its `account.address` is validated against the WDK
-     * account so the signer, calldata initiator, and allowance owner never split.
-     * Wrap a viem wallet client with {@link toEvmWalletClient}.
-     */
-    walletClient?: EvmWalletClient
     /** Receipt confirmations required before an ERC-20 approval is accepted. */
     approvalConfirmations?: number
     /** Approval confirmation deadline in milliseconds (default 10,000). Zero means immediate timeout. */
@@ -609,7 +582,7 @@ export interface EvmTransactionRequest {
   /** The target address for the submitted EVM transaction. */
   to: `0x${string}` | string
   /** The native value in source-chain base units. */
-  value?: bigint | undefined
+  value: bigint
   /** The transaction calldata. */
   data?: `0x${string}` | string | undefined
   /** The numeric EVM chain identifier. */

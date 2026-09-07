@@ -49,7 +49,7 @@ test('live Butter discovery, quote, and swap assembly stop before broadcast', { 
       wdkAccountSendCalls += 1
       wdkAccountAttempt = transaction
       if (isTronSource) throw new ReadOnlySendBlockedError()
-      throw new Error('WDK account sender must not carry EVM calldata')
+      return sender!.sendTransaction(transaction)
     }
   }
   const protocol = new ButterSwidgeProtocol(account, {
@@ -60,7 +60,6 @@ test('live Butter discovery, quote, and swap assembly stop before broadcast', { 
     maxNetworkFeeBps,
     maxProtocolFeeBps,
     requestTimeoutMs: 30_000,
-    ...(sender ? { evm: { walletClient: sender } } : {}),
     ...(isTronSource
       ? {
           transactionAdapters: {

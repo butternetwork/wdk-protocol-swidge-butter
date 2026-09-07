@@ -12,8 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 export { default, ButterSwidgeProtocol } from './protocol.js';
+export { MaximumFeeExceededError, ProviderError, ProviderRequiredError, TransactionError, UnsupportedOperationError, ValueError, WdkError } from '@tetherto/wdk-wallet';
+export { AccountRequiredError } from '@tetherto/wdk-wallet/protocols';
 export { ButterApiError, ButterUnsupportedError, ButterConfigurationError, ButterActionRequiredError, ButterFeeLimitExceededError, ButterFeeValuationError, ButterNoRouteError, ButterPartialExecutionError, ButterReadOnlyAccountError, ButterExactOutUnsupportedError, ButterTransactionValidationError } from './errors.js';
 export { parseTokenAmount, formatTokenAmount } from './amounts.js';
 export { toButterSlippage } from './slippage.js';
-export { toEvmWalletClient, toEvmPublicClient } from './evm.js';
+export { toEvmPublicClient } from './evm.js';
 //# sourceMappingURL=index.js.map

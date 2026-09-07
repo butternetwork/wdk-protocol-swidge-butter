@@ -9,8 +9,8 @@ Butter Network Swidge provider for WDK.
 This package adapts WDK's Swidge interface to Butter Smart Router's `/route`,
 `/swap`, `/supportedChainInfo`, token-discovery, and Butter swap-data APIs.
 It implements `ISwidgeProtocol` from `@tetherto/wdk-wallet`. Declared peer
-compatibility is `>=1.0.0-beta.15 <2.0.0`; CI and development currently test
-against `1.0.0-beta.17`.
+compatibility is `>=1.0.0-beta.17 <2.0.0`; CI and development test against the
+minimum supported version, `1.0.0-beta.17`.
 
 The package exposes its standard ESM entry in Node.js and a `bare` conditional
 entry that loads the Node compatibility runtime when imported from Bare.
@@ -23,6 +23,13 @@ does not do.
 
 ```sh
 npm install @butternetwork/wdk-protocol-swidge-butter @tetherto/wdk-wallet
+```
+
+For built-in EVM execution and the complete swap example, also install the WDK
+EVM account implementation:
+
+```sh
+npm install @tetherto/wdk-wallet-evm@1.0.0-beta.17
 ```
 
 ## Complete example
@@ -67,13 +74,12 @@ transaction example.
 
 ## Configuration
 
-EVM execution needs both a full WDK account supplied by the host application and
-an EVM-capable sender. A typical execution configuration is:
+EVM execution needs a full, send-capable WDK EVM account supplied by the host
+application. A typical execution configuration is:
 
 ```ts
 import ButterSwidgeProtocol, {
-  toEvmPublicClient,
-  toEvmWalletClient
+  toEvmPublicClient
 } from '@butternetwork/wdk-protocol-swidge-butter'
 
 const protocol = new ButterSwidgeProtocol(account, {
@@ -84,33 +90,23 @@ const protocol = new ButterSwidgeProtocol(account, {
   apiSecret: process.env.BUTTER_API_SECRET,
   maxNativeFee: 20000000000000000n, // required for cross-chain (see Safety Defaults)
   evm: {
-    walletClient: toEvmWalletClient(viemWalletClient),
     publicClient: toEvmPublicClient(viemPublicClient), // enables allowance checks + status
     approvalTimeoutMs: 10_000
   }
 })
 ```
 
-EVM execution requires **both**:
-
-1. a **full (send-capable) WDK account** — the WDK `swidge()` contract throws
-   without one, so a read-only or absent account is rejected; and
-2. an **EVM-capable sender** — `evm.walletClient` — to carry the swap/approval
-   calldata (`data`/`chainId`). The WDK account alone cannot, because the WDK
-   `Transaction` type only guarantees `{ to, value }`, so calldata could be
-   silently dropped. The wallet client carries a bound `account.address` that is
-   validated against the WDK account, so the signer, calldata initiator, and
-   allowance owner can never split. (This dual requirement collapses to one if WDK
-   extends `Transaction` with `data`.)
-
-The account resolves the sender address and (optionally) confirms approval
-receipts via `getTransactionReceipt`; it is never used to submit EVM calldata.
-Wrap a viem wallet client with the exported `toEvmWalletClient` adapter so its
-bound account is validated and its transaction surface is normalized. An optional `evm.publicClient`
+The account resolves the sender address, submits swap and approval calldata via
+its EVM `sendTransaction` implementation, and may confirm approval receipts via
+`getTransactionReceipt`. An optional `evm.publicClient`
 enables ERC20 allowance checks (without one, an approval is always submitted and
 confirmed through a receipt lookup). When **every** send reports the gas fee it
 paid, the executed `SwidgeResult` reports that measured source gas; otherwise it
 keeps the route estimate.
+
+Version 0.2 removes the former `evm.walletClient` and `toEvmWalletClient` APIs.
+Pass a full WDK EVM account as the protocol's first constructor argument; there
+is no secondary sender or fallback submission path.
 
 Only exact-in quotes are supported. Pass `fromTokenAmount` as a positive
 `bigint` in base units. This module deliberately rejects exact-out
@@ -379,6 +375,14 @@ structured context where the error class provides it.
 
 | Error | When thrown | User-actionable? | Recommended handling |
 | --- | --- | --- | --- |
+| `WdkError` | Base class for errors exposed by WDK modules. | Depends | Use as the common catch boundary when no narrower handling is needed. |
+| `ValueError` | A provider option or integration value is invalid. | Yes | Correct the supplied value before retrying. |
+| `UnsupportedOperationError` | The requested operation is unsupported. | Yes | Select a supported operation or execution adapter. |
+| `MaximumFeeExceededError` | A configured fee threshold is exceeded. | Yes | Review the route or configured cap; never loosen it automatically. |
+| `ProviderRequiredError` | The WDK account needs a provider to send the first transaction. | Yes | Configure the account provider before retrying. |
+| `ProviderError` | The WDK account provider rejects the first transaction. | Depends | Inspect the provider failure before deciding whether to retry. |
+| `TransactionError` | The WDK account cannot submit the first transaction. | Depends | Inspect the transaction failure and do not assume it was broadcast. |
+| `AccountRequiredError` | Execution has no full, send-capable account. | Yes | Supply a WDK account capable of sending the source-chain transaction. |
 | `ButterApiError` | Butter, a sender, or a response mapper returns malformed, inconsistent, timed-out, or unsuccessful data. | Sometimes | Preserve `details`; retry transient transport failures, otherwise report the response or integration fault. |
 | `ButterUnsupportedError` | The requested operation, option, adapter result, or transaction shape is unsupported. | Yes | Change the request or configure a supported adapter; do not force execution. |
 | `ButterConfigurationError` | Required provider, signer, router, timeout, credential, or execution configuration is missing or invalid. | Yes | Correct the integration configuration before retrying. |
@@ -387,7 +391,7 @@ structured context where the error class provides it.
 | `ButterFeeValuationError` | Quote mapping cannot safely parse source-denominated fee metadata, or a configured cap cannot value a fee against a trustworthy denominator. | Usually no | Requote or report the route; do not bypass fail-closed parsing or valuation. |
 | `ButterNoRouteError` | Butter explicitly reports no route or every candidate lacks liquidity. | Yes | Change the pair or amount, or retry later. |
 | `ButterPartialExecutionError` | Execution fails after at least one transaction was already broadcast. | Yes, with care | Inspect every entry in `transactions` and the preserved `cause`; never blindly retry. |
-| `ButterReadOnlyAccountError` | Execution has no send-capable WDK account or EVM wallet client. | Yes | Configure the required signer and ensure its address matches the WDK account. |
+| `ButterReadOnlyAccountError` | Execution has no send-capable WDK account. | Yes | Configure a full WDK account for the source chain. |
 | `ButterExactOutUnsupportedError` | The caller supplies an exact-out request. | Yes | Use an exact-in amount; exact-out is rejected before any network request. |
 | `ButterTransactionValidationError` | `/swap` calldata or transaction metadata does not match the quoted intent or configured limits. | Usually no | Reject the transaction, requote once if appropriate, and report repeated mismatches. |
 
@@ -489,8 +493,8 @@ structured context where the error class provides it.
   defaults. Cross-token fees require route-provided USD or same-stage valuation
   metadata when a cap is enabled; unvaluable fees fail closed with
   `ButterFeeValuationError`.
-- Quotes and discovery do not require a signer or local transaction adapter.
-  Execution without a send-capable account or configured signer fails before a
+- Quotes and discovery do not require a WDK account or local transaction adapter.
+  Execution without a send-capable WDK account fails before a
   route request.
 - Tron, Solana, and BTC require explicit `transactionAdapters`; Tron is not
   treated as viem-compatible EVM execution. Adapter execution bypasses the
@@ -503,12 +507,9 @@ structured context where the error class provides it.
   resolve to exactly one `source` — any violation throws with nothing sent, so a
   failed classification cannot leave a partially-broadcast operation a retry
   could double-execute.
-- EVM transaction submission requires **both** a full (send-capable) WDK account
-  (per the WDK `swidge()` contract) **and** `evm.walletClient` (which carries the
-  swap calldata, with a bound `account.address` validated against the WDK account);
-  the WDK account cannot submit EVM calldata because its `Transaction` type is only
-  `{ to, value }`. The account is used for the sender address and approval
-  receipts. ERC20 approval is always the exact input amount — an oversized existing
+- EVM transaction submission requires a full, send-capable WDK EVM account. The
+  same account supplies the sender address and submits every approval and Router
+  transaction, preventing signer/initiator divergence. ERC20 approval is always the exact input amount — an oversized existing
   allowance is reduced (`approve(0)` then `approve(amount)`), and an approval that
   cannot be confirmed (no receipt source) is refused rather than sent
   fire-and-forget. `SwidgeResult.fees` reports the measured source gas only when
@@ -570,7 +571,7 @@ per chain as `execution` by `getSupportedChains()`:
 
 | Tier | Meaning |
 | --- | --- |
-| `native` | built-in EVM Router execution: this package validates the `/swap` calldata itself and submits it through `evm.walletClient` |
+| `native` | built-in EVM Router execution: this package validates the `/swap` calldata itself and submits it through the WDK EVM account |
 | `adapter` | execution goes through a `transactionAdapters` entry you supply. Router calldata validation does **not** apply — only chain ID and required fields are checked |
 | `quote-only` | quoting, discovery, and status work; execution is unavailable until you pin a Router via `routerContracts` or supply an adapter |
 

@@ -11,8 +11,21 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+import { MaximumFeeExceededError, UnsupportedOperationError, ValueError, WdkError } from '@tetherto/wdk-wallet';
+import { AccountRequiredError } from '@tetherto/wdk-wallet/protocols';
+/**
+ * Extracts a standard error cause from Butter diagnostic details.
+ *
+ * @param {unknown} details - The optional Butter diagnostic context.
+ * @returns {{ cause: unknown } | undefined} Standard error options when the details carry a cause.
+ */
+function errorOptions(details) {
+    if (typeof details !== 'object' || details == null || !('cause' in details))
+        return undefined;
+    return { cause: details.cause };
+}
 /** Indicates malformed, inconsistent, or unsuccessful Butter API data. */
-export class ButterApiError extends Error {
+export class ButterApiError extends WdkError {
     /** Structured Butter response or validation context associated with the failure. */
     details;
     /**
@@ -22,15 +35,17 @@ export class ButterApiError extends Error {
      * @param {unknown} [details] - Optional structured diagnostic details attached to the error.
      */
     constructor(message, details) {
-        super(message);
+        super(message, errorOptions(details));
         this.name = 'ButterApiError';
         this.details = details;
     }
 }
 /** Indicates an operation or option unsupported by this provider. */
-export class ButterUnsupportedError extends Error {
+export class ButterUnsupportedError extends UnsupportedOperationError {
     /** Structured caller input or operation context associated with the failure. */
     details;
+    /** Underlying failure when supplied in {@link details}. */
+    cause;
     /**
      * Creates a butter unsupported error instance.
      *
@@ -39,12 +54,16 @@ export class ButterUnsupportedError extends Error {
      */
     constructor(message, details) {
         super(message);
+        // UnsupportedOperationError formats a method name. Preserve this published
+        // compatibility class's existing free-form message contract.
+        this.message = message;
         this.name = 'ButterUnsupportedError';
         this.details = details;
+        this.cause = errorOptions(details)?.cause;
     }
 }
 /** Indicates missing or invalid provider configuration. */
-export class ButterConfigurationError extends Error {
+export class ButterConfigurationError extends ValueError {
     /** Structured configuration context associated with the failure. */
     details;
     /**
@@ -54,13 +73,13 @@ export class ButterConfigurationError extends Error {
      * @param {unknown} [details] - Optional structured diagnostic details attached to the error.
      */
     constructor(message, details) {
-        super(message);
+        super(message, errorOptions(details));
         this.name = 'ButterConfigurationError';
         this.details = details;
     }
 }
 /** Indicates that caller action is required before an operation can continue. */
-export class ButterActionRequiredError extends Error {
+export class ButterActionRequiredError extends WdkError {
     /** Structured context describing the caller action required. */
     details;
     /**
@@ -70,7 +89,7 @@ export class ButterActionRequiredError extends Error {
      * @param {unknown} [details] - Optional structured diagnostic details attached to the error.
      */
     constructor(message, details) {
-        super(message);
+        super(message, errorOptions(details));
         this.name = 'ButterActionRequiredError';
         this.details = details;
     }
@@ -114,7 +133,9 @@ export class ButterNoRouteError extends ButterApiError {
     }
 }
 /** Indicates that a configured WDK network or protocol fee cap was exceeded. */
-export class ButterFeeLimitExceededError extends ButterActionRequiredError {
+export class ButterFeeLimitExceededError extends MaximumFeeExceededError {
+    /** Structured fee limit context associated with the failure. */
+    details;
     /**
      * Creates a butter fee limit exceeded error instance.
      *
@@ -123,12 +144,14 @@ export class ButterFeeLimitExceededError extends ButterActionRequiredError {
      * @param {bigint} maximumBps - The maximum allowed fee ratio in basis points.
      */
     constructor(feeType, actualBps, maximumBps) {
-        super(`Butter ${feeType} fee exceeds the configured limit`, {
+        const details = {
             feeType,
             actualBps: actualBps.toString(),
             maximumBps: maximumBps.toString()
-        });
+        };
+        super(`Butter ${feeType} fee exceeds the configured limit`, {});
         this.name = 'ButterFeeLimitExceededError';
+        this.details = details;
     }
 }
 /**
@@ -170,7 +193,9 @@ export class ButterPartialExecutionError extends ButterActionRequiredError {
     }
 }
 /** Indicates that execution was attempted without a send-capable signer. */
-export class ButterReadOnlyAccountError extends ButterConfigurationError {
+export class ButterReadOnlyAccountError extends AccountRequiredError {
+    /** Compatibility diagnostic field; missing-account failures carry no extra details. */
+    details;
     /**
      * Creates a butter read only account error instance.
      *
@@ -179,6 +204,7 @@ export class ButterReadOnlyAccountError extends ButterConfigurationError {
     constructor(message = 'Swidge execution requires an account or signer that can send transactions') {
         super(message);
         this.name = 'ButterReadOnlyAccountError';
+        this.details = undefined;
     }
 }
 /**

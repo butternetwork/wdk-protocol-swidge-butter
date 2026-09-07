@@ -121,19 +121,17 @@ Everything else is a focused collaborator it composes:
   (`constants.ts: DEFAULT_ROUTER_CONTRACTS`), overridable via `config.routerContracts`. `/swap`
   responses are only trusted if their target is in this registry — the API response alone can never
   authorize a new transaction target.
-- **`evm.ts`** — executes validated transactions. EVM execution requires **both** a full WDK account
-  (WDK `swidge()` contract; enforced in `assertExecutionCapability`) **and** `evm.walletClient` (its
-  `account.address` validated against the WDK account) to carry the swap/approval calldata; the WDK
-  account's generic `sendTransaction` is NOT used here (its `Transaction` type is only `{ to, value }`,
-  so `data` could be dropped). The account is still used for the sender address and approval receipts.
+- **`evm.ts`** — executes validated transactions. EVM execution requires one full WDK EVM account
+  (WDK `swidge()` contract; enforced in `assertExecutionCapability`). That account supplies the sender
+  address, submits every swap/approval transaction including `data`, and may provide approval receipts.
   Approval confirmation is **fail-closed** via the shared `status.ts: classifyReceiptStatus` (unknown
   status keeps polling until timeout); an approval with no receipt source is **refused** before sending.
   When **every** send returns `{ hash, fee }`, the measured gas is summed and folded into the result's
   `network` fee (`protocol.ts: withMeasuredNetworkFee`); if any send omits a fee (or a fee is negative →
   rejected), the route estimate stands. Approval is skipped only when the existing allowance **exactly
   equals** the input; any other value is set to exactly the input (`approve(0)` then `approve(amount)`
-  when non-zero) so exposure never exceeds this swap. Also exports `toEvmWalletClient`/`toEvmPublicClient`
-  adapters for viem clients. The `toEvmPublicClient` adapter maps **only** viem's `TransactionNotFoundError`/
+  when non-zero) so exposure never exceeds this swap. The exported `toEvmPublicClient` adapter maps
+  **only** viem's `TransactionNotFoundError`/
   `TransactionReceiptNotFoundError` to `null` (genuine absence); every other fault (RPC timeout, auth,
   rate-limit) **rethrows** rather than masquerading as "not found". That match is **copy-independent**
   (`isViemErrorNamed`: viem's error `name` plus the `BaseError` `shortMessage` shape, with `instanceof`
@@ -220,13 +218,10 @@ Everything else is a focused collaborator it composes:
   and the route-level fee caps — don't weaken these without security-focused tests. Cross-chain
   destination routing is intentionally trusted to Butter and not re-verified; don't silently
   re-tighten OR further loosen it without updating `AGENTS.md`, README, and tests together.
-- **Full account + walletClient for calldata**: EVM Router execution requires BOTH a full
-  (send-capable) WDK account (WDK `swidge()` contract — undefined/read-only accounts are rejected) AND
-  `evm.walletClient` to carry the swap/approval calldata. A WDK account cannot submit calldata — the WDK
-  `Transaction` type is only `{ to, value }` — so it is used only for the sender address and (optional)
-  approval receipts. The `walletClient.account.address` is validated against the WDK account (no signer/
-  initiator/allowance-owner split). There is no raw `evm.sendTransaction` and no `approvalAmount: 'max'`.
-  The dual requirement merges only if WDK extends `Transaction` with `data`.
+- **One WDK EVM account for calldata**: EVM Router execution rejects undefined/read-only accounts. The
+  full account supplies the initiator address and submits swap and approval calldata, so signer,
+  initiator, and allowance owner cannot diverge. There is no secondary sender, fallback submission,
+  or `approvalAmount: 'max'` option.
 - **Exact-in only**: exact-out (`toTokenAmount`) is rejected before any network request
   (`ButterExactOutUnsupportedError`), including via the WDK base-class `swap()`/`quoteSwap()`
   delegation path. Butter documents `type: exactOut`, but the default production endpoint answers

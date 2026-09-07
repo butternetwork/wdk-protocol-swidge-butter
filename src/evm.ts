@@ -13,46 +13,17 @@
 // limitations under the License.
 
 import { encodeFunctionData, erc20Abi, TransactionNotFoundError, TransactionReceiptNotFoundError } from 'viem'
-import type { PublicClient, WalletClient } from 'viem'
+import type { PublicClient } from 'viem'
 import { APPROVAL_TIMEOUT_MS, NATIVE_TOKEN_ADDRESSES } from './constants.js'
 import { parseIntegerAmount } from './amounts.js'
 import { ButterApiError, ButterConfigurationError, ButterPartialExecutionError } from './errors.js'
 import { classifyReceiptStatus } from './status.js'
-import type { ButterAccount, ButterRoute, ButterSwapTx, ButterSwidgeProtocolConfig, EvmPublicClient, EvmTransactionData, EvmTransactionReceipt, EvmTransactionRequest, EvmWalletClient, SwidgeOptions, ViemPublicClientLike, ViemWalletClientLike } from './types.js'
+import type { ButterAccount, ButterRoute, ButterSwapTx, ButterSwidgeProtocolConfig, EvmPublicClient, EvmTransactionData, EvmTransactionReceipt, EvmTransactionRequest, SwidgeOptions, ViemPublicClientLike } from './types.js'
 
-type ViemSendTransactionArgs = Parameters<WalletClient['sendTransaction']>[0]
 type ViemReadContractArgs = Parameters<PublicClient['readContract']>[0]
 type ViemWaitForReceiptArgs = Parameters<PublicClient['waitForTransactionReceipt']>[0]
 type ViemGetReceiptArgs = Parameters<PublicClient['getTransactionReceipt']>[0]
 type ViemGetTransactionArgs = Parameters<PublicClient['getTransaction']>[0]
-
-/**
- * Adapts a viem wallet client to the provider's {@link EvmWalletClient}. The
- * wrapper validates that the client has a bound account and narrows viem's rich
- * transaction surface to the capabilities this provider consumes.
- *
- * @param {ViemWalletClientLike} client - The viem client to adapt.
- * @returns {EvmWalletClient} The provider-compatible EVM wallet client.
- * @throws {ButterConfigurationError} If the viem wallet client has no bound account address.
- */
-export function toEvmWalletClient (client: ViemWalletClientLike): EvmWalletClient {
-  const address = client.account?.address
-  if (!address) {
-    throw new ButterConfigurationError('toEvmWalletClient requires a viem wallet client with a bound account')
-  }
-  return {
-    account: { address },
-    /**
-     * Sends transaction through the configured sender.
-     *
-     * @param {unknown} args - The request arguments forwarded to the wrapped viem client.
-     * @returns {Promise<`0x${string}`>} A promise resolving to the submitted transaction hash.
-    */
-    async sendTransaction (args) {
-      return client.sendTransaction(args as ViemSendTransactionArgs)
-    }
-  }
-}
 
 /**
  * True when `error` is viem's not-found error of the given class name.
@@ -420,23 +391,17 @@ function approvalTimeoutError (hash: string, timeoutMs: number): ButterConfigura
 }
 
 /**
- * Sends an EVM transaction (carrying `data`/`chainId`) via `evm.walletClient`.
+ * Sends an EVM transaction (carrying `data`/`chainId`) via the WDK EVM account.
  *
- * The WDK account's generic `sendTransaction` is NOT used because the WDK
- * `Transaction` type only guarantees `{ to, value }`, so routing swap/approval
- * calldata through it could silently drop `data`. The wallet client carries a
- * bound `account.address` (validated against the WDK account) so the signer,
- * calldata initiator, and allowance owner cannot split.
- *
- * @param {EvmClientContext} context - The configured wallet client used to submit calldata.
+ * @param {EvmClientContext} context - The configured WDK account used to submit calldata.
  * @param {EvmTransactionRequest} tx - The transaction request to validate or send.
  * @returns {Promise<EvmSendResult>} The submitted transaction hash and optional measured fee.
- * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
+ * @throws {ButterConfigurationError} If a send-capable WDK account is unavailable.
  */
 async function sendEvmTransaction (context: EvmClientContext, tx: EvmTransactionRequest): Promise<EvmSendResult> {
-  const walletClient = context.config.evm?.walletClient
-  if (walletClient) return normalizeSend(await walletClient.sendTransaction(tx))
-  throw new ButterConfigurationError('EVM execution requires evm.walletClient to carry the transaction calldata')
+  const sendTransaction = context.account?.sendTransaction?.bind(context.account)
+  if (!sendTransaction) throw new ButterConfigurationError('EVM execution requires a send-capable WDK account')
+  return normalizeSend(await sendTransaction(tx))
 }
 
 /**

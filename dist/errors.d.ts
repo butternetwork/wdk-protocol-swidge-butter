@@ -1,6 +1,8 @@
 import type { SwidgeTransaction } from './types.js';
+import { MaximumFeeExceededError, UnsupportedOperationError, ValueError, WdkError } from '@tetherto/wdk-wallet';
+import { AccountRequiredError } from '@tetherto/wdk-wallet/protocols';
 /** Indicates malformed, inconsistent, or unsuccessful Butter API data. */
-export declare class ButterApiError extends Error {
+export declare class ButterApiError extends WdkError {
     /** Structured Butter response or validation context associated with the failure. */
     readonly details: unknown;
     /**
@@ -12,9 +14,11 @@ export declare class ButterApiError extends Error {
     constructor(message: string, details?: unknown);
 }
 /** Indicates an operation or option unsupported by this provider. */
-export declare class ButterUnsupportedError extends Error {
+export declare class ButterUnsupportedError extends UnsupportedOperationError {
     /** Structured caller input or operation context associated with the failure. */
     readonly details: unknown;
+    /** Underlying failure when supplied in {@link details}. */
+    readonly cause: unknown;
     /**
      * Creates a butter unsupported error instance.
      *
@@ -24,7 +28,7 @@ export declare class ButterUnsupportedError extends Error {
     constructor(message: string, details?: unknown);
 }
 /** Indicates missing or invalid provider configuration. */
-export declare class ButterConfigurationError extends Error {
+export declare class ButterConfigurationError extends ValueError {
     /** Structured configuration context associated with the failure. */
     readonly details: unknown;
     /**
@@ -36,7 +40,7 @@ export declare class ButterConfigurationError extends Error {
     constructor(message: string, details?: unknown);
 }
 /** Indicates that caller action is required before an operation can continue. */
-export declare class ButterActionRequiredError extends Error {
+export declare class ButterActionRequiredError extends WdkError {
     /** Structured context describing the caller action required. */
     readonly details: unknown;
     /**
@@ -80,7 +84,13 @@ export declare class ButterNoRouteError extends ButterApiError {
     constructor(message: string, details?: unknown);
 }
 /** Indicates that a configured WDK network or protocol fee cap was exceeded. */
-export declare class ButterFeeLimitExceededError extends ButterActionRequiredError {
+export declare class ButterFeeLimitExceededError extends MaximumFeeExceededError {
+    /** Structured fee limit context associated with the failure. */
+    readonly details: {
+        feeType: 'network' | 'protocol';
+        actualBps: string;
+        maximumBps: string;
+    };
     /**
      * Creates a butter fee limit exceeded error instance.
      *
@@ -123,7 +133,9 @@ export declare class ButterPartialExecutionError extends ButterActionRequiredErr
     constructor(transactions: readonly SwidgeTransaction[], cause: unknown, failedType?: SwidgeTransaction['type']);
 }
 /** Indicates that execution was attempted without a send-capable signer. */
-export declare class ButterReadOnlyAccountError extends ButterConfigurationError {
+export declare class ButterReadOnlyAccountError extends AccountRequiredError {
+    /** Compatibility diagnostic field; missing-account failures carry no extra details. */
+    readonly details: undefined;
     /**
      * Creates a butter read only account error instance.
      *

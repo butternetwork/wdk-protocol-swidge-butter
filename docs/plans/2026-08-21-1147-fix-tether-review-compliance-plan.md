@@ -30,13 +30,13 @@ Bring the package into verifiable compliance with the three actionable technical
 
 Tether accepted the package structure, license, TypeScript declarations, dependency security, tests, README content, and Bare compatibility, but rejected the README badge, JSDoc coverage, current WDK version, and private source visibility.
 
-The current code has broad prose comments but not WDK-complete JSDoc: an AST inventory found 197 named function-like declarations, 103 without a JSDoc block, 186 with at least one undocumented parameter, 182 without `@returns`, and no `@throws` tags. The reviewer-requested `@tetherto/wdk-wallet@1.0.0-beta.15` is now the minimum historical target; npm `latest` has advanced to `1.0.0-beta.17`.
+The current code has broad prose comments but not WDK-complete JSDoc: an AST inventory found 197 named function-like declarations, 103 without a JSDoc block, 186 with at least one undocumented parameter, 182 without `@returns`, and no `@throws` tags. `@tetherto/wdk-wallet@1.0.0-beta.17` is the minimum target because earlier betas do not export every standard WDK error constructor used by this package.
 
 ### Requirements
 
 - R1. README displays the supplied neutral black "Built with WDK" badge and links it to the official WDK documentation.
 - R2. Every named function declaration, constructor, and method in `src/` has WDK-compliant documentation, with complete parameter, return, and applicable thrown-error information under the visibility rules in KTD2.
-- R3. The package supports `@tetherto/wdk-wallet` from `1.0.0-beta.15` onward and is developed, locked, and verified against the current npm `latest`, `1.0.0-beta.17`.
+- R3. The package supports, develops, locks, and verifies against `@tetherto/wdk-wallet@1.0.0-beta.17` as its minimum compatible version.
 - R4. Source and generated declarations expose the same types and documentation; implementation behavior and exported TypeScript signatures do not change.
 - R5. The repository remains private, so launch approval depends on a written Tether exception rather than claiming the open-source finding is fixed.
 
@@ -44,7 +44,7 @@ The current code has broad prose comments but not WDK-complete JSDoc: an AST inv
 
 - The README renders the exact supplied `Frame 6949.png` artwork, renamed to a stable repository filename; its SHA-256 remains `6a9ba1dc25883ac4586e63ecf723cab9d194dd2e3b592e936ae9c37c6044dd5e`.
 - The JSDoc compliance check reports no missing descriptions, parameters, returns, visibility markers, or direct thrown-error annotations for declarations in scope.
-- Clean compatibility verification succeeds with both the minimum supported WDK version (`beta.15`) and the current latest version (`beta.17`).
+- Clean compatibility verification succeeds with the minimum supported WDK version (`beta.17`).
 - Tests, type checks, build, package-content inspection, and dependency audit pass; regenerated `dist/` files are committed.
 - The review response distinguishes the three closed technical findings from the unresolved visibility finding and links the written exception before launch.
 
@@ -70,7 +70,7 @@ The current code has broad prose comments but not WDK-complete JSDoc: an AST inv
 - KTD1. **Vendor the neutral badge asset.** Copy the supplied `Frame 6949.png` to `docs/assets/built-with-wdk.png`, preserve its bytes, add meaningful alt text and fixed dimensions near the README title, and link to `https://docs.wdk.tether.io/`. Include the asset in the npm package file list so the published artifact contains the reviewed image. Governs R1.
 - KTD2. **Apply WDK visibility-specific JSDoc.** Module-level named functions, constructors, public/protected methods, and named object-literal methods receive a plain-language description, one meaningful `@param` per parameter, `@returns` for every non-constructor including `void`, and specific `@throws` entries for direct or intentionally propagated errors. TypeScript `private` class members receive only `/** @private */` per WDK R6. Overrides specialize the upstream WDK contract to the Butter error behavior rather than using generic `Error`. Governs R2 and R4.
 - KTD3. **Enforce structure with the existing TypeScript compiler API.** Extend the documentation compliance coverage with an AST-based scan rather than adding ESLint or another dependency. The scan covers the declaration set in KTD2, handles constructors and destructured parameters explicitly, validates descriptions before tags, and checks exact parameter/return coverage plus direct `throw` sites. Semantic accuracy of `@throws` remains a WDK review gate because static analysis cannot prove all transitive failures. Governs R2.
-- KTD4. **Separate minimum compatibility from the development lock.** Raise the peer range floor to `>=1.0.0-beta.15 <2.0.0`, pin the dev dependency and lockfile to `1.0.0-beta.17`, and verify both endpoints. This satisfies the reviewer-requested minimum without falsely calling an older beta the current latest. Governs R3.
+- KTD4. **Keep the minimum compatibility aligned with required exports.** Set the peer range floor to `>=1.0.0-beta.17 <2.0.0` and pin the dev dependency and lockfile to `1.0.0-beta.17`, because earlier betas do not export every standard WDK error constructor used by this package. Governs R3.
 - KTD5. **Regenerate declarations from TypeScript source.** This repository's `dist/` is compiler-owned; run the normal build and commit emitted JavaScript, declarations, and maps. Do not hand-edit generated declarations even though the generic JavaScript WDK rule describes manual `.d.ts` maintenance. Governs R4.
 
 ### Sequencing
@@ -98,11 +98,11 @@ The current code has broad prose comments but not WDK-complete JSDoc: an AST inv
 - **Requirements:** R3, R4; KTD4.
 - **Dependencies:** None.
 - **Files:** `package.json`, `package-lock.json`, `test/butter-swidge-protocol.test.ts` if a compatibility regression needs explicit coverage.
-- **Approach:** Raise only the peer floor, use an exact dev version for reproducible builds, refresh the lockfile, and preserve the existing `<2.0.0` consumer range. Review the `beta.15` to `beta.17` Swidge base-class changes and keep Butter errors and legacy mappings stable.
+- **Approach:** Raise the peer floor to `beta.17`, use the same exact dev version for reproducible builds, refresh the lockfile, and preserve the existing `<2.0.0` consumer range. Keep Butter errors and legacy mappings stable.
 - **Patterns to follow:** Existing exact-in and legacy `swap`/`bridge` delegation tests.
 - **Test scenarios:**
-  - Install the package with peer version `beta.15`; type checking, unit tests, and build complete without source changes specific to the newer beta.
-  - Install with `beta.17`; `quoteSwidge`, `swidge`, status, discovery, and generated declarations compile.
+  - Install the package with the minimum peer version `beta.17`; type checking, unit tests, and build complete.
+  - With `beta.17`, `quoteSwidge`, `swidge`, status, discovery, and generated declarations compile.
   - Under `beta.17`, inherited legacy swap and bridge methods preserve current result mapping and propagate Butter-specific exact-out/configuration errors without unexpected WDK wrapping.
 - **Verification:** The manifest expresses the minimum/latest distinction, the lock resolves `beta.17`, and both clean compatibility runs pass.
 
@@ -173,8 +173,8 @@ The current code has broad prose comments but not WDK-complete JSDoc: an AST inv
 | Generated output | `npm run build` | `dist/` is current and exported signatures are unchanged |
 | Package contents | `npm pack --dry-run` | Badge, README, runtime files, declarations, and maps are present |
 | Dependency health | `npm audit` | No known install-time vulnerabilities are introduced |
-| Compatibility minimum | Clean install with `@tetherto/wdk-wallet@1.0.0-beta.15` followed by test, typecheck, and build | Minimum supported peer remains usable |
-| Compatibility latest | Clean install from the committed lockfile resolving `@tetherto/wdk-wallet@1.0.0-beta.17` followed by test, typecheck, and build | Current npm latest is the development baseline |
+| Compatibility minimum | Clean install with `@tetherto/wdk-wallet@1.0.0-beta.17` followed by test, typecheck, and build | Minimum supported peer remains usable |
+| Compatibility development | Clean install from the committed lockfile resolving `@tetherto/wdk-wallet@1.0.0-beta.17` followed by test, typecheck, and build | Development and minimum compatibility baselines stay aligned |
 | Badge fidelity | SHA-256 and 240 by 60 dimension assertions | Repository asset exactly matches the supplied neutral badge |
 | Visibility exception | Written Tether approval attached to the launch/review record | Private repository is accepted; otherwise launch remains blocked |
 
@@ -182,7 +182,7 @@ The current code has broad prose comments but not WDK-complete JSDoc: an AST inv
 
 ## Definition of Done
 
-- U1: Peer range starts at `beta.15`, dev/lock resolve `beta.17`, and both compatibility endpoints pass.
+- U1: Peer range starts at `beta.17`, dev/lock resolve `beta.17`, and the minimum compatibility check passes.
 - U2: The exact supplied badge renders in README and is included in the package tarball.
 - U3: Public API, override methods, constructors, types, parameters, returns, defaults, and thrown errors are fully documented in source and generated declarations.
 - U4: Every named declaration is covered under the agreed scope and the AST compliance gate prevents regression.

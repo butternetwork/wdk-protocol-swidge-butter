@@ -156,9 +156,9 @@ describe('WDK documentation requirements', () => {
       if (!ts.isExportDeclaration(statement)) return []
       const moduleSpecifier = statement.moduleSpecifier
       const exportClause = statement.exportClause
-      if (moduleSpecifier == null || !ts.isStringLiteral(moduleSpecifier) || moduleSpecifier.text !== './errors.js') return []
+      if (moduleSpecifier == null || !ts.isStringLiteral(moduleSpecifier)) return []
       if (exportClause == null || !ts.isNamedExports(exportClause)) return []
-      return exportClause.elements.map((element) => element.name.text)
+      return exportClause.elements.map((element) => element.name.text).filter((name) => name.endsWith('Error'))
     }).sort()
     const errors = section(readme, '## Errors', '## Safety Defaults')
     const documentedErrors = errors.split('\n').flatMap((line) => {
@@ -180,8 +180,8 @@ describe('WDK documentation requirements', () => {
     const support = section(readme, '## Support', '## Security')
 
     assert.equal(readme.includes('It implements `ISwidgeProtocol` from `@tetherto/wdk-wallet`.'), true)
-    assert.equal(readme.includes('compatibility is `>=1.0.0-beta.15 <2.0.0`'), true)
-    assert.equal(readme.includes('currently test\nagainst `1.0.0-beta.17`'), true)
+    assert.equal(readme.includes('compatibility is `>=1.0.0-beta.17 <2.0.0`'), true)
+    assert.equal(readme.includes('minimum supported version, `1.0.0-beta.17`'), true)
     assert.equal(readme.includes('a `bare` conditional\nentry'), true)
     assert.equal(mapping.includes('`swapFee.tokenFee / requestedAmountIn`'), true)
     assert.equal(mapping.includes('`(swapFee.nativeFee / gasFee.amount) × (gasFee.inUSD / totalAmountInUSD)`'), true)
@@ -191,14 +191,28 @@ describe('WDK documentation requirements', () => {
     assert.equal(support.includes('A `[SECURITY]`\nsubject prefix is not needed'), true)
   })
 
-  it('keeps unreleased changes ahead of the published SemVer release', async () => {
+  it('keeps unreleased changes ahead of the current SemVer release', async () => {
     const changelog = await readFile(join(repositoryRoot, 'CHANGELOG.md'), 'utf8')
     const unreleased = changelog.indexOf('## [Unreleased]')
-    const release = changelog.indexOf('## [0.1.0] - 2026-08-04')
+    const release = changelog.indexOf('## [0.2.0] - 2026-09-06')
 
     assert.notEqual(unreleased, -1)
     assert.notEqual(release, -1)
     assert.ok(unreleased < release)
+  })
+
+  it('does not document the removed dual-sender execution model', async () => {
+    const documents = await Promise.all([
+      readFile(join(repositoryRoot, 'README.md'), 'utf8'),
+      readFile(join(repositoryRoot, 'AGENTS.md'), 'utf8'),
+      readFile(join(repositoryRoot, 'CLAUDE.md'), 'utf8')
+    ])
+
+    for (const document of documents) {
+      assert.equal(document.includes('requires BOTH'), false)
+      assert.equal(document.includes('cannot submit calldata'), false)
+      assert.equal(document.includes('cannot carry calldata'), false)
+    }
   })
 })
 

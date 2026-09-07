@@ -6,7 +6,23 @@ and (once published) [Semantic Versioning](https://semver.org).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-06
+
+### Breaking
+- Remove `evm.walletClient`, `toEvmWalletClient`, `EvmWalletClient`, and
+  `ViemWalletClientLike`. EVM integrations must pass a full WDK EVM account to
+  the protocol constructor; that account now submits every approval and Router
+  transaction. There is deliberately no sender fallback after a failed send.
+- Move Butter errors under the corresponding WDK error categories. Existing
+  Butter names remain exported, but callers that caught
+  `ButterActionRequiredError` for fee-limit failures must catch
+  `MaximumFeeExceededError` or `ButterFeeLimitExceededError` instead.
+
 ### Fixed
+- Submit EVM Router and approval calldata through the WDK EVM account instead of
+  requiring a second signer.
+- Make Butter errors subclasses of the corresponding WDK error categories and
+  re-export the standard WDK constructors from the package root.
 - Add a published Bare conditional entry backed by `bare-node-runtime`, with a
   release-gated Node/Bare import smoke test that installs the packed artifact in
   a clean consumer directory and checks the package's public exports.
@@ -34,9 +50,10 @@ and (once published) [Semantic Versioning](https://semver.org).
 - Make GitHub Release publishing idempotent: an npm version already published
   from the same tag commit is a successful no-op, while registry errors and
   mismatched or invalid `gitHead` metadata fail closed.
-- Raise the supported `@tetherto/wdk-wallet` floor to `1.0.0-beta.15`, develop
-  against `1.0.0-beta.17`, and omit absent optional fields to match WDK's exact
-  optional-property declarations without changing populated results.
+- Raise the supported `@tetherto/wdk-wallet` floor to `1.0.0-beta.17`, the first
+  release exporting every standard WDK error constructor used by this package,
+  and omit absent optional fields to match WDK's exact optional-property
+  declarations without changing populated results.
 
 ### Documentation
 - State the implemented WDK interface and tested version, document every exported
