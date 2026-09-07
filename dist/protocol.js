@@ -171,8 +171,8 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
      * @returns {Promise<SwidgeResult>} The executed WDK result and every broadcast transaction.
      * @throws {ButterExactOutUnsupportedError} If exact-out options are supplied.
      * @throws {ButterUnsupportedError} If the requested route, adapter output, or operation shape is unsupported.
-     * @throws {ButterReadOnlyAccountError} If execution lacks a send-capable WDK account or EVM wallet client.
-     * @throws {ButterConfigurationError} If execution configuration, sender identity, approval confirmation, or native-fee bounds are invalid.
+     * @throws {ButterReadOnlyAccountError} If execution lacks a full, send-capable WDK account.
+     * @throws {ButterConfigurationError} If execution configuration, approval confirmation, or native-fee bounds are invalid.
      * @throws {ButterActionRequiredError} If the recipient, slippage, quote freshness, or minimum output needs caller action.
      * @throws {ButterNoRouteError} If Butter provides no liquid route.
      * @throws {ButterFeeValuationError} If a configured fee cap cannot value Butter's fee metadata safely.
@@ -180,6 +180,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
      * @throws {ButterTransactionValidationError} If `/swap` transaction data does not match the quoted intent or configured limits.
      * @throws {ButterPartialExecutionError} If a send or confirmation fails after at least one transaction was broadcast.
      * @throws {ButterApiError} If Butter returns malformed or inconsistent data or a sender reports invalid metadata.
+     * @throws {ValueError | ProviderRequiredError | ProviderError | TransactionError | MaximumFeeExceededError} If the WDK account rejects the first transaction before any transaction is broadcast; later failures are reported through `ButterPartialExecutionError.cause`.
      */
     async swidge(options, config = {}) {
         options = normalizeRecipient(options);
@@ -541,46 +542,22 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
     }
     /** @private */
     async getSender() {
-        const accountAddress = this.account?.getAddress ? await this.account.getAddress() : undefined;
-        const walletAddress = this.config.evm?.walletClient?.account?.address;
-        // Guard against a signer/initiator split: if both an account and a wallet
-        // client are configured with different addresses, the on-chain signer and
-        // the calldata initiator would diverge and Butter Router would reject.
-        if (accountAddress && walletAddress && !sameRecipient(accountAddress, walletAddress)) {
-            throw new ButterConfigurationError('Account address and evm.walletClient account address differ; configure a single sender', {
-                accountAddress,
-                walletAddress
-            });
-        }
-        const sender = accountAddress ?? walletAddress;
-        if (!sender) {
-            throw new ButterReadOnlyAccountError('Swidge execution requires a sender address from an account or evm.walletClient');
-        }
-        return sender;
+        if (!this.account)
+            throw new ButterReadOnlyAccountError();
+        return this.account.getAddress();
     }
     /* Resolves a sender address without throwing (used to default Solana recipient at quote time). */
     /** @private */
     async resolveSenderOrUndefined() {
         if (this.account?.getAddress)
             return this.account.getAddress();
-        return this.config.evm?.walletClient?.account?.address;
+        return undefined;
     }
     /** @private */
     assertExecutionCapability() {
         if (this.isBuiltInEvmExecution()) {
-            // WDK contract: swidge() requires a full (send-capable) account — reject
-            // undefined or read-only accounts up front, matching the interface's
-            // documented behavior.
             if (!this.account?.sendTransaction)
                 throw new ButterReadOnlyAccountError();
-            // A full account still cannot carry the swap/approval calldata: the WDK
-            // `Transaction` type is only `{ to, value }`, so `data`/`chainId` would be
-            // dropped. An EVM-capable sender (`evm.walletClient`) is additionally
-            // required; the account is used only for address resolution and receipt
-            // polling. (This can merge once WDK extends `Transaction` with `data`.)
-            if (!this.config.evm?.walletClient) {
-                throw new ButterReadOnlyAccountError('Butter EVM Router execution requires evm.walletClient to carry the swap calldata; the WDK account cannot (its Transaction type is only { to, value })');
-            }
             return;
         }
         if (!this.config.transactionAdapters?.[this.sourceChainId]) {

@@ -26,7 +26,6 @@ import ButterSwidgeProtocol, {
   ButterUnsupportedError,
   parseTokenAmount,
   toButterSlippage,
-  toEvmWalletClient,
   toEvmPublicClient
 } from '../src/index.ts'
 import {
@@ -45,7 +44,6 @@ import {
   FORMER_TON_CHAIN_ID,
   DEFAULT_TOKEN_DECIMALS,
   ERC20_TOKEN_DECIMALS,
-  evmWallet,
   routerV3Abi,
   swapParamAbi,
   bridgeParamAbi,

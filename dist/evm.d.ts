@@ -1,14 +1,4 @@
-import type { ButterAccount, ButterRoute, ButterSwapTx, ButterSwidgeProtocolConfig, EvmPublicClient, EvmWalletClient, SwidgeOptions, ViemPublicClientLike, ViemWalletClientLike } from './types.js';
-/**
- * Adapts a viem wallet client to the provider's {@link EvmWalletClient}. The
- * wrapper validates that the client has a bound account and narrows viem's rich
- * transaction surface to the capabilities this provider consumes.
- *
- * @param {ViemWalletClientLike} client - The viem client to adapt.
- * @returns {EvmWalletClient} The provider-compatible EVM wallet client.
- * @throws {ButterConfigurationError} If the viem wallet client has no bound account address.
- */
-export declare function toEvmWalletClient(client: ViemWalletClientLike): EvmWalletClient;
+import type { ButterAccount, ButterRoute, ButterSwapTx, ButterSwidgeProtocolConfig, EvmPublicClient, SwidgeOptions, ViemPublicClientLike } from './types.js';
 /**
  * Adapts a viem public client to the provider's {@link EvmPublicClient}, covering
  * ERC-20 allowance reads, approval-receipt waiting, and the receipt/transaction

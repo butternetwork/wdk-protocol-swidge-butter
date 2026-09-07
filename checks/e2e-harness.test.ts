@@ -11,7 +11,7 @@ import {
   NoBroadcastSender,
   assertReadOnlySendBlocked,
   createEphemeralEvmAddress,
-  createGuardedEvmWalletClient,
+  createGuardedEvmAccountSender,
   assertExecutionBudget,
   extractRecoverableSourceId,
   isButterStatusIndexingDelay,
@@ -186,10 +186,10 @@ describe('guarded transaction sender', () => {
   })
 })
 
-describe('guarded viem wallet client', () => {
+describe('guarded EVM account sender', () => {
   it('prepares and sends an EIP-1559 transaction within budget', async () => {
     const sent: unknown[] = []
-    const client = createGuardedEvmWalletClient({
+    const client = createGuardedEvmAccountSender({
       account: { address: SENDER },
       prepareTransactionRequest: async (transaction) => ({
         ...(transaction as object),
@@ -217,7 +217,7 @@ describe('guarded viem wallet client', () => {
       gasPrice: 3n,
       value: 4n
     }
-    const client = createGuardedEvmWalletClient({
+    const client = createGuardedEvmAccountSender({
       account: { address: SENDER },
       prepareTransactionRequest: async (transaction) => {
         preparations.push(transaction)
@@ -250,7 +250,7 @@ describe('guarded viem wallet client', () => {
   it('preserves an explicitly requested zero-price EIP-1559 transaction', async () => {
     const preparations: unknown[] = []
     const sent: unknown[] = []
-    const client = createGuardedEvmWalletClient({
+    const client = createGuardedEvmAccountSender({
       account: { address: SENDER },
       prepareTransactionRequest: async (transaction) => {
         preparations.push(transaction)
@@ -276,7 +276,7 @@ describe('guarded viem wallet client', () => {
 
   it('uses legacy gasPrice and rejects over budget before signing', async () => {
     let sends = 0
-    const client = createGuardedEvmWalletClient({
+    const client = createGuardedEvmAccountSender({
       account: { address: SENDER },
       prepareTransactionRequest: async () => ({ gas: 3n, gasPrice: 4n, value: 0n }),
       sendTransaction: async () => {
@@ -291,7 +291,7 @@ describe('guarded viem wallet client', () => {
 
   it('rejects an unpriced prepared transaction before signing', async () => {
     let sends = 0
-    const client = createGuardedEvmWalletClient({
+    const client = createGuardedEvmAccountSender({
       account: { address: SENDER },
       prepareTransactionRequest: async () => ({ gas: 3n, value: 0n }),
       sendTransaction: async () => {
@@ -326,11 +326,11 @@ describe('read-only transaction boundary', () => {
       cause = error
     }
 
-    assertReadOnlySendBlocked(cause, sender, 0)
+    assertReadOnlySendBlocked(cause, sender, 1)
     assert.deepEqual(sender.attempts, [transaction])
   })
 
-  it('rejects the proof when the WDK account sender was called', async () => {
+  it('rejects the proof when the WDK account send boundary was bypassed', async () => {
     const sender = new NoBroadcastSender(SENDER)
 
     let cause: unknown
@@ -340,7 +340,7 @@ describe('read-only transaction boundary', () => {
       cause = error
     }
 
-    assert.throws(() => assertReadOnlySendBlocked(cause, sender, 1), /WDK account/i)
+    assert.throws(() => assertReadOnlySendBlocked(cause, sender, 0), /WDK account/i)
   })
 })
 

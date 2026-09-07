@@ -18,7 +18,7 @@ import {
 import { privateKeyToAccount } from 'viem/accounts'
 
 import {
-  createGuardedEvmWalletClient,
+  createGuardedEvmAccountSender,
   extractRecoverableSourceId,
   isButterStatusIndexingDelay,
   parseEvmAddress,
@@ -94,7 +94,7 @@ export async function runFundedScenario (scenario: FundedScenario): Promise<void
     'source native balance cannot cover the bounded transaction value and gas budget'
   )
 
-  const guardedWalletClient = createGuardedEvmWalletClient({
+  const guardedAccountSender = createGuardedEvmAccountSender({
     account: { address: account.address },
     prepareTransactionRequest: async (transaction) => await rawWalletClient.prepareTransactionRequest(transaction as never),
     sendTransaction: async (transaction) => await rawWalletClient.sendTransaction(transaction as never)
@@ -104,9 +104,7 @@ export async function runFundedScenario (scenario: FundedScenario): Promise<void
   })
   const wdkAccount = {
     getAddress: async () => account.address,
-    sendTransaction: async (): Promise<never> => {
-      throw new Error('Funded EVM E2E requires every send to pass through the guarded wallet client')
-    },
+    sendTransaction: async (transaction: unknown) => guardedAccountSender.sendTransaction(transaction),
     getTransactionReceipt: async (hash: string) => await sourcePublicClient.getTransactionReceipt({ hash: hash as Hex })
   }
   const protocol = new ButterSwidgeProtocol(wdkAccount, {
@@ -119,8 +117,7 @@ export async function runFundedScenario (scenario: FundedScenario): Promise<void
     maxNetworkFeeBps: config.maxNetworkFeeBps,
     maxProtocolFeeBps: config.maxProtocolFeeBps,
     evm: {
-      publicClient: toEvmPublicClient(sourcePublicClient),
-      walletClient: guardedWalletClient
+      publicClient: toEvmPublicClient(sourcePublicClient)
     }
   })
   const options: ButterSwidgeOptions = {

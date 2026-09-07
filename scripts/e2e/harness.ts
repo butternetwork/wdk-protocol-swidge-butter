@@ -112,8 +112,8 @@ export function assertReadOnlySendBlocked (
   if (sender.attempts.length !== 1) {
     throw new Error(`Read-only E2E expected one send attempt, received ${sender.attempts.length}`)
   }
-  if (wdkAccountSendCalls !== 0) {
-    throw new Error('Read-only E2E unexpectedly called the WDK account sender')
+  if (wdkAccountSendCalls !== 1) {
+    throw new Error(`Read-only E2E expected one WDK account send attempt, received ${wdkAccountSendCalls}`)
   }
 }
 
@@ -198,14 +198,14 @@ export class GuardedTransactionSender<TTransaction extends PreparedTransaction =
   }
 }
 
-export interface GuardableViemWalletClient {
+export interface GuardableViemSender {
   account?: { address: string } | null
   prepareTransactionRequest: (transaction: unknown) => Promise<unknown>
   sendTransaction: (transaction: unknown) => Promise<string>
 }
 
-export function createGuardedEvmWalletClient (
-  client: GuardableViemWalletClient,
+export function createGuardedEvmAccountSender (
+  client: GuardableViemSender,
   budget: { maxTotalGasFee: bigint, maxValue: bigint }
 ): { account: { address: string }, sendTransaction: (transaction: unknown) => Promise<string> } {
   const address = client.account?.address

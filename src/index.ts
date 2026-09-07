@@ -15,6 +15,16 @@
 export { default, ButterSwidgeProtocol } from './protocol.js'
 export { ISwidgeProtocol } from '@tetherto/wdk-wallet/protocols'
 export {
+  MaximumFeeExceededError,
+  ProviderError,
+  ProviderRequiredError,
+  TransactionError,
+  UnsupportedOperationError,
+  ValueError,
+  WdkError
+} from '@tetherto/wdk-wallet'
+export { AccountRequiredError } from '@tetherto/wdk-wallet/protocols'
+export {
   ButterApiError,
   ButterUnsupportedError,
   ButterConfigurationError,
@@ -29,7 +39,7 @@ export {
 } from './errors.js'
 export { parseTokenAmount, formatTokenAmount } from './amounts.js'
 export { toButterSlippage } from './slippage.js'
-export { toEvmWalletClient, toEvmPublicClient } from './evm.js'
+export { toEvmPublicClient } from './evm.js'
 export type {
   ButterSwidgeProtocolConfig,
   ButterSwidgeQuote,
@@ -48,7 +58,5 @@ export type {
   ButterSwapTx,
   ButterAccount,
   EvmPublicClient,
-  EvmWalletClient,
-  ViemWalletClientLike,
   ViemPublicClientLike
 } from './types.js'

@@ -1,10 +1,9 @@
 import ButterSwidgeProtocol, {
-  toEvmPublicClient,
-  toEvmWalletClient
+  toEvmPublicClient
 } from '@butternetwork/wdk-protocol-swidge-butter'
+import { WalletAccountEvm } from '@tetherto/wdk-wallet-evm'
 import {
   createPublicClient,
-  createWalletClient,
   defineChain,
   http,
   isAddress,
@@ -46,7 +45,10 @@ runExample(async () => {
     rpcUrls: { default: { http: [rpcUrl] } }
   })
   const publicClient = createPublicClient({ chain, transport: http(rpcUrl) })
-  const walletClient = createWalletClient({ account, chain, transport: http(rpcUrl) })
+  const wdkAccount = WalletAccountEvm.fromPrivateKey(privateKey, {
+    provider: rpcUrl,
+    chainId
+  })
 
   const options = {
     fromToken,
@@ -61,22 +63,12 @@ runExample(async () => {
   const tokenDecimals = fromToken.toLowerCase() === NATIVE_TOKEN || configuredDecimals == null
     ? {}
     : { [fromToken]: integerFromEnv('EXECUTION_FROM_TOKEN_DECIMALS') }
-  // Execution requires a full WDK account. Build one from the viem account and
-  // clients: getAddress + getTransactionReceipt are used by the provider; its
-  // sendTransaction is not used for EVM calldata (the walletClient carries that)
-  // but satisfies the full-account requirement.
-  const wdkAccount = {
-    getAddress: async () => account.address,
-    sendTransaction: async (tx: unknown) => walletClient.sendTransaction(tx as never),
-    getTransactionReceipt: async (hash: string) => publicClient.getTransactionReceipt({ hash: hash as `0x${string}` })
-  }
   const protocol = new ButterSwidgeProtocol(wdkAccount, {
     sourceChainId: chainId,
     ...butterIntegrationFromEnv(),
     tokenDecimals,
     evm: {
-      publicClient: toEvmPublicClient(publicClient),
-      walletClient: toEvmWalletClient(walletClient)
+      publicClient: toEvmPublicClient(publicClient)
     }
   })
 

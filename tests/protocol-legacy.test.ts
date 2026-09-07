@@ -26,7 +26,6 @@ import ButterSwidgeProtocol, {
   ButterUnsupportedError,
   parseTokenAmount,
   toButterSlippage,
-  toEvmWalletClient,
   toEvmPublicClient
 } from '../src/index.ts'
 import {
@@ -45,7 +44,6 @@ import {
   FORMER_TON_CHAIN_ID,
   DEFAULT_TOKEN_DECIMALS,
   ERC20_TOKEN_DECIMALS,
-  evmWallet,
   routerV3Abi,
   swapParamAbi,
   bridgeParamAbi,
@@ -116,8 +114,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
         fetch,
         tokenDecimals: ERC20_TOKEN_DECIMALS,
         evm: {
-          publicClient: { readContract: async () => 1500000000000000000n },
-          walletClient: evmWallet(async () => '0x1111111111111111111111111111111111111111111111111111111111111111')
+          publicClient: { readContract: async () => 1500000000000000000n }
         }
       })
   

@@ -3,6 +3,13 @@
 These scripts import the package through its public entry point. Run them from
 the repository root with Node.js 22.9 or newer.
 
+The funded EVM swap example uses the WDK EVM account implementation. Consumers
+running that example from the published package must install it explicitly:
+
+```sh
+npm install @tetherto/wdk-wallet-evm@1.0.0-beta.17
+```
+
 Optionally create a local environment file:
 
 ```sh

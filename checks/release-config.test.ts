@@ -16,6 +16,7 @@ interface PackageManifest {
   scripts?: Record<string, string>
   dependencies?: Record<string, string>
   devDependencies?: Record<string, string>
+  peerDependencies?: Record<string, string>
 }
 
 const repositoryRoot = process.cwd()
@@ -73,6 +74,8 @@ describe('npm release configuration', () => {
     })
     assert.equal(packageJson.dependencies?.['bare-node-runtime'], '^1.4.0')
     assert.equal(packageJson.devDependencies?.bare, '1.31.2')
+    assert.equal(packageJson.devDependencies?.['@tetherto/wdk-wallet-evm'], '1.0.0-beta.17')
+    assert.equal(packageJson.peerDependencies?.['@tetherto/wdk-wallet'], '>=1.0.0-beta.17 <2.0.0')
     assert.equal(packageJson.files?.includes('bare.js'), true)
     assert.equal(
       packageJson.scripts?.['test:bare'],
@@ -85,9 +88,13 @@ describe('npm release configuration', () => {
     )
 
     assert.match(packedPackageCheck, /npmExecutable\(\), \['pack', '--silent', '--pack-destination', temporaryRoot\]/)
-    assert.match(packedPackageCheck, /archivePath,\n\s+'@tetherto\/wdk-wallet@1\.0\.0-beta\.17'/)
+    assert.match(packedPackageCheck, /const minimumWdkVersion = '1\.0\.0-beta\.17'/)
+    assert.match(packedPackageCheck, /`@tetherto\/wdk-wallet@\$\{minimumWdkVersion\}`/)
+    assert.match(packedPackageCheck, /`@tetherto\/wdk-wallet-evm@\$\{minimumWdkVersion\}`/)
+    assert.match(packedPackageCheck, /copyFile\(join\(repositoryRoot, 'scripts\/check-package-types\.ts'\), typeTestPath\)/)
     assert.match(packedPackageCheck, /await run\(process\.execPath, \[smokeTestPath\], consumerRoot\)/)
     assert.match(packedPackageCheck, /await run\(bareExecutable\(\), \[smokeTestPath\], consumerRoot\)/)
+    assert.match(packedPackageCheck, /await run\(typescriptExecutable\(\), \[/)
     assert.match(packedPackageCheck, /await rm\(temporaryRoot, \{ recursive: true, force: true \}\)/)
   })
 

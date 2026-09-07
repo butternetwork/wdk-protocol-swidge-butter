@@ -26,7 +26,6 @@ import ButterSwidgeProtocol, {
   ButterUnsupportedError,
   parseTokenAmount,
   toButterSlippage,
-  toEvmWalletClient,
   toEvmPublicClient
 } from '../../src/index.ts'
 
@@ -123,13 +122,6 @@ export const FORMER_TON_CHAIN_ID = '1360104473493505'
 export const DEFAULT_TOKEN_DECIMALS = { '0x00000000000000000000000000000000000000ab': 18, '0x00000000000000000000000000000000000000cd': 6 }
 
 export const ERC20_TOKEN_DECIMALS = { [ERC20_TOKEN]: 18, [DEST_TOKEN]: 6 }
-
-export function evmWallet (
-  sendTransaction: (tx: unknown) => Promise<string | { hash?: string, fee?: bigint }>,
-  address: string = VALID_SENDER
-) {
-  return { account: { address }, sendTransaction }
-}
 
 export const routerV3Abi = parseAbi([
   'function swapAndBridge(bytes32 transferId,address initiator,address srcToken,uint256 amount,bytes swapData,bytes bridgeData,bytes permitData,bytes feeData)',
@@ -369,7 +361,20 @@ export function oversizedAllowanceFetch () {
 
 export function protocolFailingOnSend (account: unknown, failAt: number, rejected: Error) {
     let sends = 0
-    return new ButterSwidgeProtocol(account as never, {
+    const baseAccount = account as {
+      getAddress: () => Promise<string>
+      getTransactionReceipt?: (hash: string) => Promise<unknown>
+    }
+    const failingAccount = {
+      getAddress: () => baseAccount.getAddress(),
+      getTransactionReceipt: baseAccount.getTransactionReceipt?.bind(baseAccount),
+      async sendTransaction () {
+        sends++
+        if (sends === failAt) throw rejected
+        return dummyHash(sends + 13)
+      }
+    }
+    return new ButterSwidgeProtocol(failingAccount as never, {
       sourceChainId: 56,
       entrance: 'wdk',
       fetch: oversizedAllowanceFetch(),
@@ -380,12 +385,7 @@ export function protocolFailingOnSend (account: unknown, failAt: number, rejecte
           // Existing allowance (2e18) exceeds the input (1.5e18).
           async readContract () { return 2000000000000000000n },
           async waitForTransactionReceipt () { return { status: 'success' } }
-        },
-        walletClient: evmWallet(async () => {
-          sends++
-          if (sends === failAt) throw rejected
-          return dummyHash(sends + 13)
-        })
+        }
       }
     })
   }
@@ -428,13 +428,13 @@ export function sameChainErc20Fetch () {
 export function erc20FeeProtocol (send: (tx: unknown) => Promise<string | { hash?: string, fee?: bigint }>) {
     return new ButterSwidgeProtocol({
       async getAddress () { return VALID_SENDER },
-      async sendTransaction () { throw new Error('account.sendTransaction must not carry EVM calldata') },
+      async sendTransaction (tx) { return send(tx) },
       async getTransactionReceipt () { return { status: 'success' } }
     }, {
       sourceChainId: 56,
       entrance: 'wdk',
       fetch: sameChainErc20Fetch(),
       tokenDecimals: ERC20_TOKEN_DECIMALS,
-      evm: { walletClient: evmWallet(send) }
+      evm: {}
     })
   }

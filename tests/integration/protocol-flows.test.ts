@@ -26,7 +26,6 @@ import ButterSwidgeProtocol, {
   ButterUnsupportedError,
   parseTokenAmount,
   toButterSlippage,
-  toEvmWalletClient,
   toEvmPublicClient
 } from '../../src/index.ts'
 import {
@@ -45,7 +44,6 @@ import {
   FORMER_TON_CHAIN_ID,
   DEFAULT_TOKEN_DECIMALS,
   ERC20_TOKEN_DECIMALS,
-  evmWallet,
   routerV3Abi,
   swapParamAbi,
   bridgeParamAbi,
@@ -187,20 +185,21 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
         }
       })
       const sent: unknown[] = []
-      const protocol = new ButterSwidgeProtocol(account, {
+      const sendingAccount = {
+        ...account,
+        async sendTransaction (tx: unknown) {
+          sent.push(tx)
+          return '0x1111111111111111111111111111111111111111111111111111111111111111'
+        }
+      }
+      const protocol = new ButterSwidgeProtocol(sendingAccount, {
         sourceChainId: 56,
         entrance: 'wdk',
         apiKeyId: 'key',
         apiSecret: 'secret',
         fetch,
         now: () => 1000,
-        maxNativeFee: 100000000000000000n,
-        evm: {
-          walletClient: evmWallet(async (tx) => {
-            sent.push(tx)
-            return '0x1111111111111111111111111111111111111111111111111111111111111111'
-          })
-        }
+        maxNativeFee: 100000000000000000n
       })
   
       const options = {
@@ -234,7 +233,6 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
           entrance: 'wdk',
           fetch,
           maxNativeFee: configured,
-          evm: { walletClient: evmWallet(async () => '0x1111111111111111111111111111111111111111111111111111111111111111') }
         })
   
         if (expected === 'accepted') {
@@ -256,7 +254,6 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
         entrance: 'wdk',
         fetch,
         maxNativeFee: 0n,
-        evm: { walletClient: evmWallet(async () => '0x1111111111111111111111111111111111111111111111111111111111111111') }
       }
       const options = {
         fromToken: NATIVE_TOKEN,
@@ -292,7 +289,6 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
         entrance: 'wdk',
         fetch,
         tokenDecimals: DEFAULT_TOKEN_DECIMALS,
-        evm: { walletClient: evmWallet(async () => '0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd') }
       })
       const legacyExactOut = {
         tokenIn: '0x00000000000000000000000000000000000000ab',
@@ -435,7 +431,6 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
         fetch,
         now: () => now,
         maxNativeFee: 0n,
-        evm: { walletClient: evmWallet(async () => '0x1111111111111111111111111111111111111111111111111111111111111111') }
       })
       const options = {
         fromToken: NATIVE_TOKEN,
@@ -499,7 +494,6 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
         fetch,
         now: () => now,
         maxNativeFee: 0n,
-        evm: { walletClient: evmWallet(async () => '0x1111111111111111111111111111111111111111111111111111111111111111') }
       })
       const options = {
         fromToken: NATIVE_TOKEN,
@@ -549,7 +543,6 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
         entrance: 'wdk',
         fetch,
         now: () => now,
-        evm: { walletClient: evmWallet(async () => '0x1111111111111111111111111111111111111111111111111111111111111111') }
       })
       const options = {
         fromToken: NATIVE_TOKEN,
@@ -596,7 +589,6 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
         fetch,
         now: () => now,
         maxNativeFee: 0n,
-        evm: { walletClient: evmWallet(async () => '0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd') }
       })
       const options = {
         fromToken: NATIVE_TOKEN,
@@ -637,8 +629,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
         now: () => 1000,
         tokenDecimals: DEFAULT_TOKEN_DECIMALS,
         evm: {
-          publicClient: { async readContract () { return 0n } },
-          walletClient: evmWallet(async () => '0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd')
+          publicClient: { async readContract () { return 0n } }
         }
       })
   
@@ -676,7 +667,6 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
         apiSecret: 'secret',
         fetch,
         now: () => 1000,
-        evm: { walletClient: evmWallet(async () => '0x1111111111111111111111111111111111111111111111111111111111111111') }
       })
   
       const options = {
@@ -720,7 +710,16 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
         })
       })
       const sent: unknown[] = []
-      const protocol = new ButterSwidgeProtocol(account, {
+      const sendingAccount = {
+        ...account,
+        async sendTransaction (tx: unknown) {
+          sent.push(tx)
+          return sent.length === 1
+            ? '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+            : '0x1111111111111111111111111111111111111111111111111111111111111111'
+        }
+      }
+      const protocol = new ButterSwidgeProtocol(sendingAccount, {
         sourceChainId: 56,
         entrance: 'wdk',
         apiKeyId: 'key',
@@ -737,11 +736,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
               assert.equal(args.timeout, 10_000)
               return { status: 'success' }
             }
-          },
-          walletClient: evmWallet(async (tx) => {
-            sent.push(tx)
-            return sent.length === 1 ? '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' : '0x1111111111111111111111111111111111111111111111111111111111111111'
-          })
+          }
         }
       })
   
@@ -766,19 +761,16 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
       assert.equal(approval.args[1], 1500000000000000000n)
     })
 
-  it('rejects EVM execution without a full WDK account even when an EVM sender is present', async () => {
-      // WDK contract: swidge() must throw without a full (send-capable) account,
-      // regardless of a configured EVM sender.
-      const evm = { walletClient: evmWallet(async () => '0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc') }
+  it('rejects EVM execution without a full WDK account', async () => {
       const options = { fromToken: ERC20_TOKEN, toToken: DEST_TOKEN, toChain: 56, recipient: VALID_RECIPIENT, fromTokenAmount: 1500000000000000000n }
   
       const noAccount = new ButterSwidgeProtocol(undefined, {
-        sourceChainId: 56, entrance: 'wdk', fetch: makeFetch({}), tokenDecimals: ERC20_TOKEN_DECIMALS, evm
+        sourceChainId: 56, entrance: 'wdk', fetch: makeFetch({}), tokenDecimals: ERC20_TOKEN_DECIMALS
       })
       await assert.rejects(noAccount.swidge(options), { name: 'ButterReadOnlyAccountError', message: 'Swidge execution requires an account or signer that can send transactions' })
   
       const readOnlyAccount = new ButterSwidgeProtocol({ async getAddress () { return VALID_SENDER } }, {
-        sourceChainId: 56, entrance: 'wdk', fetch: makeFetch({}), tokenDecimals: ERC20_TOKEN_DECIMALS, evm
+        sourceChainId: 56, entrance: 'wdk', fetch: makeFetch({}), tokenDecimals: ERC20_TOKEN_DECIMALS
       })
       await assert.rejects(readOnlyAccount.swidge(options), { name: 'ButterReadOnlyAccountError', message: 'Swidge execution requires an account or signer that can send transactions' })
     })
@@ -981,7 +973,6 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
         fetch,
         now: () => 1000,
         maxNativeFee: 0n,
-        evm: { walletClient: evmWallet(async () => '0x1111111111111111111111111111111111111111111111111111111111111111') }
       })
       const options = {
         fromToken: NATIVE_TOKEN,
@@ -1004,17 +995,18 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
   it('rejects exact-out before requesting a route or sending a transaction', async () => {
       const fetch = makeFetch({})
       const sent: unknown[] = []
-      const protocol = new ButterSwidgeProtocol(account, {
+      const sendingAccount = {
+        ...account,
+        async sendTransaction (tx: unknown) {
+          sent.push(tx)
+          return '0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'
+        }
+      }
+      const protocol = new ButterSwidgeProtocol(sendingAccount, {
         sourceChainId: 56,
         entrance: 'wdk',
         fetch,
-        tokenDecimals: DEFAULT_TOKEN_DECIMALS,
-        evm: {
-          walletClient: evmWallet(async (tx) => {
-            sent.push(tx)
-            return '0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'
-          })
-        }
+        tokenDecimals: DEFAULT_TOKEN_DECIMALS
       })
       const exactOut = {
         fromToken: '0x00000000000000000000000000000000000000ab',
@@ -1113,7 +1105,6 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
         entrance: 'wdk',
         fetch: executionFetch,
         tokenDecimals: DEFAULT_TOKEN_DECIMALS,
-        evm: { walletClient: evmWallet(async () => '0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd') }
       })
       await assert.rejects(executionProtocol.swidge({
         fromToken: '0x00000000000000000000000000000000000000ab',
@@ -1322,8 +1313,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
           publicClient: {
             readContract: async () => 1500000000000000000n,
             getTransactionReceipt: async () => ({ status: 'success' })
-          },
-          walletClient: evmWallet(async () => '0x1111111111111111111111111111111111111111111111111111111111111111')
+          }
         }
       })
   
