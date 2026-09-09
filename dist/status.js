@@ -182,6 +182,6 @@ function chainIdOf(value) {
  * @returns {string | undefined} The scalar string value, or undefined for structured data.
  */
 function stringValue(value) {
-    return value == null ? undefined : String(value);
+    return typeof value === 'string' || typeof value === 'number' ? String(value) : undefined;
 }
 //# sourceMappingURL=status.js.map

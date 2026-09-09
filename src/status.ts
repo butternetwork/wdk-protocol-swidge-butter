@@ -184,5 +184,5 @@ function chainIdOf (value: unknown): string | undefined {
  * @returns {string | undefined} The scalar string value, or undefined for structured data.
  */
 function stringValue (value: unknown): string | undefined {
-  return value == null ? undefined : String(value)
+  return typeof value === 'string' || typeof value === 'number' ? String(value) : undefined
 }

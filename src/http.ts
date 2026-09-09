@@ -64,8 +64,9 @@ export class ButterHttpClient {
    */
   async router<T> (path: string, params: Record<string, unknown> = {}): Promise<T> {
     const body = await this.requestJson(this.options.routerBaseUrl, path, params)
+    if (!isRecord(body)) throw new ButterApiError('Butter router request failed', body)
     const envelope = body as { errno?: number, message?: string, data?: unknown }
-    if (!isRecord(body) || envelope.errno !== 0) {
+    if (envelope.errno !== 0) {
       // Butter signals "no route" in-band, with HTTP 200 and errno 2003. Typing it
       // separately lets a caller tell an unroutable pair (normal, retryable) from a
       // bad parameter or a rejected key.

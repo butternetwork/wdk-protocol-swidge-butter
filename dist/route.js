@@ -86,6 +86,9 @@ export class RouteManager {
             expiresAt: routeExpiresAt(route, this.context.now())
         };
         if (!forExecution) {
+            const previous = this.cache.get(key);
+            if (previous)
+                this.evict(key, previous);
             this.evictStaleRoutes();
             this.cache.set(key, cachedRoute);
             this.hashIndex.set(route.hash, key);
@@ -116,13 +119,15 @@ export class RouteManager {
         const entry = indexedKey ? this.cache.get(indexedKey) : undefined;
         const usableUntil = this.context.now() + this.executionMargin();
         if (!entry || entry.key !== key || entry.route.hash !== hash || entry.expiresAt <= usableUntil) {
-            if (indexedKey)
-                this.cache.delete(indexedKey);
-            this.hashIndex.delete(hash);
+            // A failed pin must not consume another quote or a still-live quote with
+            // different options. Only stale indexes and actually expired entries go.
+            if (!entry || entry.route.hash !== hash)
+                this.hashIndex.delete(hash);
+            else if (entry.expiresAt <= this.context.now())
+                this.evict(entry.key, entry);
             throw new ButterActionRequiredError('Pinned Butter quote expires too soon to execute or does not match the request; request a new quote', { hash });
         }
-        this.cache.delete(entry.key);
-        this.hashIndex.delete(hash);
+        this.evict(entry.key, entry);
         return entry;
     }
     /*

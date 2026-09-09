@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 import { decodeAbiParameters, decodeFunctionData, isAddress, parseAbi, parseAbiParameters, stringToHex } from 'viem';
-import { NATIVE_FEE_DRIFT_BPS, NATIVE_TOKEN_ADDRESSES } from './constants.js';
+import { NATIVE_FEE_DRIFT_BPS } from './constants.js';
+import { sameTokenIdentifier } from './identifiers.js';
 import { parseIntegerAmount } from './amounts.js';
 import { ButterApiError, ButterConfigurationError, ButterTransactionValidationError, ButterUnsupportedError } from './errors.js';
 import { routerDeploymentsForChain } from './router-registry.js';
@@ -176,7 +177,7 @@ function validateEvmRouterTransaction(tx, context) {
     const args = decoded.args;
     const [, initiator, srcToken, amount, encodedSwap, functionData, permitData, feeData] = args;
     assertAddressEqual(initiator, context.sender, 'Butter Router initiator does not match sender');
-    assertTokenEqual(srcToken, context.sourceToken, 'Butter Router source token does not match quote');
+    assertTokenEqual(context.sourceChainId, srcToken, context.sourceToken, 'Butter Router source token does not match quote');
     const effectiveAmountIn = assertSourceAmountIn(amount, context);
     if (permitData !== '0x') {
         throw new ButterTransactionValidationError('Butter Router permit data is not supported');
@@ -373,7 +374,7 @@ export function feeConfigChargesFee(config) {
  */
 function validateSameChainSwapParam(encoded, context) {
     const swap = decodeSwapParam(encoded);
-    assertTokenEqual(swap.dstToken, context.destinationToken, 'Butter Router destination token does not match quote');
+    assertTokenEqual(context.destinationChainId, swap.dstToken, context.destinationToken, 'Butter Router destination token does not match quote');
     assertAddressEqual(swap.receiver, context.receiver, 'Butter Router receiver does not match requested recipient');
     // A same-chain swap has no bridge payload; `leftReceiver` is where anything left
     // over (or refunded) lands, so it plays the refund-destination role here.
@@ -563,17 +564,15 @@ function assertAddressEqual(actual, expected, message) {
 /**
  * Requires two EVM token identifiers to match, including native aliases.
  *
+ * @param {string} chainId - The chain whose native aliases may match.
  * @param {string} actual - The value returned by Butter.
  * @param {string} expected - The value required by the caller's intent.
  * @param {string} message - The human-readable error or validation message.
  * @returns {void} Returns when both identifiers denote the same EVM token or native sentinel.
  * @throws {ButterTransactionValidationError} If Butter transaction data does not match the requested intent.
  */
-function assertTokenEqual(actual, expected, message) {
-    const actualNormalized = normalizeAddress(actual);
-    const expectedNormalized = normalizeAddress(expected);
-    const bothNative = NATIVE_TOKEN_ADDRESSES.has(actualNormalized) && NATIVE_TOKEN_ADDRESSES.has(expectedNormalized);
-    if (!bothNative && actualNormalized !== expectedNormalized) {
+function assertTokenEqual(chainId, actual, expected, message) {
+    if (!sameTokenIdentifier(chainId, actual, expected)) {
         throw new ButterTransactionValidationError(message, { expected, actual });
     }
 }
