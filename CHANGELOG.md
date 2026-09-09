@@ -6,6 +6,14 @@ and (once published) [Semantic Versioning](https://semver.org).
 
 ## [Unreleased]
 
+### Fixed
+- Scope Router source and same-chain destination token comparisons to their chain,
+  rejecting foreign native aliases before any approval or swap is sent.
+- Keep quote hash indexes synchronized on replacement and preserve valid quotes
+  after a failed pin with mismatching options or an obsolete hash.
+- Reject non-object Router envelopes with `ButterApiError` and omit structured
+  transaction hashes and chain identifiers from status results.
+
 ## [0.2.0] - 2026-09-06
 
 ### Breaking
