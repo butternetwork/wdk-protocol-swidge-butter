@@ -33,9 +33,7 @@
  * same-chain route has no bridge leg and so no bridge fee to inspect.
  */
 
-import { butterAuthFromEnv, envOrDefault, printJson, runExample } from './shared.js'
-
-const ROUTER_BASE_URL = 'https://bs-router-v3.chainservice.io/'
+import { envOrDefault, printJson, requestButterRoute, runExample } from './shared.js'
 
 interface FeePart { amount?: string, token?: { address?: string, symbol?: string, decimals?: number } }
 
@@ -43,42 +41,13 @@ interface RouteEnvelope {
   errno?: number
   message?: string
   data?: Array<{
-    bridgeFee?: FeePart & { symbol?: string, address?: string, in?: FeePart, out?: FeePart, affiliate?: FeePart }
+    bridgeFee?: FeePart & { chainId?: string | number, symbol?: string, address?: string, in?: FeePart, out?: FeePart, affiliate?: FeePart }
     swapFee?: { nativeFee?: string, tokenFee?: string }
     feeConfig?: { feeType?: number | string, referrer?: string, rateOrNativeFee?: string | number }
   }>
 }
 
-/**
- * Checks `amount === in + out + affiliate`, comparing as integers scaled to a common
- * power of ten so a float round-trip cannot decide the verdict.
- */
-function comparison (fee: { amount?: string, in?: FeePart, out?: FeePart, affiliate?: FeePart } | undefined): string {
-  if (fee?.amount == null) return 'no top-level amount reported'
-  const present = [fee.in, fee.out, fee.affiliate].filter((part) => part?.amount != null && Number(part.amount) !== 0)
-  if (present.length === 0) return 'summary only, no components — fees.ts omits this fee and refuses a configured cap'
-  // Amounts in different tokens are not addable. Summing them anyway is how an
-  // inconsistent response comes to look consistent, so refuse instead of guessing.
-  const tokens = new Set(present.map((part) => (part?.token?.address ?? part?.token?.symbol ?? '').toLowerCase()))
-  if (tokens.size > 1) {
-    return `components span ${tokens.size} tokens (${[...tokens].join(', ')}), so no sum against the single-token summary is meaningful — this is why fees.ts prices components individually and never the summary`
-  }
-  const scale = (value: string): bigint => {
-    const [whole = '0', fraction = ''] = value.trim().split('.')
-    return BigInt(whole + fraction.padEnd(30, '0').slice(0, 30))
-  }
-  try {
-    const total = scale(fee.amount)
-    const parts = scale(fee.in?.amount ?? '0') + scale(fee.out?.amount ?? '0') + scale(fee.affiliate?.amount ?? '0')
-    if (total === parts) return 'amount === in + out + affiliate (single token, so the sum is meaningful)'
-    return `amount (${fee.amount}) is not in + out + affiliate even though every component shares one token — worth reporting to Butter; fees.ts prices only the components, so this does not change what is charged`
-  } catch {
-    return 'amounts are not plain decimal strings — inspect manually'
-  }
-}
-
 runExample(async () => {
-  const auth = butterAuthFromEnv()
   const params: Record<string, string> = {
     // Default to a cross-chain pair: same-chain routes have no bridge fee at all.
     fromChainId: envOrDefault('PROBE_FROM_CHAIN', '56'),
@@ -90,20 +59,11 @@ runExample(async () => {
     slippage: envOrDefault('PROBE_SLIPPAGE', '300'),
     entrance: envOrDefault('BUTTER_ENTRANCE', 'wdk')
   }
-  // Optional: pass an affiliate to make Butter populate a non-zero feeConfig, which
-  // is what the fee-cap check now values.
+  // The actual affiliate charge is included in swapFee; feeConfig is calldata metadata.
   const affiliate = envOrDefault('PROBE_AFFILIATE', '')
   if (affiliate) params.affiliate = affiliate
 
-  const url = new URL('route', envOrDefault('BUTTER_ROUTER_BASE_URL', ROUTER_BASE_URL))
-  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value)
-  const headers: Record<string, string> = {}
-  if (auth.apiKeyId) headers['x-api-key-id'] = auth.apiKeyId
-  if (auth.apiSecret) headers.Authorization = `Bearer ${auth.apiSecret}`
-
-  const response = await fetch(url.toString(), { method: 'GET', headers })
-  if (!response.ok) throw new Error(`Butter /route failed with HTTP ${response.status}`)
-  const envelope = await response.json() as RouteEnvelope
+  const envelope = await requestButterRoute<RouteEnvelope>(params)
   if (envelope.errno !== 0) throw new Error(`Butter /route failed: errno ${String(envelope.errno)} ${envelope.message ?? ''}`)
 
   const route = envelope.data?.[0]
@@ -111,19 +71,7 @@ runExample(async () => {
 
   printJson({
     request: params,
-    bridgeFee: {
-      amount: bridgeFee?.amount,
-      symbol: bridgeFee?.symbol,
-      in: { amount: bridgeFee?.in?.amount, token: bridgeFee?.in?.token?.symbol },
-      out: { amount: bridgeFee?.out?.amount, token: bridgeFee?.out?.token?.symbol },
-      affiliate: { amount: bridgeFee?.affiliate?.amount, token: bridgeFee?.affiliate?.token?.symbol }
-    },
-    // Do in and out ever use different tokens? If so, no single entry could have
-    // reported this fee honestly, which is why they are now priced separately.
-    componentsShareOneToken: bridgeFee?.in?.token?.symbol == null || bridgeFee?.out?.token?.symbol == null
-      ? 'only one component present'
-      : String(bridgeFee.in.token.symbol === bridgeFee.out.token.symbol),
-    verdict: comparison(bridgeFee),
+    bridgeFee,
     // Compare the referrer configuration with Butter's authoritative actual fee.
     // Fee mapping and capping use swapFee only; feeConfig validates calldata.
     feeConfig: route?.feeConfig,

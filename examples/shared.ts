@@ -4,6 +4,54 @@ export type ExampleEnv = Readonly<Record<string, string | undefined>>
 
 export const EXECUTION_CONFIRMATION = 'I_UNDERSTAND_THIS_SENDS_A_REAL_TRANSACTION'
 
+interface ButterRouteRequestOptions {
+  env?: ExampleEnv
+  fetch?: ButterSwidgeProtocolConfig['fetch']
+  timeoutMs?: number
+}
+
+export async function requestButterRoute<T> (
+  params: Record<string, string>,
+  options: ButterRouteRequestOptions = {}
+): Promise<T> {
+  const env = options.env ?? process.env
+  const auth = butterAuthFromEnv(env)
+  const url = new URL('/route', envOrDefault('BUTTER_ROUTER_BASE_URL', 'https://bs-router-v3.chainservice.io/', env))
+  if (auth.apiSecret && url.protocol !== 'https:') {
+    throw new Error('Butter API credentials require HTTPS base URLs')
+  }
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value)
+  const headers: Record<string, string> = {}
+  if (auth.apiKeyId) headers['x-api-key-id'] = auth.apiKeyId
+  if (auth.apiSecret) headers.Authorization = `Bearer ${auth.apiSecret}`
+
+  const timeoutMs = options.timeoutMs ?? 10000
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error('Butter request timeout must be a positive safe integer')
+  const controller = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error('Butter /route request timed out'))
+      controller.abort()
+    }, timeoutMs)
+  })
+  const request = (async (): Promise<T> => {
+    const response = await (options.fetch ?? globalThis.fetch)(url.toString(), {
+      method: 'GET', headers, signal: controller.signal
+    })
+    if (!response.ok) {
+      controller.abort()
+      throw new Error(`Butter /route failed with HTTP ${response.status}`)
+    }
+    return await response.json() as T
+  })()
+  try {
+    return await Promise.race([request, timeout])
+  } finally {
+    if (timer != null) clearTimeout(timer)
+  }
+}
+
 export function butterAuthFromEnv (env: ExampleEnv = process.env): Pick<
 ButterSwidgeProtocolConfig,
 'apiKeyId' | 'apiSecret' | 'authMode'

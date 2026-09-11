@@ -44,11 +44,12 @@ export type {
 /**
  * How far `toTokenAmountMin` is actually guaranteed at execution time.
  *
- * `enforced` — same-chain. The minimum is checked against the Router calldata
- * (`swapAndCall`'s `minAmount`), so the transaction reverts below it.
+ * `enforced` — built-in EVM same-chain execution. The minimum is checked against
+ * the Router calldata (`swapAndCall`'s `minAmount`), so the transaction reverts below it.
  *
- * `quoted-only` — cross-chain. The destination leg's minimum lives in the nested
- * bridge payload, which this package intentionally trusts to Butter rather than
+ * `quoted-only` — adapter execution or cross-chain. Adapters own their deeper
+ * intent validation. For cross-chain, the destination leg's minimum lives in the
+ * nested bridge payload, which this package intentionally trusts to Butter rather than
  * re-verifying (see the trust boundary in `AGENTS.md`). The value is Butter's own
  * estimate, not a checked guarantee. WDK's field description calls it a "minimum
  * guaranteed amount", so this flag exists to make the difference visible in code
@@ -86,7 +87,7 @@ export type ButterSwidgeStatusOptions = SwidgeStatusOptions & {
 
 /** Butter-specific execution options layered on top of the WDK `SwidgeOptions`. */
 export interface ButterSwidgeExecutionOptions {
-  /** Route hash from a prior {@link ButterSwidgeQuote} to pin the approved quote. */
+  /** Opaque hash from a prior quote; empty, non-string, or whitespace-padded pins are rejected. */
   routeHash?: string
   /**
    * Overrides the configured `maxNativeFee` for this call only.
@@ -156,6 +157,14 @@ export type ButterFetch = (url: string, init?: { method?: string, headers?: Reco
 export interface EvmTransactionReceipt {
   /** The provider-specific receipt status used for fail-closed classification. */
   status?: string | number | boolean
+  /**
+   * The mined transaction hash reported by viem. Approval confirmation requires it
+   * to match the submitted hash; replacement transactions are not accepted.
+   * When omitted, the host receipt source must attribute the status to the queried hash.
+   */
+  transactionHash?: string
+  /** The equivalent ethers receipt hash, subject to the same approval identity check. */
+  hash?: string
 }
 
 export interface EvmTransactionData {
@@ -392,7 +401,11 @@ export interface ButterSwidgeProtocolConfig extends SwidgeProtocolConfig {
      * provider skips the allowance read and always submits an approval.
      */
     publicClient?: EvmPublicClient
-    /** Receipt confirmations required before an ERC-20 approval is accepted. */
+    /**
+     * Positive safe integer confirmations required before accepting an approval
+     * (default 1). Values above 1 require publicClient.waitForTransactionReceipt
+     * whenever an approval must be sent; account receipts support only 1.
+     */
     approvalConfirmations?: number
     /** Approval confirmation deadline in milliseconds (default 10,000). Zero means immediate timeout. */
     approvalTimeoutMs?: number
@@ -439,7 +452,7 @@ export interface ButterRouteChain {
 
 /** Normalized shape of a Butter `/route` result. */
 export interface ButterRoute {
-  /** The route hash required by the `/swap` request. */
+  /** Opaque, non-empty route hash without surrounding whitespace, required by `/swap`. */
   hash: string
   /** The route creation time as a Unix timestamp in seconds. */
   timestamp?: number
@@ -469,7 +482,7 @@ export interface ButterRoute {
   srcChain?: ButterRouteChain
   /** The bridge-chain route segment when supplied. */
   bridgeChain?: ButterRouteChain
-  /** The destination-chain route segment for cross-chain routes. */
+  /** The destination-chain route segment, required cross-chain and forbidden same-chain. */
   dstChain?: ButterRouteChain
   /** Top-level route input amount as a decimal string. */
   totalAmountIn?: string
@@ -513,7 +526,7 @@ export interface ButterFeePart {
   token?: ButterRouteToken
 }
 
-/** Detailed bridge and affiliate fee information. */
+/** Detailed bridge and affiliate fees; non-zero components require a valid payment chainId. */
 export interface ButterBridgeFee extends ButterFee {
   /** The source-side bridge fee component. */
   in?: ButterFeePart

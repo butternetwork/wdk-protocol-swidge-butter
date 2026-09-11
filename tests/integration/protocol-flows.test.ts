@@ -90,7 +90,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
                   tokenIn: { address: '0x00000000000000000000000000000000000000ab', decimals: 18, symbol: 'BNB' },
                   tokenOut: { address: '0x00000000000000000000000000000000000000cd', decimals: 6, symbol: 'USDT' },
                   totalAmountIn: '1.5',
-                  totalAmountOut: '10.25'
+                  totalAmountOut: '9.5'
                 },
                 dstChain: undefined
               })
@@ -316,7 +316,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
               tokenIn: { address: '0x00000000000000000000000000000000000000ab', decimals: 18, symbol: 'BNB' },
               tokenOut: { address: '0x00000000000000000000000000000000000000cd', decimals: 6, symbol: 'USDT' },
               totalAmountIn: '1.5',
-              totalAmountOut: '10.25'
+              totalAmountOut: '9.5'
             },
             dstChain: undefined
           })]
@@ -1287,7 +1287,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
               tokenIn: { address: ERC20_TOKEN, decimals: 18, symbol: 'FROM' },
               tokenOut: { address: DEST_TOKEN, decimals: 6, symbol: 'USDT' },
               totalAmountIn: '1.5',
-              totalAmountOut: '10.25'
+              totalAmountOut: '9.5'
             },
             dstChain: undefined
           })]

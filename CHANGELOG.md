@@ -7,6 +7,49 @@ and (once published) [Semantic Versioning](https://semver.org).
 ## [Unreleased]
 
 ### Fixed
+- Recognize chain-local native aliases in symbol-only bridge fee components,
+  applying trusted source precision and caller-input fee caps equally to
+  `native` and `btc`/`trx`/`sol`.
+- Validate recorded cross-chain status against the operation's source and
+  destination chains, rejecting conflicting caller hints before the API request.
+- Stop execution when an approval receipt identifies a different transaction,
+  including cancellation or repricing, preserving the original approval hash
+  and replacement diagnostics in the partial-execution error.
+- Require decimal integer strings in `formatTokenAmount`, rejecting empty,
+  signed, fractional, and non-decimal strings with `ButterApiError`.
+- Refuse authenticated diagnostic probe requests over HTTP and bound requests
+  and response parsing with a timeout. Report raw fee components without
+  asserting that summary amounts or similarly named tokens can be added.
+- Reject malformed destination and fee token precision without coercing null,
+  booleans, or empty strings into zero decimals.
+- Cache newly fetched routes only after complete quote mapping succeeds, allowing
+  failed quotes to retry without invalidating concurrent successful quotes.
+- Validate supported-chain scalar metadata before exposing catalog entries.
+- Reject contradictory chain hints for same-chain status and preserve the client
+  method context when looking up source transactions.
+- Attribute bridge fee components by payment chain and token together; reject
+  non-zero components without a valid payment chain during quoting and execution.
+- Reject extra destination/bridge segments on same-chain routes and use one
+  output interpretation for quote amounts, minimum checks, and calldata validation.
+- Enforce same-chain slippage against the quoted output using integer arithmetic
+  with upward rounding, including cached and pinned routes.
+- Reject malformed remote route hashes and explicit execution pins instead of
+  silently falling back to automatic re-quoting.
+- Filter malformed catalog identifiers, chain IDs, symbols, and names before
+  mapping or seeding decimals, retaining valid sibling entries.
+- Label execution gas as sender-reported, since WDK EVM can return an estimate
+  taken before broadcast rather than a final receipt-based cost.
+- Validate catalog token precision and aliases before caching them, matching the
+  strict `/findToken` precision rules.
+- Report destination minimums as enforced only for built-in EVM same-chain execution.
+- Reject invalid approval confirmation counts and refuse multi-confirmation
+  approvals before broadcasting when no public-client waiter is available.
+- Apply quote and execution freshness windows to newly fetched routes as well as
+  cached routes, rejecting stale responses before swap preparation.
+- Map malformed Butter states conservatively without reading object prototypes,
+  and recognize native Solana success and failure receipts for recorded operations.
+- Preserve sender-reported network fees when the quote omits gas metadata, using
+  the source chain and a native-token fallback.
 - Scope Router source and same-chain destination token comparisons to their chain,
   rejecting foreign native aliases before any approval or swap is sent.
 - Keep quote hash indexes synchronized on replacement and preserve valid quotes

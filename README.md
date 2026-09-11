@@ -100,9 +100,12 @@ The account resolves the sender address, submits swap and approval calldata via
 its EVM `sendTransaction` implementation, and may confirm approval receipts via
 `getTransactionReceipt`. An optional `evm.publicClient`
 enables ERC20 allowance checks (without one, an approval is always submitted and
-confirmed through a receipt lookup). When **every** send reports the gas fee it
-paid, the executed `SwidgeResult` reports that measured source gas; otherwise it
-keeps the route estimate.
+confirmed through a receipt lookup). When **every** send reports a gas fee,
+the executed `SwidgeResult` reports the sender-reported total; otherwise it
+keeps the route estimate. A sender may return an estimate: WDK EVM currently
+quotes gas before broadcasting, so this value is not a receipt-based actual cost.
+When a quote omits gas metadata, the reported fee is
+still included using the source chain and the generic `native` token identifier.
 
 Version 0.2 removes the former `evm.walletClient` and `toEvmWalletClient` APIs.
 Pass a full WDK EVM account as the protocol's first constructor argument; there
@@ -177,13 +180,15 @@ the exact-in validator intentionally contains no dormant exact-out branch.
   matching fresh cached route or obtains a new one, enforces fee limits, calls
   `/swap`, validates the returned transaction intent, performs EVM approval when
   required, then sends the source transaction.
-- Route freshness is stricter on execution than on quoting. A cached route is
-  reused for a **quote** while ≥15s of its 5-minute lifetime remain, but
-  **execution** requires ≥`routeExecutionMarginSeconds` (default **45s**): it
+- Route freshness is stricter on execution than on quoting. Both new and cached
+  routes need more than **15s** of their 5-minute lifetime for a **quote**, while
+  **execution** requires more than `routeExecutionMarginSeconds` (default **45s**): it
   still has to complete the `/swap` round-trip, an optional ERC20 approval, and
   the swap send before the quoted price has to hold on-chain. Inside the margin,
-  unpinned execution transparently re-quotes. The default deliberately does not
-  assume an approval — when approvals are expected, raise
+  unpinned execution transparently re-quotes a cached route. A newly fetched route
+  inside its required window throws `ButterActionRequiredError` before `/swap`
+  or broadcasting; it is not cached or automatically retried. The default
+  deliberately does not assume an approval — when approvals are expected, raise
   `routeExecutionMarginSeconds` above `evm.approvalTimeoutMs / 1000` (which
   defaults to 10s). These two values are coupled; the
   margin is configurable rather than hardcoded so the coupling stays explicit.
@@ -202,6 +207,9 @@ the exact-in validator intentionally contains no dormant exact-out branch.
   unpinned execution is. Pins are held in the instance's in-memory
   route cache, so quote and execution must use the same protocol instance.
   Without `routeHash`, execution auto-re-quotes as before.
+  Hashes are opaque, non-empty strings without surrounding whitespace. Invalid
+  remote hashes throw `ButterApiError` before caching; invalid explicit pins
+  throw `ButterUnsupportedError` instead of enabling automatic re-quoting.
 - Exact-in only; see [Exact-in only](#exact-in-only) for why exact-out is rejected.
 - `getSwidgeStatus(id)` calls
   `/api/queryBridgeInfoBySourceHash`; `{ byOrderId: true }` calls
@@ -218,7 +226,12 @@ the exact-in validator intentionally contains no dormant exact-out branch.
   never bypass it — so an unrelated transaction is never reported as a completed
   swidge (an unverifiable same-chain id throws). It also works across process
   restarts / new instances. Without a resolvable attribution it defaults to the
-  cross-chain API (which never falsely reports completion). Transaction and
+  cross-chain API. For source hashes still recorded by this instance, cross-chain
+  status queries reject hints or reported chain IDs that conflict with the recorded
+  source and destination chains, including when no hints are supplied. Order-ID
+  queries and instances without that record retain their existing lookup behavior.
+  Omitted response chain fields remain optional; this consistency check does not
+  independently prove the API-reported settlement status. Transaction and
   receipt lookups treat only viem's `TransactionNotFoundError` /
   `TransactionReceiptNotFoundError` as absence; infrastructure faults (RPC
   timeout, auth, rate-limit) propagate to the caller rather than being masked as
@@ -227,12 +240,18 @@ the exact-in validator intentionally contains no dormant exact-out branch.
   requires an `evm.publicClient` with `getTransactionReceipt` or an account that
   exposes `getTransactionReceipt`, and is fail-closed (only an explicit success is
   `completed`; an unknown receipt status stays `pending`).
+- Solana same-chain operations recorded by this instance use the account's
+  `getTransactionReceipt`: native `meta.err: null` means `completed`, a reported
+  error means `failed`, and missing or malformed metadata stays `pending`.
+  Normalized `status` receipts remain supported when `meta` is absent. Solana
+  same-chain attribution across new instances is not supported.
 - `getSwidgeStatus` maps Butter cross states `0 → pending` (crossing),
   `1 → completed`, and `6 → refunded`. There is no numeric `failed` state.
   Any undocumented or intermediate code (e.g. a relaying state) maps
   conservatively to `pending` rather than a terminal status, so an in-flight
-  transfer is never misreported as failed. A response with no swidge info or
-  no state still throws (the id is invalid/unknown).
+  transfer is never misreported as failed. Structured and boolean state values
+  also map to `pending`; only strings and finite numbers are mapped. A response
+  with no swidge info or no state still throws (the id is invalid/unknown).
 - `getSupportedChains()` merges Router-supported chains with token API
   metadata. Each entry carries an extra `execution` field describing how this
   instance would execute on that chain: `native` (built-in EVM), `adapter`
@@ -263,6 +282,11 @@ the exact-in validator intentionally contains no dormant exact-out branch.
   `T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb`, and `btc` maps to the zero-address token
   identifier. The canonical addresses and the generic `native` sentinel are also
   accepted.
+  For symbol-only bridge fee components paid on the source chain, `native` and
+  that chain's `btc`/`trx`/`sol` alias share trusted source precision and use the
+  caller's input amount for fee caps. This symbol fallback applies only when the
+  caller supplied a symbolic native alias; address-form inputs still require a
+  component address, and a declared address always takes precedence over a symbol.
 
 ## Status & fee mapping
 
@@ -283,6 +307,9 @@ the exact-in validator intentionally contains no dormant exact-out branch.
 | Same-chain receipt | explicit success | `completed` |
 | Same-chain receipt | explicit revert | `failed` |
 | Same-chain receipt | missing / unknown | `pending` |
+| Recorded Solana same-chain receipt | `meta.err: null` | `completed` |
+| Recorded Solana same-chain receipt | non-empty error string / object | `failed` |
+| Recorded Solana same-chain receipt | missing / malformed metadata | `pending` |
 
 `quoteSwidge`/`swidge` map Butter route fees into WDK `SwidgeFee[]`. The last column
 is where each entry lands in the legacy `swap()`/`bridge()` scalars:
@@ -293,7 +320,7 @@ is where each entry lands in the legacy `swap()`/`bridge()` scalars:
 | `bridgeFee.out` | `protocol` | `bridgeFee` | outbound leg of the bridge fee, in **its own** token |
 | `bridgeFee.affiliate` | `affiliate` | *(not visible)* | integrator/affiliate share — **counted against `maxProtocolFeeBps`** |
 | `bridgeFee.amount` | — | — | never priced; used only to detect that a fee exists which no component describes |
-| `gasFee` | `network` | `fee` | source-chain gas; estimate, replaced by measured gas when the sender reports every send's fee |
+| `gasFee` | `network` | `fee` | source-chain gas; route estimate, replaced by sender-reported gas when every send reports a fee (which may itself be estimated) |
 | `swapFee.nativeFee` | `protocol` | `bridgeFee` | native-denominated actual swap fee, including any charge configured by `feeConfig` |
 | `swapFee.tokenFee` | `protocol` | `bridgeFee` | input-token-denominated actual swap fee, including any charge configured by `feeConfig` |
 | `feeConfig` | — | — | referrer fee configuration used to validate `/swap` calldata; never added as a separate fee |
@@ -325,9 +352,9 @@ that exact sum with `maxProtocolFeeBps / 10_000`:
 - for a non-native source,
   `(swapFee.nativeFee / gasFee.amount) × (gasFee.inUSD / totalAmountInUSD)`;
 - each `bridgeFee.in`, `bridgeFee.out`, and `bridgeFee.affiliate` component
-  divided by `requestedAmountIn` when it is charged in the source token;
+  divided by `requestedAmountIn` when its payment chain and token both match the source;
 - otherwise, each bridge component divided by a route-leg amount carrying the
-  same token address, with inbound components matched inbound-first and outbound
+  same payment chain and token address, with inbound components matched inbound-first and outbound
   and affiliate components matched outbound-first.
 
 Different token amounts are never added directly. Missing source decimals,
@@ -335,6 +362,13 @@ same-token route amounts, required USD metadata, or bridge-component metadata
 needed for valuation makes a configured cap fail closed with
 `ButterFeeValuationError`; the package does not silently treat an unvalued fee as
 zero.
+
+Every non-zero bridge component requires a valid `bridgeFee.chainId`, the payment
+chain documented by Butter. A missing or invalid chain rejects both quoting and
+execution with `ButterFeeValuationError`, even without a fee cap. Identical addresses
+on different chains are different currencies. Explicit zero components do not
+require unused chain metadata. The component token supplies its denomination;
+the top-level bridge fee amount and token summary are not used for valuation.
 
 `swapFee` is Butter's authoritative actual fee result and already includes the fee
 configured by `feeConfig`. Fee mapping and `maxProtocolFeeBps` therefore read only
@@ -398,6 +432,9 @@ structured context where the error class provides it.
 ## Safety Defaults
 
 - `sourceChainId` and `entrance` are required.
+- Same-chain `/route` responses must omit `dstChain` and `bridgeChain`;
+  cross-chain responses must include a matching destination segment. Output token,
+  decimals, estimated amount, and minimum all use the validated output segment.
 - Exact-out, zero inputs, unsafe JavaScript numbers, and amount conversions that
   would discard decimal precision are rejected.
 - Explicit cross-chain slippage below Butter's documented floor is rejected.
@@ -405,6 +442,11 @@ structured context where the error class provides it.
   bps floor; additional IDs can be configured with `strictSlippageChainIds`.
 - `minAmountOut` is compared locally with the minimum returned by `/route`
   because Butter's documented API does not expose a separate request parameter.
+  Same-chain quotes also require at least
+  `ceil(toTokenAmount * (10000 - slippageBps) / 10000)` in output base units,
+  calculated with integer arithmetic. Input-token fees are already reflected in
+  the quoted output and are not deducted again. Both constraints apply to fresh,
+  cached, and pinned routes; `minAmountOut: 0` does not disable slippage protection.
   For cross-chain execution this remains a quote check, not calldata enforcement:
   the destination minimum is inside the nested bridge payload trusted to Butter.
 - `refundAddress` is optional, and when you name one it is **verified rather
@@ -512,10 +554,20 @@ structured context where the error class provides it.
   transaction, preventing signer/initiator divergence. ERC20 approval is always the exact input amount — an oversized existing
   allowance is reduced (`approve(0)` then `approve(amount)`), and an approval that
   cannot be confirmed (no receipt source) is refused rather than sent
-  fire-and-forget. `SwidgeResult.fees` reports the measured source gas only when
+  fire-and-forget. `evm.approvalConfirmations` must be a positive safe integer
+  (default **1**). Account receipt confirmation supports one confirmation only;
+  a higher count requires `evm.publicClient.waitForTransactionReceipt` whenever
+  an approval is needed, otherwise execution fails before the first approval.
+  An already exact allowance needs no approval and is unaffected by that requirement.
+  Approval receipt hashes, when supplied, must match the submitted approval.
+  Cancellation, replacement, and repricing receipts with a different hash stop
+  execution with `ButterPartialExecutionError`; inspect the replacement before
+  retrying. Hash-less custom receipts remain supported, but their provider must
+  guarantee that the receipt belongs to the requested transaction.
+  `SwidgeResult.fees` reports sender-reported source gas only when
   **every** send returns a fee, otherwise the route estimate; bridge/protocol fees
-  remain route-derived
-  estimates.
+  remain route-derived estimates. A reported gas fee may be a broadcast-time
+  estimate, not the final cost of a mined transaction.
 - **Partial execution is reported, never silently discarded.** Execution can
   broadcast more than one transaction (`approve(0)`, `approve(amount)`, the swap;
   or several adapter legs). If execution fails *after* at least one transaction has
@@ -597,6 +649,16 @@ to reject a quote. Both discovery listings are fail-closed on missing required
 metadata: a catalog token without usable decimals, and a chain without an `id`,
 `type`, or `nativeToken` symbol, are **dropped** rather than returned with a
 placeholder. A chain you expect to see but don't is usually this, not an outage.
+Token precision accepts only integers from 0 through 255 or digit strings
+(surrounding whitespace is ignored). Empty strings and booleans are invalid.
+Valid but conflicting `decimals` / `decimal` aliases reject the entire catalog
+response without seeding its entries into the precision cache.
+
+Catalog token identifiers must be non-blank strings; surrounding whitespace is
+trimmed while identifier case is preserved. Malformed identifiers, chain IDs,
+or supplied non-string symbols/names cause that entry to be dropped. Missing
+symbols retain the empty-string default, and missing names are omitted. Valid
+siblings remain available, and only validated entries seed the decimals cache.
 
 ## Known limitations
 
@@ -605,9 +667,10 @@ placeholder. A chain you expect to see but don't is usually this, not an outage.
   [`examples/`](./examples/README.md) are the live-check mechanism in the meantime,
   including a read-only `example:decode-swap-data` for inspecting real Router
   calldata.
-- **Cross-chain `toTokenAmountMin` is quoted, not enforced.** Check
-  `quote.destinationGuarantees`: `'enforced'` (same-chain, the minimum is verified
-  against the Router calldata) or `'quoted-only'` (cross-chain, the destination
+- **Adapter and cross-chain minimum outputs are quote-only.** Check
+  `quote.destinationGuarantees`: `'enforced'` (built-in EVM same-chain execution,
+  the minimum is verified against the Router calldata) or `'quoted-only'`
+  (adapter execution delegates deeper validation to the host; cross-chain destination
   minimum sits in the nested bridge payload that this package trusts to Butter by
   design). WDK's field description calls it a guaranteed minimum, so the difference
   is worth knowing.

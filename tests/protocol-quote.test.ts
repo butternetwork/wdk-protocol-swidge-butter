@@ -569,7 +569,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
               tokenIn: { address: checksummed.toLowerCase(), decimals: 18, symbol: 'TKN' },
               tokenOut: { address: '0x00000000000000000000000000000000000000cd', decimals: 6, symbol: 'USDT' },
               totalAmountIn: '1.5',
-              totalAmountOut: '10.25'
+              totalAmountOut: '9.5'
             },
             dstChain: undefined
           })] }
@@ -589,7 +589,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
         fromTokenAmount: 1500000000000000000n
       })
   
-      assert.equal(quote.toTokenAmount, 10250000n)
+      assert.equal(quote.toTokenAmount, 9500000n)
     })
 
   it('resolves a native token from nativeTokenDecimals, not tokenDecimals', async () => {
@@ -606,7 +606,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
               tokenIn: { address: 'native', decimals: 9, symbol: 'NATIVE' },
               tokenOut: { address: '0x00000000000000000000000000000000000000cd', decimals: 6, symbol: 'USDT' },
               totalAmountIn: '1.5',
-              totalAmountOut: '10.25'
+              totalAmountOut: '9.5'
             },
             dstChain: undefined
           })] }
@@ -627,7 +627,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
         fromTokenAmount: 1500000000n
       })
   
-      assert.equal(quote.toTokenAmount, 10250000n)
+      assert.equal(quote.toTokenAmount, 9500000n)
     })
 
   it('rejects conflicting tokenDecimals entries for one token', () => {
@@ -675,7 +675,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
           minAmountOut: 9600000n,
           slippage: 0.02
         }),
-        { name: 'ButterActionRequiredError', message: 'Butter route minimum output is below requested minAmountOut' }
+        { name: 'ButterActionRequiredError', message: 'Butter route minimum output is below the requested minimum or slippage floor' }
       )
     })
 

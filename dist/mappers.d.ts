@@ -29,9 +29,10 @@ export declare function chainToSupportedChain(chain: ButterChainInfo, execution:
  *
  * @param {ButterTokenInfo} token - The Butter token metadata to map.
  * @param {string} chainId - The chain identifier used for normalization or lookup.
+ * @param {number} decimals - The validated discovery precision.
  * @returns {SwidgeSupportedToken} The normalized WDK supported-token descriptor.
  */
-export declare function tokenToSupportedToken(token: ButterTokenInfo, chainId: string): SwidgeSupportedToken;
+export declare function tokenToSupportedToken(token: ButterTokenInfo, chainId: string, decimals: number): SwidgeSupportedToken;
 /**
  * Parses a possibly JSON-encoded Butter metadata field.
  *

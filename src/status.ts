@@ -44,6 +44,32 @@ export function mapReceiptStatus (id: string, receipt: EvmTransactionReceipt | n
 }
 
 /**
+ * Maps the raw WDK Solana receipt, retaining normalized account receipt support.
+ *
+ * @param {string} id - The recorded source transaction signature.
+ * @param {unknown} receipt - The account's raw or normalized transaction receipt.
+ * @param {string | number} chain - The source chain identifier.
+ * @returns {SwidgeStatusResult} The receipt's terminal state, or pending for unknown metadata.
+ */
+export function mapSolanaReceiptStatus (id: string, receipt: unknown, chain: string | number): SwidgeStatusResult {
+  if (receipt == null) return mapReceiptStatus(id, null, chain)
+  let status = 'unknown'
+  if (typeof receipt === 'object' && !Array.isArray(receipt)) {
+    if (!('meta' in receipt)) return mapReceiptStatus(id, receipt as EvmTransactionReceipt, chain)
+    const meta = receipt.meta
+    if (meta != null && typeof meta === 'object' && !Array.isArray(meta) && 'err' in meta) {
+      const error = meta.err
+      if (error === null) status = 'success'
+      else if ((typeof error === 'string' && error.trim() !== '') ||
+        (typeof error === 'object' && !Array.isArray(error) && Object.keys(error).length > 0)) {
+        status = 'reverted'
+      }
+    }
+  }
+  return mapReceiptStatus(id, { status }, chain)
+}
+
+/**
  * Classifies an EVM receipt's status as an explicit `success`, an explicit
  * `reverted`, or `unknown` (missing/unrecognized). Shared by same-chain status
  * mapping and approval-receipt confirmation so both fail closed on `unknown`
@@ -128,23 +154,23 @@ export function mapStatusResponse (id: string, data: unknown, hints: ButterSwidg
  * `failed` code. Canonical WDK status strings are also honored in case Butter
  * ever emits them directly.
  */
-const BUTTER_STATE_MAP: Record<string, SwidgeStatusResult['status']> = {
-  0: 'pending',
-  crossing: 'pending',
-  pending: 'pending',
-  1: 'completed',
-  completed: 'completed',
-  success: 'completed',
-  6: 'refunded',
-  refund: 'refunded',
-  refunded: 'refunded',
-  'action-required': 'action-required',
-  'refund-pending': 'refund-pending',
-  failed: 'failed',
-  cancelled: 'cancelled',
-  expired: 'expired',
-  partial: 'partial'
-}
+const BUTTER_STATE_MAP = new Map<string, SwidgeStatusResult['status']>([
+  ['0', 'pending'],
+  ['crossing', 'pending'],
+  ['pending', 'pending'],
+  ['1', 'completed'],
+  ['completed', 'completed'],
+  ['success', 'completed'],
+  ['6', 'refunded'],
+  ['refund', 'refunded'],
+  ['refunded', 'refunded'],
+  ['action-required', 'action-required'],
+  ['refund-pending', 'refund-pending'],
+  ['failed', 'failed'],
+  ['cancelled', 'cancelled'],
+  ['expired', 'expired'],
+  ['partial', 'partial']
+])
 
 /**
  * Maps a Butter state to a WDK SwidgeStatus.
@@ -159,8 +185,8 @@ const BUTTER_STATE_MAP: Record<string, SwidgeStatusResult['status']> = {
  * @returns {SwidgeStatusResult['status']} The mapped provider result.
  */
 function mapButterStatus (state: unknown): SwidgeStatusResult['status'] {
-  if (state == null) return 'pending'
-  return BUTTER_STATE_MAP[String(state).toLowerCase()] ?? 'pending'
+  if (typeof state !== 'string' && !(typeof state === 'number' && Number.isFinite(state))) return 'pending'
+  return BUTTER_STATE_MAP.get(String(state).toLowerCase()) ?? 'pending'
 }
 
 /**

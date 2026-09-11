@@ -13,6 +13,15 @@ import type { ButterSwidgeStatusOptions, EvmTransactionReceipt, SwidgeStatusResu
  */
 export declare function mapReceiptStatus(id: string, receipt: EvmTransactionReceipt | null | undefined, chain?: string | number): SwidgeStatusResult;
 /**
+ * Maps the raw WDK Solana receipt, retaining normalized account receipt support.
+ *
+ * @param {string} id - The recorded source transaction signature.
+ * @param {unknown} receipt - The account's raw or normalized transaction receipt.
+ * @param {string | number} chain - The source chain identifier.
+ * @returns {SwidgeStatusResult} The receipt's terminal state, or pending for unknown metadata.
+ */
+export declare function mapSolanaReceiptStatus(id: string, receipt: unknown, chain: string | number): SwidgeStatusResult;
+/**
  * Classifies an EVM receipt's status as an explicit `success`, an explicit
  * `reverted`, or `unknown` (missing/unrecognized). Shared by same-chain status
  * mapping and approval-receipt confirmation so both fail closed on `unknown`

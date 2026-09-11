@@ -19,10 +19,11 @@ import {
   TRON_CHAIN_ID
 } from './constants.js'
 import { ButterApiError } from './errors.js'
+import { parseTokenDecimals } from './amounts.js'
 import { normalizeTokenKey, sameTokenIdentifier } from './identifiers.js'
-import { chainToSupportedChain, normalizeId, tokenToSupportedToken } from './mappers.js'
+import { chainToSupportedChain, normalizeId, parseJsonMaybe, tokenToSupportedToken } from './mappers.js'
 import { routerDeploymentsForChain, type ButterRouterRegistry } from './router-registry.js'
-import type { ButterChainExecution, ButterChainInfo, ButterTokenInfo, ButterSupportedChain, ButterSwidgeProtocolConfig, SwidgeSupportedToken } from './types.js'
+import type { ButterChainExecution, ButterSupportedChain, ButterSwidgeProtocolConfig, SwidgeSupportedToken } from './types.js'
 
 type TokenDecimalsCacheEntry =
   | { kind: 'resolved', decimals: number }
@@ -63,27 +64,37 @@ export class DiscoveryService {
       this.requestRouter<unknown>('/supportedChainInfo'),
       this.requestToken<unknown>('/api/queryChainList')
     ])
-    const routerChains = recordArray(routerPayload, 'Butter supported-chain list') as ButterChainInfo[]
+    const routerChains = recordArray(routerPayload, 'Butter supported-chain list')
     const tokenEnvelope = requiredRecord(tokenPayload, 'Butter token-chain envelope')
-    const tokenChains = optionalRecordArray(tokenEnvelope.chains, 'Butter token-chain list') as ButterChainInfo[]
-    const chainDetails = new Map<string, ButterChainInfo>()
+    const tokenChains = optionalRecordArray(tokenEnvelope.chains, 'Butter token-chain list')
+    const chainDetails = new Map<string, Record<string, unknown>>()
     for (const chain of tokenChains) {
-      chainDetails.set(normalizeId(chain.chainId ?? chain.id), chain)
+      const id = scalarChainId(chain.chainId ?? chain.id)
+      if (id != null) chainDetails.set(String(id).trim(), chain)
     }
     return routerChains
-      .map((chain) => {
-        const id = normalizeId(chain.chainId ?? chain.id)
+      .flatMap((chain) => {
+        const chainId = scalarChainId(chain.chainId ?? chain.id)
+        if (chainId == null) return []
+        const id = String(chainId).trim()
         const detail = chainDetails.get(id) ?? chain
+        const merged = { ...chain, ...detail }
         // Detect strict-slippage chains *before* the filter below: dropping a
         // chain from the listing must never relax its slippage floor, which is
         // consulted by chain id whether or not the chain was listed.
-        if (isStrictSlippageChain({ ...chain, ...detail })) this.strictSlippageChainIds.add(id)
-        return chainToSupportedChain({ ...chain, ...detail }, executionFor(id, this.config, this.routerRegistry))
+        if (isStrictSlippageChain(merged)) this.strictSlippageChainIds.add(id)
+        const type = merged.chainType ?? merged.type
+        const nativeToken = parseJsonMaybe<unknown>(merged.nativeToken)
+        if (typeof type !== 'string' || !type.trim()) return []
+        if (!isRecord(nativeToken) || typeof nativeToken.symbol !== 'string' || !nativeToken.symbol.trim()) return []
+        if (merged.name != null && typeof merged.name !== 'string') return []
+        return [chainToSupportedChain({
+          chainId: id,
+          name: typeof merged.name === 'string' && merged.name.trim() ? merged.name.trim() : id,
+          chainType: type.trim(),
+          nativeToken: { symbol: nativeToken.symbol.trim() }
+        }, executionFor(id, this.config, this.routerRegistry))]
       })
-      // Fail closed per chain, as getSupportedTokens does per token: `type` and
-      // `nativeToken` are required by WDK, so a chain missing either is dropped
-      // rather than surfaced with an empty value as if it were authoritative.
-      .filter((chain) => chain.id !== '' && chain.type !== '' && chain.nativeToken !== '')
   }
 
   /**
@@ -151,19 +162,9 @@ export class DiscoveryService {
       // Chain AND token identity. Solana Base58 remains exact; Tron is compared only
       // after checksum/length-validated conversion to its 20-byte account id.
       if (normalizeId(candidateChain) !== normalizeId(chainId) || !sameTokenIdentifier(chainId, candidateAddress, address)) continue
-      const decimals = parseDiscoveryDecimals(entry.decimals ?? entry.decimal)
-      const aliasDecimals = entry.decimals != null && entry.decimal != null
-        ? parseDiscoveryDecimals(entry.decimal)
-        : decimals
-      if (decimals == null || aliasDecimals == null) {
+      const decimals = discoveryDecimals(entry, 'Butter /findToken returned conflicting decimals for the requested token')
+      if (decimals == null) {
         throw new ButterApiError('Butter /findToken returned invalid decimals for the requested token', {
-          chainId,
-          address,
-          entry
-        })
-      }
-      if (aliasDecimals !== decimals) {
-        throw new ButterApiError('Butter /findToken returned conflicting decimals for the requested token', {
           chainId,
           address,
           entry
@@ -238,9 +239,19 @@ export class DiscoveryService {
     const results = recordArray(group.tokens, 'Butter Router supported-token entries')
     const tokens = new Map<string, SwidgeSupportedToken>()
     for (const item of results) {
-      const token = tokenToSupportedToken(item as ButterTokenInfo, chainId)
-      if (!token.token || !Number.isInteger(token.decimals) || token.decimals < 0 || token.decimals > 255) continue
-      if (token.chain !== chainId) continue
+      const identifier = tokenIdentifier(item)?.trim()
+      const itemChain = item.chainId == null ? chainId : scalarChainId(item.chainId)
+      if (!identifier || itemChain == null || normalizeId(itemChain) !== chainId) continue
+      if (item.symbol != null && typeof item.symbol !== 'string') continue
+      if (item.name != null && typeof item.name !== 'string') continue
+      const decimals = discoveryDecimals(item, 'Butter supported-token list returned conflicting decimals for the same token')
+      if (decimals == null) continue
+      const token = tokenToSupportedToken({
+        address: identifier,
+        chainId,
+        symbol: item.symbol ?? '',
+        ...(item.name != null ? { name: item.name } : {})
+      }, chainId, decimals)
       const key = `${token.chain}:${normalizeTokenKey(token.chain, token.token)}`
       const existing = tokens.get(key)
       if (existing != null) {
@@ -354,20 +365,21 @@ function tokenIdentifier (entry: Record<string, unknown>): string | undefined {
 }
 
 /**
- * Parses a discovery decimal field while enforcing the 0 through 255 range.
+ * Resolves the two discovery precision aliases without coercing malformed values.
  *
- * @param {unknown} value - The number or decimal string returned by Butter.
- * @returns {number | undefined} The validated decimal count, or undefined for malformed metadata.
+ * @param {Record<string, unknown>} entry - The remote token metadata.
+ * @param {string} conflictMessage - The endpoint-specific conflict description.
+ * @returns {number | undefined} The agreed precision, or undefined for invalid metadata.
+ * @throws {ButterApiError} If both valid aliases declare different precisions.
  */
-function parseDiscoveryDecimals (value: unknown): number | undefined {
-  if (typeof value === 'number') {
-    return Number.isInteger(value) && value >= 0 && value <= 255 ? value : undefined
-  }
-  if (typeof value !== 'string') return undefined
-  const normalized = value.trim()
-  if (!/^\d+$/.test(normalized)) return undefined
-  const decimals = Number(normalized)
-  return Number.isInteger(decimals) && decimals >= 0 && decimals <= 255 ? decimals : undefined
+function discoveryDecimals (entry: Record<string, unknown>, conflictMessage: string): number | undefined {
+  const decimals = parseTokenDecimals(entry.decimals ?? entry.decimal)
+  const alias = entry.decimals != null && entry.decimal != null
+    ? parseTokenDecimals(entry.decimal)
+    : decimals
+  if (decimals == null || alias == null) return undefined
+  if (decimals !== alias) throw new ButterApiError(conflictMessage, { entry })
+  return decimals
 }
 
 /**
@@ -385,13 +397,14 @@ function isTokenNotFound (error: unknown): boolean {
 /**
  * Returns whether Butter metadata identifies a chain with the strict slippage floor.
  *
- * @param {ButterChainInfo} chain - The chain metadata to inspect.
+ * @param {Record<string, unknown>} chain - The partially trusted chain metadata to inspect.
  * @returns {boolean} Whether the chain metadata names Bitcoin and requires the strict floor.
  */
-function isStrictSlippageChain (chain: ButterChainInfo): boolean {
+function isStrictSlippageChain (chain: Record<string, unknown>): boolean {
   const values = [chain.chainType, chain.type, chain.name, chain.key]
   return values.some((value) => {
-    const normalized = String(value ?? '').toLowerCase()
+    if (typeof value !== 'string') return false
+    const normalized = value.toLowerCase()
     return normalized === 'btc' || normalized.includes('bitcoin')
   })
 }

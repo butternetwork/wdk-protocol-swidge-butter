@@ -69,6 +69,12 @@ Everything else is a focused collaborator it composes:
   re-invert these. Inside the margin `getRoute` re-quotes, but `consumeRouteByHash` **throws**
   (`ButterActionRequiredError`) — a pin is a price the caller approved, so it is never silently
   re-fetched at a different price.
+  Same-chain responses must omit both `dstChain` and `bridgeChain`; `routeOutput`
+  supplies one interpretation of destination amounts for mapping and validation.
+  Same-chain minimums must satisfy the explicit floor and the quoted output after
+  integer-bps slippage, rounded upward in base units. This applies to fresh,
+  cached, and pinned routes. Remote hashes and explicit pins must be non-empty
+  strings without surrounding whitespace; an invalid pin never enables re-quoting.
 - **`fees.ts`** — maps Butter's `bridgeFee`/`gasFee`/`swapFee` into WDK's `SwidgeFee[]`, and
   enforces `maxNetworkFeeBps`/`maxProtocolFeeBps` using exact rational (numerator/denominator
   bigint) comparisons — never floating point. **Source-denominated** fee ratios use the caller's
@@ -79,6 +85,13 @@ Everything else is a focused collaborator it composes:
   never throws on a cap so a quote stays a fully inspectable estimate. Note `mapRouteFees` documents an upstream WDK caveat: the base class's legacy
   `swap()`/`bridge()` sum `fees[].amount` across different denominations, so those scalar totals are
   only meaningful when all fees share a currency — consumers should read the itemised `fees[]`.
+  Bridge components retain the documented `bridgeFee.chainId` payment chain.
+  Source-token and denominator matching require both chain and token identity;
+  same addresses on different chains are not interchangeable. Every non-zero
+  component requires a valid payment chain even when quoting without a cap;
+  missing chain metadata throws `ButterFeeValuationError`. Explicit zero parts
+  do not require unused metadata. Never infer payment chain from the role alone,
+  because both inbound and outbound fees can be paid on the intermediate chain.
 - **`swap-data.ts`** — validates the `/swap` Router V3 calldata at a deliberate **middle tier** (see
   `AGENTS.md` / README "Safety Defaults"). The built-in EVM path requires **exactly one** Router
   transaction (rejects multi-tx arrays that could multiply spend). Always enforced: router target is
@@ -126,8 +139,9 @@ Everything else is a focused collaborator it composes:
   address, submits every swap/approval transaction including `data`, and may provide approval receipts.
   Approval confirmation is **fail-closed** via the shared `status.ts: classifyReceiptStatus` (unknown
   status keeps polling until timeout); an approval with no receipt source is **refused** before sending.
-  When **every** send returns `{ hash, fee }`, the measured gas is summed and folded into the result's
-  `network` fee (`protocol.ts: withMeasuredNetworkFee`); if any send omits a fee (or a fee is negative →
+  When **every** send returns `{ hash, fee }`, the sender-reported gas is summed and folded into the result's
+  `network` fee (`protocol.ts: withReportedNetworkFee`); these values may be estimates, as in WDK EVM.
+  If any send omits a fee (or a fee is negative →
   rejected), the route estimate stands. Approval is skipped only when the existing allowance **exactly
   equals** the input; any other value is set to exactly the input (`approve(0)` then `approve(amount)`
   when non-zero) so exposure never exceeds this swap. The exported `toEvmPublicClient` adapter maps

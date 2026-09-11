@@ -20,7 +20,7 @@ function route (timestamp = 1000, hash = dummyHash(1), fromToken = NATIVE_TOKEN,
     srcChain: {
       chainId: '56', tokenIn: { address: fromToken, decimals: 18 },
       tokenOut: { address: toToken, decimals: 6 },
-      totalAmountIn: '1.5', totalAmountOut: '10.25'
+      totalAmountIn: '1.5', totalAmountOut: '9.5'
     }
   })
 }

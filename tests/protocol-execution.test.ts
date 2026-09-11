@@ -539,6 +539,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
           message: 'success',
           data: [quoteRoute({
             // Route CLAIMS input 100 (=> gas 1/100 = 100 bps), but the user requests 1.
+            minAmountOut: { amount: '99', symbol: 'USDT' },
             gasFee: { amount: '1', symbol: 'BNB', inUSD: '1' },
             swapFee: { nativeFee: '0', tokenFee: '0' },
             bridgeFee: undefined,
@@ -587,7 +588,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
               tokenIn: { address: 'ton', decimals: 18, symbol: 'TON' },
               tokenOut: { address: DEST_TOKEN, decimals: 6, symbol: 'USDT' },
               totalAmountIn: '1.5',
-              totalAmountOut: '10.25'
+              totalAmountOut: '9.5'
             },
             dstChain: undefined
           })]
@@ -638,7 +639,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
               tokenIn: { address: ERC20_TOKEN, decimals: 18, symbol: 'FROM' },
               tokenOut: { address: DEST_TOKEN, decimals: 6, symbol: 'USDT' },
               totalAmountIn: '1.5',
-              totalAmountOut: '10.25'
+              totalAmountOut: '9.5'
             },
             dstChain: undefined
           })]
@@ -748,7 +749,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
               tokenIn: { address: ERC20_TOKEN, decimals: 18, symbol: 'FROM' },
               tokenOut: { address: DEST_TOKEN, decimals: 6, symbol: 'USDT' },
               totalAmountIn: '1.5',
-              totalAmountOut: '10.25'
+              totalAmountOut: '9.5'
             },
             dstChain: undefined
           })]
@@ -802,7 +803,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
               tokenIn: { address: NATIVE_TOKEN, decimals: 18, symbol: 'BNB' },
               tokenOut: { address: DEST_TOKEN, decimals: 6, symbol: 'USDT' },
               totalAmountIn: '1.5',
-              totalAmountOut: '10.25'
+              totalAmountOut: '9.5'
             },
             dstChain: undefined
           })]
@@ -860,7 +861,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
               tokenIn: { address: NATIVE_TOKEN, decimals: 18, symbol: 'BNB' },
               tokenOut: { address: DEST_TOKEN, decimals: 6, symbol: 'USDT' },
               totalAmountIn: '1.5',
-              totalAmountOut: '10.25'
+              totalAmountOut: '9.5'
             },
             dstChain: undefined
           })]
@@ -984,7 +985,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
       })
     })
 
-  it('reports the measured source gas fee when the EVM sender returns per-tx fees', async () => {
+  it('reports the sender-reported source gas fee when the EVM sender returns per-tx fees', async () => {
       const fetch = makeFetch({
         '/route': async () => ({
           errno: 0,
@@ -998,7 +999,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
               tokenIn: { address: ERC20_TOKEN, decimals: 18, symbol: 'FROM' },
               tokenOut: { address: DEST_TOKEN, decimals: 6, symbol: 'USDT' },
               totalAmountIn: '1.5',
-              totalAmountOut: '10.25'
+              totalAmountOut: '9.5'
             },
             dstChain: undefined
           })]
@@ -1034,7 +1035,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
         fromTokenAmount: 1500000000000000000n
       })
   
-      // The estimated gas fee (0.0001e18) is replaced by the measured total
+      // The route estimate (0.0001e18) is replaced by the sender-reported total.
       // (approval 21000 + source 50000).
       const network = result.fees.find((fee) => fee.type === 'network')
       assert.equal(network?.amount, 71000n)
@@ -1066,7 +1067,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
         fromTokenAmount: 1500000000000000000n
       })
   
-      // Not every send was measured, so the network fee stays the route estimate
+      // Not every send reported a fee, so the network fee stays the route estimate.
       // (0.0001e18), never a partial 21000.
       const network = result.fees.find((fee) => fee.type === 'network')
       assert.equal(network?.amount, 100000000000000n)
@@ -1478,7 +1479,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
               bridgeFee: undefined,
               gasFee: undefined,
               swapFee: undefined,
-              minAmountOut: { amount: '1.9', symbol: 'OUT' },
+              minAmountOut: { amount: '1.96', symbol: 'OUT' },
               srcChain: {
                 chainId: FORMER_TON_CHAIN_ID,
                 tokenIn: { address: 'asset', decimals: 6, symbol: 'ASSET' },
@@ -1554,7 +1555,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
       }])
       assert.equal(result.fromTokenAmount, 1000000n)
       assert.equal(result.toTokenAmount, 2000000n)
-      assert.equal(result.toTokenAmountMin, 1900000n)
+      assert.equal(result.toTokenAmountMin, 1960000n)
     })
 
   for (const recipient of [undefined, '', '   '] as const) {
