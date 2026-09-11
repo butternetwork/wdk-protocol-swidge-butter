@@ -41,6 +41,7 @@ interface RouteRequestResult {
 export declare class RouteManager {
     private readonly context;
     private readonly cache;
+    private readonly pendingQuotes;
     private readonly hashIndex;
     /**
      * Creates a route manager instance.
@@ -57,8 +58,17 @@ export declare class RouteManager {
      * @param {RouteLookupOptions} [lookupOptions] - The cache and sender options used for route lookup (default: empty object).
      * @returns {Promise<CachedRoute>} A matching fresh cached route or newly requested route.
      * @throws {ButterNoRouteError} If Butter provides no liquid route for the request.
+     * @throws {ButterActionRequiredError} If freshness, the caller minimum, or same-chain slippage is not satisfied.
+     * @throws {ButterApiError} If route topology, identifiers, or output amounts are invalid.
      */
     getRoute(options: SwidgeOptions, lookupOptions?: RouteLookupOptions): Promise<CachedRoute>;
+    /**
+     * Caches a new candidate only after its complete quote has been mapped successfully.
+     *
+     * @param {CachedRoute} candidate - The newly fetched route whose quote mapping succeeded.
+     * @returns {void} Returns after committing a new candidate or preserving an existing cache hit.
+     */
+    cacheQuote(candidate: CachedRoute): void;
     /**
      * Consumes a previously quoted route pinned by its Butter hash.
      *
@@ -100,19 +110,31 @@ export declare class RouteManager {
      */
     buildRouteRequest(options: SwidgeOptions, senderFallback?: string): Promise<RouteRequestResult>;
     /**
-     * Requires Butter's quoted minimum output to satisfy the caller's floor.
+     * Requires the quoted minimum to satisfy the caller's floor and same-chain slippage.
      *
      * @param {SwidgeOptions} options - The options containing the optional caller minimum.
      * @param {ButterRoute} route - The Butter route to inspect or map.
+     * @param {number} slippageBps - The integer slippage used for this route request.
      * @returns {void} Returns when the quoted minimum meets or exceeds the caller's floor.
      * @throws {ButterActionRequiredError} If caller action is required before the operation can continue.
      */
-    enforceMinAmountOut(options: SwidgeOptions, route: ButterRoute): void;
+    enforceMinAmountOut(options: SwidgeOptions, route: ButterRoute, slippageBps: number): void;
     /** @private */
     private decimalsFor;
     /** @private */
     private validateRouteMatchesRequest;
 }
+/**
+ * Parses destination amounts once under the output segment's token precision.
+ *
+ * @param {ButterRoute} route - The route with validated request topology.
+ * @returns {{ amount: bigint, minimum: bigint }} The quoted output and minimum in base units.
+ * @throws {ButterApiError} If required output metadata is missing or invalid.
+ */
+export declare function routeOutput(route: ButterRoute): {
+    amount: bigint;
+    minimum: bigint;
+};
 /**
  * Returns the conservative expiry timestamp for a Butter route.
  *

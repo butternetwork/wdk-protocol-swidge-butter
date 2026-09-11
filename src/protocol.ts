@@ -43,7 +43,7 @@ import { routeToQuote } from './mappers.js'
 import { DiscoveryService } from './discovery.js'
 import { routerFunctionName, validateSwapTransactions, type SwapValidationContext } from './swap-data.js'
 import { assertGasFee, assertTransactionHash, executeEvmSwap } from './evm.js'
-import { mapReceiptStatus, mapStatusResponse } from './status.js'
+import { mapReceiptStatus, mapSolanaReceiptStatus, mapStatusResponse } from './status.js'
 import {
   createRouterRegistry,
   routerDeploymentsForChain,
@@ -140,6 +140,10 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
     const executionMarginSeconds = parseExecutionMarginSeconds(config.routeExecutionMarginSeconds)
     const requestTimeoutMs = parseTimeoutMs(config.requestTimeoutMs, 'requestTimeoutMs', false) ?? REQUEST_TIMEOUT_MS
     parseTimeoutMs(config.evm?.approvalTimeoutMs, 'approvalTimeoutMs', true)
+    const approvalConfirmations = config.evm?.approvalConfirmations
+    if (approvalConfirmations != null && (!Number.isSafeInteger(approvalConfirmations) || approvalConfirmations < 1)) {
+      throw new ButterConfigurationError('approvalConfirmations must be a positive safe integer')
+    }
     const affiliate = parseAffiliate(config.affiliate)
     const referrer = normalizeOptionalText(config.referrer)
     const fetchImpl = config.fetch ?? (globalThis.fetch as unknown as ButterSwidgeProtocolConfig['fetch'])
@@ -209,7 +213,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
    * @returns {Promise<ButterSwidgeQuote>} The non-binding quote with Butter route hash and destination guarantees.
    * @throws {ButterExactOutUnsupportedError} If exact-out options are supplied.
    * @throws {ButterUnsupportedError} If required tokens or the exact-in amount are missing or invalid.
-   * @throws {ButterActionRequiredError} If route requirements such as slippage, receiver, or minimum output need caller action.
+   * @throws {ButterActionRequiredError} If route requirements such as freshness, slippage, receiver, or minimum output need caller action.
    * @throws {ButterNoRouteError} If Butter provides no liquid route.
    * @throws {ButterApiError} If Butter returns malformed or inconsistent route or fee data.
    * @throws {ButterFeeValuationError} If a reported fee cannot be mapped using trustworthy token metadata.
@@ -223,12 +227,12 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
     const cached = await this.routes.getRoute(options, {
       ...(senderFallback != null ? { senderFallback } : {})
     })
-    this.routes.enforceMinAmountOut(options, cached.route)
     const quoteFeeContext: FeeContext = {
       ...this.feeContextFor(options.fromToken),
       sourceTokenDecimals: cached.sourceDecimals
     }
     const quote = routeToQuote(cached.route, this.now, cached.expiresAt, quoteFeeContext, options.fromTokenAmount)
+    this.routes.cacheQuote(cached)
     return {
       ...quote,
       routeHash: cached.route.hash,
@@ -239,13 +243,13 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
   /*
    * Reports whether `toTokenAmountMin` is checked against the calldata at execution.
    *
-   * Only same-chain is: cross-chain leaves the destination minimum inside the
-   * nested bridge payload, which is trusted to Butter by design.
+   * Only built-in EVM same-chain execution checks it. Adapters own their intent
+   * validation; cross-chain trusts the nested destination payload to Butter.
    */
   /** @private */
   private destinationGuaranteesFor (options: SwidgeOptions): ButterDestinationGuarantees {
     const destinationChainId = String(options.toChain ?? this.sourceChainId)
-    return destinationChainId === this.sourceChainId ? 'enforced' : 'quoted-only'
+    return destinationChainId === this.sourceChainId && this.isBuiltInEvmExecution() ? 'enforced' : 'quoted-only'
   }
 
   /**
@@ -308,7 +312,6 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
     const cached = pinnedHash != null
       ? await this.routes.consumeRouteByHash(pinnedHash, options, sender)
       : await this.routes.getRoute(options, { forExecution: true, senderFallback: sender })
-    this.routes.enforceMinAmountOut(options, cached.route)
 
     const requestedAmountIn = BigInt(options.fromTokenAmount as number | bigint)
     const feeContext: FeeContext = {
@@ -432,14 +435,14 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
       const sourceTx = transactions.find((transaction) => transaction.type === 'source')
       if (!sourceTx) throw new ButterApiError('Butter execution produced no source transaction', { transactions })
       this.rememberOperationKind(sourceTx.hash, prepared.destinationChainId)
-      const actualNetworkFee = feeParts.length > 0 && feeParts.every((fee) => fee != null)
+      const reportedNetworkFee = feeParts.length > 0 && feeParts.every((fee) => fee != null)
         ? feeParts.reduce((total, fee) => total + (fee ?? 0n), 0n)
         : undefined
       return {
         id: sourceTx.hash,
         hash: sourceTx.hash,
-        fees: actualNetworkFee != null
-          ? withMeasuredNetworkFee(prepared.quote.fees, actualNetworkFee, prepared.cached.route)
+        fees: reportedNetworkFee != null
+          ? withReportedNetworkFee(prepared.quote.fees, reportedNetworkFee, prepared.cached.route, this.sourceChainId)
           : prepared.quote.fees,
         transactions,
         fromTokenAmount: prepared.quote.fromTokenAmount,
@@ -461,23 +464,32 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
    * @param {string} id - The identifier to normalize or query.
    * @param {ButterSwidgeStatusOptions} [options] - Lookup mode and optional source/destination chain hints (default: empty object).
    * @returns {Promise<SwidgeStatusResult>} The conservative WDK status and any reported source or destination transactions.
-   * @throws {ButterApiError} If the id is empty, attribution fails, or Butter returns missing or inconsistent status data.
+   * @throws {ButterApiError} If the id is empty, attribution fails, chain hints conflict with the operation, or Butter returns missing or inconsistent status data.
    * @throws {ButterConfigurationError} If same-chain receipt status cannot be queried with the configured clients.
    */
   async getSwidgeStatus (id: string, options: ButterSwidgeStatusOptions = {}): Promise<SwidgeStatusResult> {
     if (!id.trim()) throw new ButterApiError('A non-empty swidge id is required')
+    let statusHints = options
     if (!options.byOrderId) {
       const recorded = this.operationKinds.get(normalizeTransactionHash(id))
       if (recorded != null) {
         // Recorded by this instance → trusted attribution; no re-verification.
-        if (recorded.fromChain === recorded.toChain) return this.getSameChainStatus(id, recorded.fromChain)
+        if (recorded.fromChain === recorded.toChain) return this.getSameChainStatus(id, recorded.fromChain, options)
+        if (options.fromChain != null && String(options.fromChain) !== recorded.fromChain) {
+          throw new ButterApiError('Butter status source chain does not match request hints', { id, chain: recorded.fromChain })
+        }
+        if (options.toChain != null && String(options.toChain) !== recorded.toChain) {
+          throw new ButterApiError('Butter status destination chain does not match request hints', { id, chain: recorded.toChain })
+        }
+        // The recorded chains constrain API responses even when the caller omits hints.
+        statusHints = { ...options, fromChain: recorded.fromChain, toChain: recorded.toChain }
       } else {
         // Not recorded: only treat as same-chain after verifying the source tx
         // actually belongs to a Butter Router (allowlisted target + swapAndCall).
         // Explicit hints do NOT bypass this — an unrelated tx must never be
         // reported as a completed swidge (WDK: an unknown id should throw).
         const attribution = await this.attributeSourceTransaction(id)
-        if (attribution === 'same') return this.getSameChainStatus(id, this.sourceChainId)
+        if (attribution === 'same') return this.getSameChainStatus(id, this.sourceChainId, options)
         const hintedSameChain = options.fromChain != null && options.toChain != null &&
           String(options.fromChain) === String(options.toChain)
         if (attribution == null && hintedSameChain) {
@@ -492,7 +504,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
     const data = options.byOrderId
       ? await this.http.app('/api/queryCrossInfoByOrderId', { orderId: id })
       : await this.http.app('/api/queryBridgeInfoBySourceHash', { hash: id })
-    return mapStatusResponse(id, data, options)
+    return mapStatusResponse(id, data, statusHints)
   }
 
   /*
@@ -562,11 +574,11 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
    */
   /** @private */
   private async attributeSourceTransaction (hash: string): Promise<'same' | 'cross' | undefined> {
-    const getTransaction = this.config.evm?.publicClient?.getTransaction
-    if (!getTransaction) return undefined
+    const publicClient = this.config.evm?.publicClient
+    if (!publicClient?.getTransaction) return undefined
     // A not-found transaction resolves to null (unattributable); infrastructure
     // errors intentionally propagate.
-    const tx = await getTransaction(hash)
+    const tx = await publicClient.getTransaction(hash)
     if (!tx?.to || !this.isAllowlistedRouter(tx.to)) return undefined
     const fn = routerFunctionName(tx.input)
     if (fn === 'swapAndCall') return 'same'
@@ -583,14 +595,24 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
   }
 
   /** @private */
-  private async getSameChainStatus (id: string, chain: string | number): Promise<SwidgeStatusResult> {
-    const getReceipt = this.config.evm?.publicClient?.getTransactionReceipt?.bind(this.config.evm.publicClient) ??
-      this.account?.getTransactionReceipt?.bind(this.account)
-    if (!getReceipt) {
-      throw new ButterConfigurationError('Same-chain swidge status requires evm.publicClient or an account with getTransactionReceipt')
+  private async getSameChainStatus (id: string, chain: string | number, options: ButterSwidgeStatusOptions): Promise<SwidgeStatusResult> {
+    if (options.fromChain != null && String(options.fromChain) !== String(chain)) {
+      throw new ButterApiError('Butter status source chain does not match request hints', { id, chain })
     }
-    const receipt = await getReceipt(id) as EvmTransactionReceipt | null
-    return mapReceiptStatus(id, receipt, chain)
+    if (options.toChain != null && String(options.toChain) !== String(chain)) {
+      throw new ButterApiError('Butter status destination chain does not match request hints', { id, chain })
+    }
+    const solana = String(chain) === SOLANA_CHAIN_ID
+    const accountReceipt = this.account?.getTransactionReceipt?.bind(this.account)
+    const getReceipt = solana ? accountReceipt :
+      this.config.evm?.publicClient?.getTransactionReceipt?.bind(this.config.evm.publicClient) ?? accountReceipt
+    if (!getReceipt) {
+      throw new ButterConfigurationError(solana
+        ? 'Solana same-chain swidge status requires an account with getTransactionReceipt'
+        : 'Same-chain swidge status requires evm.publicClient or an account with getTransactionReceipt')
+    }
+    const receipt = await getReceipt(id)
+    return solana ? mapSolanaReceiptStatus(id, receipt, chain) : mapReceiptStatus(id, receipt as EvmTransactionReceipt | null, chain)
   }
 
   /**
@@ -780,30 +802,29 @@ function feeOf (result: string | { hash?: string, fee?: bigint }): bigint | unde
 }
 
 /**
- * Replaces the estimated network fee with the measured source gas fee, so the
- * result reports what was actually charged. The other (bridge/protocol) fees
+ * Replaces the route's network estimate with the sender-reported source gas fee.
+ * Senders may report estimates rather than receipt-based costs. Other fees
  * remain route-derived estimates. If the quote had no network entry, one is
- * appended when a native fee token can be identified.
+ * appended using the generic native identifier if the quote omits gas metadata.
  *
  * @param {SwidgeFee[]} fees - The mapped WDK fees to inspect.
- * @param {bigint} measured - The measured network fee in native base units.
+ * @param {bigint} reported - The sender-reported network fee in native base units.
  * @param {ButterRoute} route - The Butter route to inspect or map.
- * @returns {SwidgeFee[]} A fee list containing the measured network fee.
+ * @param {string} sourceChainId - The chain on which the gas was spent.
+ * @returns {SwidgeFee[]} A fee list containing the sender-reported network fee.
  */
-function withMeasuredNetworkFee (fees: SwidgeFee[], measured: bigint, route: ButterRoute): SwidgeFee[] {
+function withReportedNetworkFee (fees: SwidgeFee[], reported: bigint, route: ButterRoute, sourceChainId: string): SwidgeFee[] {
   let replaced = false
   const next = fees.map((fee) => {
     if (!replaced && fee.type === 'network') {
       replaced = true
-      return { ...fee, amount: measured, description: 'Measured source gas fee' }
+      return { ...fee, amount: reported, chain: sourceChainId, description: 'Sender-reported source gas fee' }
     }
     return fee
   })
   if (!replaced) {
-    const token = route.gasFee?.address ?? route.gasFee?.symbol
-    if (token) {
-      next.push({ type: 'network', amount: measured, token, included: false, description: 'Measured source gas fee' })
-    }
+    const token = route.gasFee?.address || route.gasFee?.symbol || 'native'
+    next.push({ type: 'network', amount: reported, token, chain: sourceChainId, included: false, description: 'Sender-reported source gas fee' })
   }
   return next
 }
@@ -958,13 +979,18 @@ function parseAffiliate (value: string | undefined): string | undefined {
 }
 
 /**
- * Normalizes the optional Butter `routeHash` pin, treating empty strings as absent.
+ * Validates an optional opaque route pin without silently discarding invalid values.
  *
  * @param {string | undefined} hash - The optional Butter route hash to pin for execution.
- * @returns {string | undefined} The trimmed route hash, or undefined when blank or absent.
+ * @returns {string | undefined} The unchanged route hash, or undefined when absent.
+ * @throws {ButterUnsupportedError} If an explicitly supplied pin is not a non-empty hash string.
  */
 function normalizeRouteHash (hash: string | undefined): string | undefined {
-  return typeof hash === 'string' && hash.length > 0 ? hash : undefined
+  if (hash === undefined) return undefined
+  if (typeof hash !== 'string' || hash.length === 0 || hash !== hash.trim()) {
+    throw new ButterUnsupportedError('routeHash must be a non-empty string without surrounding whitespace')
+  }
+  return hash
 }
 
 export default ButterSwidgeProtocol

@@ -91,7 +91,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
               tokenIn: { address: ERC20_TOKEN, decimals: 18, symbol: 'FROM' },
               tokenOut: { address: DEST_TOKEN, decimals: 6, symbol: 'USDT' },
               totalAmountIn: '1.5',
-              totalAmountOut: '10.25'
+              totalAmountOut: '9.5'
             },
             dstChain: undefined
           })]
@@ -129,7 +129,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
         hash: '0x1111111111111111111111111111111111111111111111111111111111111111',
         fee: 0n,
         tokenInAmount: 1500000000000000000n,
-        tokenOutAmount: 10250000n
+        tokenOutAmount: 9500000n
       })
       assert.equal(fetch.calls.filter(({ url }) => url.pathname === '/route').length, 1)
     })
@@ -203,7 +203,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
               tokenIn: { address: '0x00000000000000000000000000000000000000ab', decimals: 18, symbol: 'BNB' },
               tokenOut: { address: '0x00000000000000000000000000000000000000cd', decimals: 6, symbol: 'USDT' },
               totalAmountIn: '1.5',
-              totalAmountOut: '10.25'
+              totalAmountOut: '9.5'
             },
             dstChain: undefined
           })]
@@ -226,7 +226,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
       })
   
       assert.equal(quote.tokenInAmount, 1500000000000000000n)
-      assert.equal(quote.tokenOutAmount, 10250000n)
+      assert.equal(quote.tokenOutAmount, 9500000n)
       assert.equal(fetch.calls.filter(({ url }) => url.pathname === '/route').length, 1)
     })
 

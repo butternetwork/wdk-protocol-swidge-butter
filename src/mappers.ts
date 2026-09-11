@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { parseRequiredTokenAmount, parseTokenAmount } from './amounts.js'
+import { parseTokenAmount } from './amounts.js'
 import { mapRouteFees, type FeeContext } from './fees.js'
-import { decimalsOf } from './route.js'
+import { decimalsOf, routeOutput } from './route.js'
 import type {
   ButterChainExecution,
   ButterChainInfo,
@@ -41,8 +41,7 @@ import type {
  * @returns {SwidgeQuote} The normalized WDK quote.
  */
 export function routeToQuote (route: ButterRoute, now: () => number, expiry: number | undefined, feeContext: FeeContext, requestedAmountIn?: number | bigint): SwidgeQuote {
-  const destinationDecimals = decimalsOf(route.dstChain?.tokenOut ?? route.srcChain?.tokenOut, 'destination token')
-  const toTokenAmountMin = parseRequiredTokenAmount(route.minAmountOut?.amount ?? route.amountOutMin, 'minimum output amount', destinationDecimals)
+  const output = routeOutput(route)
   const fromTokenAmount = requestedAmountIn != null
     ? BigInt(requestedAmountIn)
     : parseTokenAmount(route.srcChain?.totalAmountIn ?? route.totalAmountIn, decimalsOf(route.srcChain?.tokenIn, 'source token'))
@@ -50,12 +49,8 @@ export function routeToQuote (route: ButterRoute, now: () => number, expiry: num
   const priceImpact = finiteOrUndefined(route.priceImpact)
   return {
     fromTokenAmount,
-    toTokenAmount: parseRequiredTokenAmount(
-      route.dstChain != null ? route.dstChain.totalAmountOut : route.srcChain?.totalAmountOut,
-      'destination total output amount',
-      destinationDecimals
-    ),
-    toTokenAmountMin,
+    toTokenAmount: output.amount,
+    toTokenAmountMin: output.minimum,
     fees: mapRouteFees(route, feeContext),
     ...(estimatedDuration != null ? { estimatedDuration } : {}),
     expiry: expiry ?? now() + 300,
@@ -108,17 +103,16 @@ export function chainToSupportedChain (chain: ButterChainInfo, execution: Butter
  *
  * @param {ButterTokenInfo} token - The Butter token metadata to map.
  * @param {string} chainId - The chain identifier used for normalization or lookup.
+ * @param {number} decimals - The validated discovery precision.
  * @returns {SwidgeSupportedToken} The normalized WDK supported-token descriptor.
  */
-export function tokenToSupportedToken (token: ButterTokenInfo, chainId: string): SwidgeSupportedToken {
+export function tokenToSupportedToken (token: ButterTokenInfo, chainId: string, decimals: number): SwidgeSupportedToken {
   const address = token.address ?? token.token
   return {
     token: token.address ?? token.token ?? '',
     chain: normalizeId(token.chainId ?? chainId),
     symbol: token.symbol ?? '',
-    // Missing decimals yields NaN (not a silent 18); the discovery caller drops
-    // such entries so a placeholder value is never surfaced as if authoritative.
-    decimals: Number(token.decimals ?? token.decimal),
+    decimals,
     ...(address != null ? { address } : {}),
     ...(token.name != null ? { name: token.name } : {})
   }

@@ -37,7 +37,7 @@ export declare class ButterSwidgeProtocol extends SwidgeProtocol {
      * @returns {Promise<ButterSwidgeQuote>} The non-binding quote with Butter route hash and destination guarantees.
      * @throws {ButterExactOutUnsupportedError} If exact-out options are supplied.
      * @throws {ButterUnsupportedError} If required tokens or the exact-in amount are missing or invalid.
-     * @throws {ButterActionRequiredError} If route requirements such as slippage, receiver, or minimum output need caller action.
+     * @throws {ButterActionRequiredError} If route requirements such as freshness, slippage, receiver, or minimum output need caller action.
      * @throws {ButterNoRouteError} If Butter provides no liquid route.
      * @throws {ButterApiError} If Butter returns malformed or inconsistent route or fee data.
      * @throws {ButterFeeValuationError} If a reported fee cannot be mapped using trustworthy token metadata.
@@ -85,7 +85,7 @@ export declare class ButterSwidgeProtocol extends SwidgeProtocol {
      * @param {string} id - The identifier to normalize or query.
      * @param {ButterSwidgeStatusOptions} [options] - Lookup mode and optional source/destination chain hints (default: empty object).
      * @returns {Promise<SwidgeStatusResult>} The conservative WDK status and any reported source or destination transactions.
-     * @throws {ButterApiError} If the id is empty, attribution fails, or Butter returns missing or inconsistent status data.
+     * @throws {ButterApiError} If the id is empty, attribution fails, chain hints conflict with the operation, or Butter returns missing or inconsistent status data.
      * @throws {ButterConfigurationError} If same-chain receipt status cannot be queried with the configured clients.
      */
     getSwidgeStatus(id: string, options?: ButterSwidgeStatusOptions): Promise<SwidgeStatusResult>;

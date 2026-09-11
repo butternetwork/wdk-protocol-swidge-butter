@@ -32,30 +32,12 @@
  * requires a fresh input-bound design and security review.
  */
 
-import { butterAuthFromEnv, envOrDefault, printJson, runExample } from './shared.js'
-
-const ROUTER_BASE_URL = 'https://bs-router-v3.chainservice.io/'
+import { envOrDefault, printJson, requestButterRoute, runExample } from './shared.js'
 
 interface RouteEnvelope {
   errno?: number
   message?: string
   data?: unknown
-}
-
-async function requestRoute (params: Record<string, string>): Promise<RouteEnvelope> {
-  const auth = butterAuthFromEnv()
-  const url = new URL('route', envOrDefault('BUTTER_ROUTER_BASE_URL', ROUTER_BASE_URL))
-  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value)
-
-  const headers: Record<string, string> = {}
-  if (auth.apiKeyId) headers['x-api-key-id'] = auth.apiKeyId
-  if (auth.apiSecret) headers.Authorization = `Bearer ${auth.apiSecret}`
-
-  const response = await fetch(url.toString(), { method: 'GET', headers })
-  if (!response.ok) {
-    return { errno: -1, message: `HTTP ${response.status}` }
-  }
-  return await response.json() as RouteEnvelope
 }
 
 function summarize (envelope: RouteEnvelope): { accepted: boolean, errno: number | undefined, message: string | undefined, tradeType?: unknown, totalAmountIn?: unknown, totalAmountOut?: unknown } {
@@ -87,8 +69,8 @@ runExample(async () => {
     entrance: envOrDefault('BUTTER_ENTRANCE', 'wdk')
   }
 
-  const exactIn = summarize(await requestRoute({ ...shared, type: 'exactIn' }))
-  const exactOut = summarize(await requestRoute({ ...shared, type: 'exactOut' }))
+  const exactIn = summarize(await requestButterRoute<RouteEnvelope>({ ...shared, type: 'exactIn' }))
+  const exactOut = summarize(await requestButterRoute<RouteEnvelope>({ ...shared, type: 'exactOut' }))
 
   printJson({
     request: shared,

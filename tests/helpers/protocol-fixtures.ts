@@ -74,7 +74,7 @@ export function makeFetch (routes: Record<string, (url: URL, init: { headers?: R
 export function quoteRoute (overrides: Record<string, unknown> = {}) {
   return {
     hash: '0x3333333333333333333333333333333333333333333333333333333333333333',
-    timestamp: 1000,
+    // Timing tests supply a timestamp explicitly; other fixtures use the local TTL.
     hasLiquidity: true,
     timeEstimated: 120,
     contract: '0xEE0319cF0BCa5d09333f9F6277743E8De31bD69A',
@@ -346,7 +346,7 @@ export function oversizedAllowanceFetch () {
             tokenIn: { address: ERC20_TOKEN, decimals: 18, symbol: 'FROM' },
             tokenOut: { address: DEST_TOKEN, decimals: 6, symbol: 'USDT' },
             totalAmountIn: '1.5',
-            totalAmountOut: '10.25'
+            totalAmountOut: '9.5'
           },
           dstChain: undefined
         })]
@@ -412,7 +412,7 @@ export function sameChainErc20Fetch () {
             tokenIn: { address: ERC20_TOKEN, decimals: 18, symbol: 'FROM' },
             tokenOut: { address: DEST_TOKEN, decimals: 6, symbol: 'USDT' },
             totalAmountIn: '1.5',
-            totalAmountOut: '10.25'
+            totalAmountOut: '9.5'
           },
           dstChain: undefined
         })]

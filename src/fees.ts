@@ -17,7 +17,7 @@ import {
   BTC_CHAIN_ID,
   TRON_CHAIN_ID
 } from './constants.js'
-import { parseTokenAmount } from './amounts.js'
+import { parseTokenAmount, parseTokenDecimals } from './amounts.js'
 import {
   isNativeTokenIdentifier,
   isSymbolicNativeTokenIdentifier,
@@ -148,7 +148,7 @@ export function mapRouteFees (route: ButterRoute, context: FeeContext): SwidgeFe
       type: component.role === 'affiliate' ? 'affiliate' : 'protocol',
       amount: parseTokenAmount(component.amount, componentDecimals(component, context), DISPLAY_ROUNDING),
       token: component.token,
-      ...(route.bridgeFee?.chainId != null ? { chain: route.bridgeFee.chainId } : {}),
+      chain: component.chainId,
       included: true,
       description: component.description
     })
@@ -414,13 +414,14 @@ type BridgeFeeRole = 'inbound' | 'outbound' | 'affiliate' | 'total'
  * @returns {number} The trusted decimals used to parse the fee component.
  */
 function componentDecimals (component: BridgeFeeComponent, context: FeeContext): number {
-  if (!isSourceTokenComponent(component.routeToken, context.sourceChainId, context.sourceToken)) return component.decimals
+  if (!isSourceTokenComponent(component.routeToken, component.chainId, context.sourceChainId, context.sourceToken)) return component.decimals
   return trustedSourceDecimals(context, component.decimals, component.description)
 }
 
 /** One priced component of Butter's `bridgeFee`, carrying its OWN token. */
 interface BridgeFeeComponent {
   role: BridgeFeeRole
+  chainId: string | number
   amount: string
   token: string
   decimals: number
@@ -446,12 +447,13 @@ interface BridgeFeeComponent {
  * against it, treating a zero as proof of no fee — and each was a way of trusting a
  * value the module had already decided not to trust. There is no safe use.
  *
- * Each component keeps its own token rather than sharing one guessed for the whole
- * fee: the parts can sit on different chains in different tokens, and folding them
- * into a single entry forced a guess about which one to report.
+ * Each component keeps its own token on Butter's declared payment chain rather
+ * than using the summary token. The payment chain is retained for both display
+ * and valuation: identical addresses on different chains are different currencies.
  *
  * @param {ButterRoute} route - The Butter route to inspect or map.
  * @returns {BridgeFeeComponent[]} The independently denominated bridge fee components.
+ * @throws {ButterFeeValuationError} If a non-zero component has no valid payment chain.
  */
 function bridgeFeeComponents (route: ButterRoute): BridgeFeeComponent[] {
   const fee = route.bridgeFee
@@ -463,8 +465,14 @@ function bridgeFeeComponents (route: ButterRoute): BridgeFeeComponent[] {
   const components: BridgeFeeComponent[] = []
   for (const { part, role } of parts) {
     if (!isNonZero(part?.amount)) continue
+    const chainId = fee?.chainId
+    if (!((typeof chainId === 'string' && chainId.trim() !== '' && chainId === chainId.trim()) ||
+      (typeof chainId === 'number' && Number.isSafeInteger(chainId) && chainId >= 0))) {
+      throw new ButterFeeValuationError('Butter bridge fee component is missing a valid payment chain', { role, chainId })
+    }
     components.push({
       role,
+      chainId,
       amount: part?.amount as string,
       token: requiredTokenId(part?.token?.address ?? part?.token?.symbol, `${role} bridge fee`),
       decimals: requiredDecimals(part?.token, `${role} bridge fee`),
@@ -564,7 +572,7 @@ function hasBridgeFeeComponents (fee: ButterBridgeFee | undefined): boolean {
  */
 function bridgeFeeComponentRatio (component: BridgeFeeComponent, route: ButterRoute, context: FeeContext): Ratio {
   const decimals = componentDecimals(component, context)
-  if (isSourceTokenComponent(component.routeToken, context.sourceChainId, context.sourceToken)) {
+  if (isSourceTokenComponent(component.routeToken, component.chainId, context.sourceChainId, context.sourceToken)) {
     return {
       numerator: parseTokenAmount(component.amount, decimals),
       denominator: sourceDenominator(context)
@@ -589,7 +597,8 @@ function bridgeFeeComponentRatio (component: BridgeFeeComponent, route: ButterRo
   ]
   // An affiliate cut and an unsplit total are both taken on the way out.
   const candidates = component.role === 'inbound' ? inboundFirst : outboundFirst
-  const denominator = candidates.find((candidate) => sameTokenAddress(candidate.chainId, candidate.token, component.routeToken) && candidate.amount != null)
+  const denominator = candidates.find((candidate) => candidate.chainId === String(component.chainId) &&
+    sameTokenAddress(candidate.chainId, candidate.token, component.routeToken) && candidate.amount != null)
   if (!denominator?.amount) {
     throw new ButterFeeValuationError('Cannot value a Butter bridge fee component against a route amount in the same token', {
       token: component.token,
@@ -619,9 +628,11 @@ function sameTokenAddress (
 }
 
 /**
- * True when a fee component is denominated in the caller's source token.
+ * True when a fee component is denominated in the caller's source token on the source chain.
  *
- * The rule in one line: **a symbol can only ever confirm a symbolic identifier.**
+ * Payment chains must match first. Within that chain, a symbol can only ever
+ * confirm a symbolic identifier. Both must be native aliases on this chain:
+ * `native` and `btc` denote the same source on Bitcoin despite differing text.
  *
  * A declared address is positive evidence of which token this is, and a symbol may
  * not override it — `{ address: '0x…ee', symbol: 'BTC' }` is not the caller's BTC
@@ -640,22 +651,25 @@ function sameTokenAddress (
  * denominator is not automatically a meaningful one.
  *
  * @param {ButterRouteToken | undefined} token - The bridge component's declared token metadata.
+ * @param {string | number} feeChainId - The chain on which the component is paid.
  * @param {string} sourceChainId - The source-chain identifier.
  * @param {string} sourceToken - The source-token identifier.
  * @returns {boolean} Whether the component can be attributed to the caller's source token.
  */
 function isSourceTokenComponent (
   token: ButterRouteToken | undefined,
+  feeChainId: string | number,
   sourceChainId: string,
   sourceToken: string
 ): boolean {
+  if (String(feeChainId) !== sourceChainId) return false
   const source = sourceToken.trim()
   if (!source) return false
   // Addresses compare format-aware: lowercasing a Base58 mint would merge it with a
   // different one. Symbols stay case-insensitive — a ticker is not an identifier.
   if (token?.address?.trim()) return sameTokenIdentifier(sourceChainId, token.address, source)
   if (!isSymbolicNativeTokenIdentifier(sourceChainId, source)) return false
-  return token?.symbol?.trim().toLowerCase() === source.toLowerCase()
+  return isSymbolicNativeTokenIdentifier(sourceChainId, token?.symbol ?? '')
 }
 
 /**
@@ -736,10 +750,8 @@ function trustedSourceDecimals (context: FeeContext, declared: string | number |
   }
   let parsedDeclared: number | undefined
   if (declared != null) {
-    const normalized = typeof declared === 'string'
-      ? (/^\d+$/.test(declared.trim()) ? Number(declared.trim()) : Number.NaN)
-      : declared
-    if (!Number.isInteger(normalized) || normalized < 0 || normalized > 255) {
+    const normalized = parseTokenDecimals(declared)
+    if (normalized == null) {
       throw new ButterFeeValuationError(`Butter route reports invalid source token decimals; refusing to value the ${label}`, { declared })
     }
     parsedDeclared = normalized
@@ -782,8 +794,8 @@ function sourceDenominator (context: FeeContext): bigint {
  * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
  */
 function requiredDecimals (token: ButterRouteToken | undefined, label: string): number {
-  const decimals = Number(token?.decimals)
-  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
+  const decimals = parseTokenDecimals(token?.decimals)
+  if (decimals == null) {
     throw new ButterApiError(`Butter ${label} is missing valid token decimals`)
   }
   return decimals

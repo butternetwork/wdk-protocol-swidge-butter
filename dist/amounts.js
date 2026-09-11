@@ -13,6 +13,24 @@
 // limitations under the License.
 import { ButterApiError, ButterUnsupportedError } from './errors.js';
 /**
+ * Parses token precision without coercing other JSON types into numbers.
+ *
+ * @param {unknown} value - The integer or decimal integer string reported for a token.
+ * @returns {number | undefined} The precision from 0 through 255, or undefined for invalid metadata.
+ */
+export function parseTokenDecimals(value) {
+    if (typeof value === 'number') {
+        return Number.isInteger(value) && value >= 0 && value <= 255 ? value : undefined;
+    }
+    if (typeof value !== 'string')
+        return undefined;
+    const normalized = value.trim();
+    if (!/^\d+$/.test(normalized))
+        return undefined;
+    const decimals = Number(normalized);
+    return Number.isInteger(decimals) && decimals >= 0 && decimals <= 255 ? decimals : undefined;
+}
+/**
  * Converts a non-negative decimal token amount into integer base units.
  *
  * @param {string | number | bigint | undefined | null} amount - The decimal token amount from Butter or local configuration.
@@ -65,6 +83,9 @@ export function parseRequiredTokenAmount(amount, label, decimals = 18, options =
 /**
  * Formats integer base units as a decimal token amount without floating point conversion.
  *
+ * Strings contain decimal digits only, with optional surrounding whitespace.
+ * Hexadecimal, exponent, fractional, signed, and empty strings are rejected.
+ *
  * @param {bigint | number | string} amount - The non-negative integer base-unit amount to format.
  * @param {number} [decimals] - The token decimal precision used for conversion (default: 18).
  * @returns {string} The formatted value.
@@ -75,7 +96,11 @@ export function formatTokenAmount(amount, decimals = 18) {
     if (typeof amount === 'number' && (!Number.isSafeInteger(amount) || amount < 0)) {
         throw new ButterApiError(`Unsafe numeric token amount: ${amount}; use bigint base units`);
     }
-    const value = BigInt(amount);
+    const normalized = typeof amount === 'string' ? amount.trim() : amount;
+    if (typeof normalized === 'string' && !/^\d+$/.test(normalized)) {
+        throw new ButterApiError(`Invalid token amount: ${amount}`);
+    }
+    const value = BigInt(normalized);
     if (value < 0n)
         throw new ButterApiError(`Invalid token amount: ${amount}`);
     const scale = 10n ** BigInt(decimals);

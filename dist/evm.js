@@ -136,14 +136,14 @@ export function isNativeToken(token) {
  * of transactions already on-chain.
  *
  * @param {ExecuteEvmSwapContext} context - The validated route, sender, swap transaction, and approval bound for one EVM execution.
- * @returns {Promise<ExecuteEvmSwapResult>} The broadcast transactions and measured gas total.
+ * @returns {Promise<ExecuteEvmSwapResult>} The broadcast transactions and sender-reported gas total.
  * @throws {ButterPartialExecutionError} If execution fails after at least one transaction was broadcast.
  */
 export async function executeEvmSwap(context) {
     const transactions = [];
     // One entry per submitted transaction; undefined means that send reported no
-    // fee. The measured gas fee is only usable when EVERY send reported one — a
-    // partial sum would understate the true cost.
+    // fee. The reported gas fee is only usable when EVERY send reported one — a
+    // partial sum would omit part of the sender's estimate.
     const feeParts = [];
     const record = (sent, type) => {
         // Push before validating the fee: the send returned, so the transaction is
@@ -166,10 +166,10 @@ export async function executeEvmSwap(context) {
         }), 'source');
         // Totalled inside the try on purpose: from the first successful send onward
         // every failure is a partial execution, including one raised while summing.
-        const allMeasured = feeParts.length > 0 && feeParts.every((fee) => fee != null);
+        const allReported = feeParts.length > 0 && feeParts.every((fee) => fee != null);
         return {
             transactions,
-            gasFee: allMeasured ? feeParts.reduce((total, fee) => total + (fee ?? 0n), 0n) : undefined
+            gasFee: allReported ? feeParts.reduce((total, fee) => total + (fee ?? 0n), 0n) : undefined
         };
     }
     catch (cause) {
@@ -221,13 +221,17 @@ async function approveIfNeeded(context, record) {
  * Fails closed when an approval would be submitted with no way to confirm it: a
  * fire-and-forget approval could revert (or be unconfirmed) yet the swap would
  * still follow. Requires `publicClient.waitForTransactionReceipt` or the
- * account's `getTransactionReceipt`.
+ * account's `getTransactionReceipt`. More than one confirmation requires the
+ * public-client waiter, since the account contract has no confirmation count.
  *
  * @param {EvmClientContext} context - The configured receipt sources available after an approval broadcast.
  * @returns {void} Returns after confirming that at least one receipt source is configured.
  * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
  */
 function assertApprovalConfirmable(context) {
+    if ((context.config.evm?.approvalConfirmations ?? 1) > 1 && !context.config.evm?.publicClient?.waitForTransactionReceipt) {
+        throw new ButterConfigurationError('Multiple approval confirmations require evm.publicClient.waitForTransactionReceipt');
+    }
     const canConfirm = Boolean(context.config.evm?.publicClient?.waitForTransactionReceipt ||
         context.account?.getTransactionReceipt);
     if (!canConfirm) {
@@ -270,6 +274,10 @@ async function approveExact(context, value, record) {
  * Fail-closed: only an explicit success confirms; an explicit revert throws; an
  * unknown/uninterpretable status is treated as not-yet-final (keep polling until
  * timeout) rather than assumed successful.
+ * A reported transaction hash must identify the original approval. viem can
+ * return a successful cancellation or replacement receipt for the same nonce;
+ * neither proves the requested approval was mined. Receipts without a hash retain
+ * the host contract that the returned status belongs to the queried transaction.
  *
  * @param {EvmClientContext} context - The public client or WDK account used to obtain the approval receipt.
  * @param {string} hash - The approval transaction hash to confirm.
@@ -287,6 +295,7 @@ async function waitForApproval(context, hash) {
             timeout: timeoutMs
         };
         const receipt = await beforeApprovalDeadline(() => publicClient.waitForTransactionReceipt(receiptArgs), deadline, hash, timeoutMs);
+        assertApprovalReceiptHash(receipt, hash);
         const kind = classifyReceiptStatus(receipt);
         if (kind === 'reverted')
             throw new ButterConfigurationError('ERC20 approval transaction reverted', { hash });
@@ -303,6 +312,7 @@ async function waitForApproval(context, hash) {
     while (Date.now() < deadline) {
         const receipt = await beforeApprovalDeadline(() => getReceipt(hash), deadline, hash, timeoutMs);
         if (receipt != null) {
+            assertApprovalReceiptHash(receipt, hash);
             const kind = classifyReceiptStatus(receipt);
             if (kind === 'success')
                 return;
@@ -313,6 +323,31 @@ async function waitForApproval(context, hash) {
         await sleep(Math.min(APPROVAL_POLL_INTERVAL_MS, Math.max(deadline - Date.now(), 0)));
     }
     throw approvalTimeoutError(hash, timeoutMs);
+}
+/**
+ * Verifies a reported receipt hash before its status can confirm an approval.
+ *
+ * @param {unknown} receipt - The host receipt, optionally carrying a mined transaction hash.
+ * @param {string} hash - The submitted approval hash the receipt must identify.
+ * @returns {void} Returns when the hash matches or the host omits identity metadata.
+ * @throws {ButterConfigurationError} If the receipt reports an invalid or different transaction hash.
+ */
+function assertApprovalReceiptHash(receipt, hash) {
+    if (receipt == null || typeof receipt !== 'object')
+        return;
+    const record = receipt;
+    for (const hashField of ['transactionHash', 'hash']) {
+        if (!(hashField in record))
+            continue;
+        const receiptHash = record[hashField];
+        const details = { hash, receiptHash, hashField };
+        if (typeof receiptHash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(receiptHash)) {
+            throw new ButterConfigurationError('ERC20 approval receipt has an invalid transaction hash', details);
+        }
+        if (receiptHash.toLowerCase() !== hash.toLowerCase()) {
+            throw new ButterConfigurationError('ERC20 approval receipt belongs to a different transaction', details);
+        }
+    }
 }
 /**
  * Runs one approval lookup while enforcing the remaining confirmation deadline.
@@ -356,7 +391,7 @@ function approvalTimeoutError(hash, timeoutMs) {
  *
  * @param {EvmClientContext} context - The configured WDK account used to submit calldata.
  * @param {EvmTransactionRequest} tx - The transaction request to validate or send.
- * @returns {Promise<EvmSendResult>} The submitted transaction hash and optional measured fee.
+ * @returns {Promise<EvmSendResult>} The submitted transaction hash and optional sender-reported fee.
  * @throws {ButterConfigurationError} If a send-capable WDK account is unavailable.
  */
 async function sendEvmTransaction(context, tx) {
@@ -379,7 +414,7 @@ async function sendEvmTransaction(context, tx) {
  * report and this throws.
  *
  * @param {string | { hash?: string, fee?: bigint }} result - The sender or API result to normalize.
- * @returns {EvmSendResult} The validated transaction hash and optional measured fee.
+ * @returns {EvmSendResult} The validated transaction hash and optional sender-reported fee.
  */
 function normalizeSend(result) {
     if (typeof result === 'string')

@@ -28,7 +28,7 @@ import {
   ButterExactOutUnsupportedError,
   ButterNoRouteError
 } from './errors.js'
-import { assertBaseUnitAmount, formatTokenAmount, parseRequiredTokenAmount } from './amounts.js'
+import { assertBaseUnitAmount, formatTokenAmount, parseRequiredTokenAmount, parseTokenDecimals } from './amounts.js'
 import {
   isNativeTokenIdentifier,
   normalizeTokenKey,
@@ -36,7 +36,9 @@ import {
   toButterTokenIdentifier
 } from './identifiers.js'
 import { toButterSlippage } from './slippage.js'
-import type { ButterRoute, CachedRoute, SwidgeOptions } from './types.js'
+import type { ButterRoute, ButterRouteChain, CachedRoute, SwidgeOptions } from './types.js'
+
+const BPS_DENOMINATOR = 10000n
 
 export interface RouteRequestContext {
   sourceChainId: string
@@ -83,6 +85,7 @@ interface RouteRequestResult {
 export class RouteManager {
   private readonly context: RouteRequestContext
   private readonly cache = new Map<string, CachedRoute>()
+  private readonly pendingQuotes = new WeakSet<CachedRoute>()
   // Secondary index (route hash -> cache key) so a caller can pin an approved
   // quote by its Butter route hash. Kept in sync with `cache` on set/evict.
   private readonly hashIndex = new Map<string, string>()
@@ -108,6 +111,8 @@ export class RouteManager {
    * @param {RouteLookupOptions} [lookupOptions] - The cache and sender options used for route lookup (default: empty object).
    * @returns {Promise<CachedRoute>} A matching fresh cached route or newly requested route.
    * @throws {ButterNoRouteError} If Butter provides no liquid route for the request.
+   * @throws {ButterActionRequiredError} If freshness, the caller minimum, or same-chain slippage is not satisfied.
+   * @throws {ButterApiError} If route topology, identifiers, or output amounts are invalid.
    */
   async getRoute (options: SwidgeOptions, lookupOptions: RouteLookupOptions = {}): Promise<CachedRoute> {
     const { forExecution = false, senderFallback } = lookupOptions
@@ -122,7 +127,10 @@ export class RouteManager {
       // The execution path consumes a cached route whether or not it is fresh
       // enough to use, so a stale entry is never left behind for a later call.
       if (forExecution) this.evict(key, cached)
-      if (cached.expiresAt - margin > this.context.now()) return cached
+      if (cached.expiresAt - margin > this.context.now()) {
+        this.enforceMinAmountOut(options, cached.route, cached.slippageBps)
+        return cached
+      }
     }
 
     const response = await this.context.requestRoute(request)
@@ -138,6 +146,7 @@ export class RouteManager {
     // Runs on whichever candidate was chosen: falling back to a later one must not
     // skip the chain/token consistency checks.
     this.validateRouteMatchesRequest(route, request)
+    this.enforceMinAmountOut(options, route, Number(request.slippage))
     const cachedRoute = {
       key,
       route,
@@ -150,14 +159,32 @@ export class RouteManager {
       sourceDecimals,
       expiresAt: routeExpiresAt(route, this.context.now())
     }
-    if (!forExecution) {
-      const previous = this.cache.get(key)
-      if (previous) this.evict(key, previous)
-      this.evictStaleRoutes()
-      this.cache.set(key, cachedRoute)
-      this.hashIndex.set(route.hash, key)
+    if (cachedRoute.expiresAt <= this.context.now() + margin) {
+      throw new ButterActionRequiredError('Butter quote expires too soon; request a new quote', {
+        hash: route.hash,
+        expiresAt: cachedRoute.expiresAt,
+        margin
+      })
     }
+    if (!forExecution) this.pendingQuotes.add(cachedRoute)
     return cachedRoute
+  }
+
+  /**
+   * Caches a new candidate only after its complete quote has been mapped successfully.
+   *
+   * @param {CachedRoute} candidate - The newly fetched route whose quote mapping succeeded.
+   * @returns {void} Returns after committing a new candidate or preserving an existing cache hit.
+   */
+  cacheQuote (candidate: CachedRoute): void {
+    // A cache hit may have been consumed by concurrent execution while its quote
+    // was being mapped. Only a newly fetched candidate may create a cache entry.
+    if (!this.pendingQuotes.delete(candidate)) return
+    const previous = this.cache.get(candidate.key)
+    if (previous) this.evict(candidate.key, previous)
+    this.evictStaleRoutes()
+    this.cache.set(candidate.key, candidate)
+    this.hashIndex.set(candidate.route.hash, candidate.key)
   }
 
   /**
@@ -190,6 +217,7 @@ export class RouteManager {
       else if (entry.expiresAt <= this.context.now()) this.evict(entry.key, entry)
       throw new ButterActionRequiredError('Pinned Butter quote expires too soon to execute or does not match the request; request a new quote', { hash })
     }
+    this.enforceMinAmountOut(options, entry.route, entry.slippageBps)
     this.evict(entry.key, entry)
     return entry
   }
@@ -296,25 +324,30 @@ export class RouteManager {
   }
 
   /**
-   * Requires Butter's quoted minimum output to satisfy the caller's floor.
+   * Requires the quoted minimum to satisfy the caller's floor and same-chain slippage.
    *
    * @param {SwidgeOptions} options - The options containing the optional caller minimum.
    * @param {ButterRoute} route - The Butter route to inspect or map.
+   * @param {number} slippageBps - The integer slippage used for this route request.
    * @returns {void} Returns when the quoted minimum meets or exceeds the caller's floor.
    * @throws {ButterActionRequiredError} If caller action is required before the operation can continue.
    */
-  enforceMinAmountOut (options: SwidgeOptions, route: ButterRoute): void {
-    if (options.minAmountOut == null) return
+  enforceMinAmountOut (options: SwidgeOptions, route: ButterRoute, slippageBps: number): void {
     // Validated like `fromTokenAmount`: WDK types this as `number | bigint`, so an
     // out-of-range number reached `BigInt()` and threw a raw RangeError. Zero is a
-    // meaningful request here ("no minimum"), unlike an input amount.
-    const requested = assertBaseUnitAmount(options.minAmountOut, 'minAmountOut', { allowZero: true })
-    const destinationDecimals = decimalsOf(route.dstChain?.tokenOut ?? route.srcChain?.tokenOut, 'destination token')
-    const routeMinimum = parseRequiredTokenAmount(route.minAmountOut?.amount ?? route.amountOutMin, 'minimum output amount', destinationDecimals)
-    if (routeMinimum < requested) {
-      throw new ButterActionRequiredError('Butter route minimum output is below requested minAmountOut', {
+    // meaningful request here (no additional explicit floor), unlike an input amount.
+    const requested = options.minAmountOut == null ? 0n : assertBaseUnitAmount(options.minAmountOut, 'minAmountOut', { allowZero: true })
+    const output = routeOutput(route)
+    const sameChain = String(options.toChain ?? this.context.sourceChainId) === this.context.sourceChainId
+    const slippageMinimum = sameChain
+      ? (output.amount * (BPS_DENOMINATOR - BigInt(slippageBps)) + BPS_DENOMINATOR - 1n) / BPS_DENOMINATOR
+      : 0n
+    const minimum = requested > slippageMinimum ? requested : slippageMinimum
+    if (output.minimum < minimum) {
+      throw new ButterActionRequiredError('Butter route minimum output is below the requested minimum or slippage floor', {
         requestedMinAmountOut: String(requested),
-        routeMinimum: String(routeMinimum)
+        slippageMinimum: String(slippageMinimum),
+        routeMinimum: String(output.minimum)
       })
     }
   }
@@ -338,7 +371,9 @@ export class RouteManager {
 
   /** @private */
   private validateRouteMatchesRequest (route: ButterRoute, request: Record<string, unknown>): void {
-    if (!route.hash) throw new ButterApiError('Butter route is missing hash', route)
+    if (typeof route.hash !== 'string' || route.hash.length === 0 || route.hash !== route.hash.trim()) {
+      throw new ButterApiError('Butter route is missing a valid hash', route)
+    }
     if (normalizeId(route.srcChain?.chainId) !== normalizeId(request.fromChainId as string | number)) {
       throw new ButterApiError('Butter route source chain does not match request', { route, request })
     }
@@ -346,6 +381,9 @@ export class RouteManager {
     // A missing dstChain denotes a same-chain path in Butter's `/route` shape, so
     // accepting it for a cross-chain request would quote the wrong (source) leg.
     const crossChain = normalizeId(request.fromChainId as string | number) !== normalizeId(request.toChainId as string | number)
+    if (!crossChain && (route.dstChain != null || route.bridgeChain != null)) {
+      throw new ButterApiError('Butter same-chain route contains a destination or bridge segment', { route, request })
+    }
     if (crossChain && !route.dstChain) {
       throw new ButterApiError('Butter cross-chain route is missing dstChain', { route, request })
     }
@@ -359,7 +397,7 @@ export class RouteManager {
     if (!sameToken(this.context.sourceChainId, sourceToken, String(request.tokenInAddress))) {
       throw new ButterApiError('Butter route source token does not match request', { route, request })
     }
-    const outputToken = crossChain ? route.dstChain?.tokenOut : route.srcChain?.tokenOut
+    const outputToken = outputChain(route).tokenOut
     const outputTokenAddress = outputToken?.address?.trim()
     if (!outputTokenAddress) {
       throw new ButterApiError('Butter route is missing destination token address', { route, request })
@@ -367,6 +405,35 @@ export class RouteManager {
     if (!sameToken(String(request.toChainId), outputTokenAddress, String(request.tokenOutAddress))) {
       throw new ButterApiError('Butter route destination token does not match request', { route, request })
     }
+  }
+}
+
+/**
+ * Selects the output segment after request topology validation.
+ *
+ * @param {ButterRoute} route - The route with validated source and destination chains.
+ * @returns {ButterRouteChain} The single segment defining the destination output.
+ * @throws {ButterApiError} If the output segment is missing.
+ */
+function outputChain (route: ButterRoute): ButterRouteChain {
+  const chain = route.dstChain ?? route.srcChain
+  if (chain == null) throw new ButterApiError('Butter route is missing its output segment', route)
+  return chain
+}
+
+/**
+ * Parses destination amounts once under the output segment's token precision.
+ *
+ * @param {ButterRoute} route - The route with validated request topology.
+ * @returns {{ amount: bigint, minimum: bigint }} The quoted output and minimum in base units.
+ * @throws {ButterApiError} If required output metadata is missing or invalid.
+ */
+export function routeOutput (route: ButterRoute): { amount: bigint, minimum: bigint } {
+  const chain = outputChain(route)
+  const decimals = decimalsOf(chain.tokenOut, 'destination token')
+  return {
+    amount: parseRequiredTokenAmount(chain.totalAmountOut, 'destination total output amount', decimals),
+    minimum: parseRequiredTokenAmount(route.minAmountOut?.amount ?? route.amountOutMin, 'minimum output amount', decimals)
   }
 }
 
@@ -403,8 +470,8 @@ export function routeExpiresAt (route: ButterRoute, now: number): number {
  * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
  */
 export function decimalsOf (token: { decimals?: string | number } | undefined, label = 'token'): number {
-  const decimals = Number(token?.decimals)
-  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
+  const decimals = parseTokenDecimals(token?.decimals)
+  if (decimals == null) {
     throw new ButterApiError(`Butter route is missing valid ${label} decimals`, token)
   }
   return decimals

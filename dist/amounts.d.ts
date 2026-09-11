@@ -1,4 +1,11 @@
 /**
+ * Parses token precision without coercing other JSON types into numbers.
+ *
+ * @param {unknown} value - The integer or decimal integer string reported for a token.
+ * @returns {number | undefined} The precision from 0 through 255, or undefined for invalid metadata.
+ */
+export declare function parseTokenDecimals(value: unknown): number | undefined;
+/**
  * What to do when a decimal amount carries more precision than the token's
  * `decimals` can represent. `reject` (the default) refuses the value rather than
  * silently losing precision; `floor`/`ceil` are for values where a deliberate
@@ -32,6 +39,9 @@ export declare function parseTokenAmount(amount: string | number | bigint | unde
 export declare function parseRequiredTokenAmount(amount: string | number | bigint | undefined | null, label: string, decimals?: number, options?: ParseTokenAmountOptions): bigint;
 /**
  * Formats integer base units as a decimal token amount without floating point conversion.
+ *
+ * Strings contain decimal digits only, with optional surrounding whitespace.
+ * Hexadecimal, exponent, fractional, signed, and empty strings are rejected.
  *
  * @param {bigint | number | string} amount - The non-negative integer base-unit amount to format.
  * @param {number} [decimals] - The token decimal precision used for conversion (default: 18).
