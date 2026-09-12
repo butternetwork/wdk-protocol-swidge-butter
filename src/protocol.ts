@@ -34,6 +34,7 @@ import { ButterHttpClient } from './http.js'
 import { RouteManager } from './route.js'
 import {
   enforceFeeLimits,
+  nativeTokenId,
   resolveFeeLimits,
   routeNativeFee,
   validateFeeLimits,
@@ -43,7 +44,7 @@ import { routeToQuote } from './mappers.js'
 import { DiscoveryService } from './discovery.js'
 import { routerFunctionName, validateSwapTransactions, type SwapValidationContext } from './swap-data.js'
 import { assertGasFee, assertTransactionHash, executeEvmSwap } from './evm.js'
-import { mapReceiptStatus, mapSolanaReceiptStatus, mapStatusResponse } from './status.js'
+import { mapReceiptStatus, mapSolanaReceiptStatus, mapTronReceiptStatus, mapStatusResponse } from './status.js'
 import {
   createRouterRegistry,
   routerDeploymentsForChain,
@@ -162,6 +163,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
     this.feeContext = {
       sourceChainId: this.sourceChainId,
       sourceToken: '',
+      evmChainIds: this.evmChainIds,
       ...(config.nativeTokenDecimals ? { nativeTokenDecimals: config.nativeTokenDecimals } : {}),
       ...(config.onWarning ? { onWarning: config.onWarning } : {})
     }
@@ -191,6 +193,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
       tokenDecimals: normalizedTokenDecimals(this.sourceChainId, config.tokenDecimals),
       nativeTokenDecimals: config.nativeTokenDecimals ?? {},
       strictSlippageChainIds,
+      evmChainIds: this.evmChainIds,
       ...(executionMarginSeconds != null ? { executionMarginSeconds } : {}),
       ...(affiliate != null ? { affiliate } : {}),
       ...(referrer != null ? { referrer } : {}),
@@ -261,13 +264,14 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
    * @throws {ButterExactOutUnsupportedError} If exact-out options are supplied.
    * @throws {ButterUnsupportedError} If the requested route, adapter output, or operation shape is unsupported.
    * @throws {ButterReadOnlyAccountError} If execution lacks a full, send-capable WDK account.
-   * @throws {ButterConfigurationError} If execution configuration, approval confirmation, or native-fee bounds are invalid.
+   * @throws {ButterConfigurationError} If execution configuration, allowance reading capability, approval confirmation, or native-fee bounds are invalid.
+   * @throws {Error} If the selected allowance reader fails before any transaction is broadcast.
    * @throws {ButterActionRequiredError} If the recipient, slippage, quote freshness, or minimum output needs caller action.
    * @throws {ButterNoRouteError} If Butter provides no liquid route.
    * @throws {ButterFeeValuationError} If a configured fee cap cannot value Butter's fee metadata safely.
    * @throws {ButterFeeLimitExceededError} If the route exceeds a configured network or protocol fee cap.
    * @throws {ButterTransactionValidationError} If `/swap` transaction data does not match the quoted intent or configured limits.
-   * @throws {ButterPartialExecutionError} If a send or confirmation fails after at least one transaction was broadcast.
+   * @throws {ButterPartialExecutionError} If a send, confirmation, or route freshness check fails after at least one transaction was broadcast.
    * @throws {ButterApiError} If Butter returns malformed or inconsistent data or a sender reports invalid metadata.
    * @throws {ValueError | ProviderRequiredError | ProviderError | TransactionError | MaximumFeeExceededError} If the WDK account rejects the first transaction before any transaction is broadcast; later failures are reported through `ButterPartialExecutionError.cause`.
    */
@@ -327,6 +331,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
       from: sender,
       receiver
     })
+    this.routes.assertExecutable(cached)
     const nativeSource = isNativeTokenIdentifier(this.sourceChainId, options.fromToken)
     const validationContext: SwapValidationContext = {
       sourceChainId: this.sourceChainId,
@@ -376,7 +381,8 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
           options,
           sourceChainId: this.sourceChainId,
           nativeSource: prepared.nativeSource,
-          approvalAmount: prepared.requestedAmountIn
+          approvalAmount: prepared.requestedAmountIn,
+          assertExecutable: () => this.routes.assertExecutable(prepared.cached)
         })
         transactions.push(...executed.transactions)
         feeParts.push(executed.gasFee)
@@ -418,6 +424,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
     const sendTransaction = this.account.sendTransaction.bind(this.account)
     for (const entry of classified) {
       try {
+        this.routes.assertExecutable(prepared.cached)
         const result = await sendTransaction(entry.transaction)
         transactions.push({ hash: hashOf(result), chain: this.sourceChainId, type: entry.type })
         feeParts.push(feeOf(result))
@@ -442,7 +449,7 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
         id: sourceTx.hash,
         hash: sourceTx.hash,
         fees: reportedNetworkFee != null
-          ? withReportedNetworkFee(prepared.quote.fees, reportedNetworkFee, prepared.cached.route, this.sourceChainId)
+          ? withReportedNetworkFee(prepared.quote.fees, reportedNetworkFee, this.feeContext)
           : prepared.quote.fees,
         transactions,
         fromTokenAmount: prepared.quote.fromTokenAmount,
@@ -603,15 +610,18 @@ export class ButterSwidgeProtocol extends SwidgeProtocol {
       throw new ButterApiError('Butter status destination chain does not match request hints', { id, chain })
     }
     const solana = String(chain) === SOLANA_CHAIN_ID
+    const tron = String(chain) === TRON_CHAIN_ID
     const accountReceipt = this.account?.getTransactionReceipt?.bind(this.account)
-    const getReceipt = solana ? accountReceipt :
+    const getReceipt = solana || tron ? accountReceipt :
       this.config.evm?.publicClient?.getTransactionReceipt?.bind(this.config.evm.publicClient) ?? accountReceipt
     if (!getReceipt) {
       throw new ButterConfigurationError(solana
         ? 'Solana same-chain swidge status requires an account with getTransactionReceipt'
-        : 'Same-chain swidge status requires evm.publicClient or an account with getTransactionReceipt')
+        : tron ? 'Tron same-chain swidge status requires an account with getTransactionReceipt'
+          : 'Same-chain swidge status requires evm.publicClient or an account with getTransactionReceipt')
     }
     const receipt = await getReceipt(id)
+    if (tron) return mapTronReceiptStatus(id, receipt, chain)
     return solana ? mapSolanaReceiptStatus(id, receipt, chain) : mapReceiptStatus(id, receipt as EvmTransactionReceipt | null, chain)
   }
 
@@ -805,25 +815,25 @@ function feeOf (result: string | { hash?: string, fee?: bigint }): bigint | unde
  * Replaces the route's network estimate with the sender-reported source gas fee.
  * Senders may report estimates rather than receipt-based costs. Other fees
  * remain route-derived estimates. If the quote had no network entry, one is
- * appended using the generic native identifier if the quote omits gas metadata.
+ * appended using the source chain's canonical native identifier.
  *
  * @param {SwidgeFee[]} fees - The mapped WDK fees to inspect.
  * @param {bigint} reported - The sender-reported network fee in native base units.
- * @param {ButterRoute} route - The Butter route to inspect or map.
- * @param {string} sourceChainId - The chain on which the gas was spent.
+ * @param {FeeContext} context - The source chain and configured EVM chains.
  * @returns {SwidgeFee[]} A fee list containing the sender-reported network fee.
  */
-function withReportedNetworkFee (fees: SwidgeFee[], reported: bigint, route: ButterRoute, sourceChainId: string): SwidgeFee[] {
+function withReportedNetworkFee (fees: SwidgeFee[], reported: bigint, context: FeeContext): SwidgeFee[] {
+  const token = nativeTokenId(context)
+  const sourceChainId = context.sourceChainId
   let replaced = false
   const next = fees.map((fee) => {
     if (!replaced && fee.type === 'network') {
       replaced = true
-      return { ...fee, amount: reported, chain: sourceChainId, description: 'Sender-reported source gas fee' }
+      return { ...fee, amount: reported, token, chain: sourceChainId, description: 'Sender-reported source gas fee' }
     }
     return fee
   })
   if (!replaced) {
-    const token = route.gasFee?.address || route.gasFee?.symbol || 'native'
     next.push({ type: 'network', amount: reported, token, chain: sourceChainId, included: false, description: 'Sender-reported source gas fee' })
   }
   return next

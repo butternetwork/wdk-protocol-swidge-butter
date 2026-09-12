@@ -3,6 +3,8 @@ import type { ButterRoute, ButterWarning, SwidgeFee, SwidgeProtocolConfig } from
 export interface FeeContext {
     sourceChainId: string;
     sourceToken: string;
+    /** Additional chains explicitly configured as EVM. */
+    evmChainIds?: ReadonlySet<string>;
     nativeTokenDecimals?: Record<string, number>;
     /**
      * The caller's exact input in source-token base units. Used as the denominator
@@ -60,6 +62,7 @@ export declare function validateFeeLimits(config: SwidgeProtocolConfig): void;
  * @param {ButterRoute} route - The Butter route to inspect or map.
  * @param {FeeContext} context - The source chain, source token decimals, and warning sink used to map each fee.
  * @returns {SwidgeFee[]} The mapped provider result.
+ * @throws {ButterApiError} If fee data is malformed or gas identities conflict with the source chain.
  */
 export declare function mapRouteFees(route: ButterRoute, context: FeeContext): SwidgeFee[];
 /**
@@ -82,8 +85,16 @@ export declare function routeNativeFee(route: ButterRoute, context: FeeContext):
  * @param {FeeContext} context - The trusted source amount, decimals, and chain metadata used for valuation.
  * @param {ResolvedFeeLimits} limits - The resolved fee limits to enforce.
  * @returns {void} Returns when every configured fee ratio is within its cap.
+ * @throws {ButterApiError} If gas identities conflict with the source chain.
  */
 export declare function enforceFeeLimits(route: ButterRoute, context: FeeContext, limits: ResolvedFeeLimits): void;
+/**
+ * Returns the chain-native identifier used consistently for fee reporting.
+ *
+ * @param {FeeContext} context - The source chain and configured EVM chains.
+ * @returns {string} The canonical native address, or `native` for Bitcoin and unknown chains.
+ */
+export declare function nativeTokenId(context: FeeContext): string;
 /**
  * Resolves source-chain native token decimals with caller overrides.
  *

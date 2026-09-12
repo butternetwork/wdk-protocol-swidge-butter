@@ -128,7 +128,7 @@ for (const asset of NATIVE_ASSETS) {
     const result = await test.protocol.swidge(test.request)
 
     assert.deepEqual(result.fees, [{
-      type: 'network', amount: 0n, chain: asset.chainId, token: 'native', included: false,
+      type: 'network', amount: 0n, chain: asset.chainId, token: asset.alias === 'btc' ? 'native' : asset.token, included: false,
       description: 'Butter reported no fees for this route'
     }])
     assert.deepEqual(test.sent, [test.transaction])

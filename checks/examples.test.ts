@@ -174,3 +174,72 @@ describe('probe HTTP requests', () => {
     assert.equal(Object.hasOwn(result, 'verdict'), false)
   })
 })
+
+describe('example execution errors', () => {
+  const approval = { hash: `0x${'1'.repeat(64)}`, chain: '56', type: 'approval' }
+  const secondApproval = { hash: `0x${'2'.repeat(64)}`, chain: '56', type: 'approval' }
+  const source = { hash: `0x${'3'.repeat(64)}`, chain: '56', type: 'source' }
+
+  for (const { transactions, failedType } of [
+    { transactions: [approval], failedType: 'approval' },
+    { transactions: [approval, secondApproval], failedType: 'source' },
+    { transactions: [approval, secondApproval, source], failedType: 'source' },
+    { transactions: [source], failedType: undefined }
+  ]) {
+    it(`reports ${transactions.length} broadcast hashes and failure role ${failedType}`, async () => {
+      const script = `
+        import { ButterPartialExecutionError } from '@butternetwork/wdk-protocol-swidge-butter'
+        import { runExample } from ${JSON.stringify(new URL('../examples/shared.ts', import.meta.url).href)}
+        const transactions = ${JSON.stringify(transactions)}
+        transactions[0].privateKey = 'must-not-leak'
+        const cause = new Error('secret cause must-not-leak')
+        const error = new ButterPartialExecutionError(transactions, cause, ${JSON.stringify(failedType)})
+        error.details.apiSecret = 'must-not-leak'
+        runExample(async () => { throw error })
+      `
+
+      await assert.rejects(
+        promisify(execFile)(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script]),
+        (error: unknown) => {
+          const failure = error as { code: number, stdout: string, stderr: string }
+          assert.equal(failure.code, 1)
+          assert.equal(failure.stdout, '')
+          assert.deepEqual(JSON.parse(failure.stderr), {
+            name: 'ButterPartialExecutionError',
+            message: `Butter execution failed after broadcasting ${transactions.length} transaction(s); do not retry without inspecting them`,
+            transactions,
+            ...(failedType != null ? { failedType } : {})
+          })
+          return true
+        }
+      )
+    })
+  }
+
+  it('keeps ordinary errors as messages on stderr with exit code 1', async () => {
+    const script = `
+      import { runExample } from ${JSON.stringify(new URL('../examples/shared.ts', import.meta.url).href)}
+      runExample(async () => { throw new Error('ordinary failure') })
+    `
+    await assert.rejects(
+      promisify(execFile)(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script]),
+      (error: unknown) => {
+        const failure = error as { code: number, stdout: string, stderr: string }
+        assert.deepEqual({ code: failure.code, stdout: failure.stdout, stderr: failure.stderr }, {
+          code: 1, stdout: '', stderr: 'ordinary failure\n'
+        })
+        return true
+      }
+    )
+  })
+
+  it('keeps successful results on stdout without error output', async () => {
+    const script = `
+      import { runExample, printJson } from ${JSON.stringify(new URL('../examples/shared.ts', import.meta.url).href)}
+      runExample(async () => { printJson({ hash: ${JSON.stringify(source.hash)}, fee: 1n }) })
+    `
+    const { stdout, stderr } = await promisify(execFile)(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script])
+    assert.deepEqual(JSON.parse(stdout), { hash: source.hash, fee: '1' })
+    assert.equal(stderr, '')
+  })
+})

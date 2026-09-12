@@ -167,7 +167,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
           {
             type: 'network',
             amount: 100000000000000n,
-            token: 'BNB',
+            token: '0x0000000000000000000000000000000000000000',
             chain: '56',
             included: false,
             description: 'Estimated source chain gas fee'
@@ -667,7 +667,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
         evm: {
           publicClient: {
             // Existing allowance (2e18) exceeds the input (1.5e18).
-            async readContract () { return 2000000000000000000n },
+            async readContract () { return sent.length === 0 ? 2000000000000000000n : sent.length === 1 ? 0n : 1500000000000000000n },
             async waitForTransactionReceipt () { return { status: 'success' } }
           }
         }
@@ -935,6 +935,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
       const receiptQueries: string[] = []
       const accountOnly = {
         async getAddress () { return VALID_SENDER },
+        async getAllowance () { return receiptQueries.length === 0 ? 0n : 1500000000000000000n },
         async sendTransaction (tx: unknown) {
           sent.push(tx)
           return sent.length === 1 ? '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' : '0x1111111111111111111111111111111111111111111111111111111111111111'
@@ -965,8 +966,8 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
         slippage: 0.02
       })
   
-      // Without a publicClient the allowance read is skipped: an approval is
-      // always submitted and confirmed via the account's own receipt lookup.
+      // The account reports zero allowance, so approval is submitted and
+      // confirmed via the account's own receipt lookup.
       assert.deepEqual(result.transactions, [
         { hash: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', chain: '56', type: 'approval' },
         { hash: '0x1111111111111111111111111111111111111111111111111111111111111111', chain: '56', type: 'source' }
@@ -1013,6 +1014,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
       let sends = 0
       const localAccount = {
         async getAddress () { return VALID_SENDER },
+        async getAllowance () { return sends === 0 ? 0n : 1500000000000000000n },
         async sendTransaction () {
           sends++
           return sends === 1 ? { hash: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', fee: 21000n } : { hash: '0x1111111111111111111111111111111111111111111111111111111111111111', fee: 50000n }
@@ -1045,6 +1047,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
       let sends = 0
       const localAccount = {
         async getAddress () { return VALID_SENDER },
+        async getAllowance () { return sends === 0 ? 0n : 1500000000000000000n },
         async sendTransaction () {
           sends++
           return sends === 1 ? { hash: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', fee: 21000n } : '0x1111111111111111111111111111111111111111111111111111111111111111'
@@ -1202,6 +1205,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
       })
       const protocol = new ButterSwidgeProtocol({
         async getAddress () { return VALID_SENDER },
+        async getAllowance () { return 0n },
         async sendTransaction () { return '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
         async getTransactionReceipt () { return null }
       }, {
@@ -1267,6 +1271,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
   it('bounds a single fallback receipt lookup and reports the broadcast hash', async () => {
       const protocol = new ButterSwidgeProtocol({
         async getAddress () { return VALID_SENDER },
+        async getAllowance () { return 0n },
         async sendTransaction () { return '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
         async getTransactionReceipt () { return await new Promise(() => {}) }
       }, {
@@ -1312,6 +1317,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
       const sent: unknown[] = []
       const protocol = new ButterSwidgeProtocol({
         async getAddress () { return VALID_SENDER },
+        async getAllowance () { return 0n },
         async sendTransaction (tx: unknown) {
           sent.push(tx)
           return '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'

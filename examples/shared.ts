@@ -1,4 +1,4 @@
-import type { ButterSwidgeProtocolConfig } from '@butternetwork/wdk-protocol-swidge-butter'
+import { ButterPartialExecutionError, type ButterSwidgeProtocolConfig } from '@butternetwork/wdk-protocol-swidge-butter'
 
 export type ExampleEnv = Readonly<Record<string, string | undefined>>
 
@@ -128,8 +128,17 @@ export function printJson (value: unknown): void {
 
 export function runExample (main: () => Promise<void>): void {
   main().catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : error)
     process.exitCode = 1
+    if (error instanceof ButterPartialExecutionError) {
+      console.error(JSON.stringify({
+        name: error.name,
+        message: error.message,
+        transactions: error.transactions.map(({ hash, chain, type }) => ({ hash, chain, type })),
+        ...(error.failedType != null ? { failedType: error.failedType } : {})
+      }, null, 2))
+    } else {
+      console.error(error instanceof Error ? error.message : error)
+    }
   })
 }
 

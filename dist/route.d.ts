@@ -11,6 +11,8 @@ export interface RouteRequestContext {
     tokenDecimals: ReadonlyMap<string, number>;
     nativeTokenDecimals: Record<string, number>;
     strictSlippageChainIds: Set<string>;
+    /** Additional chains the caller has confirmed use EVM native-token encoding. */
+    evmChainIds?: ReadonlySet<string>;
     /**
      * Seconds of remaining route lifetime required on the execution path, covering
      * the `/swap` round-trip and the approval wait that still follow. Defaults to
@@ -51,6 +53,14 @@ export declare class RouteManager {
     constructor(context: RouteRequestContext);
     /** @private */
     private executionMargin;
+    /**
+     * Rechecks the selected route's fixed expiry before another execution step.
+     *
+     * @param {CachedRoute} cached - The route selected for this execution attempt.
+     * @returns {void} Returns when the remaining lifetime exceeds the execution margin.
+     * @throws {ButterActionRequiredError} If the route no longer has sufficient lifetime.
+     */
+    assertExecutable(cached: CachedRoute): void;
     /**
      * Returns a fresh or reusable Butter route matching the caller options.
      *

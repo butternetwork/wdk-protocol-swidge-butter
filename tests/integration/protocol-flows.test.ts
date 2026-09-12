@@ -730,7 +730,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
         maxNativeFee: 100000000000000000n,
         evm: {
           publicClient: {
-            async readContract () { return 0n },
+            async readContract () { return sent.length === 0 ? 0n : 1500000000000000000n },
             async waitForTransactionReceipt (args) {
               assert.equal(args.hash, '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
               assert.equal(args.timeout, 10_000)

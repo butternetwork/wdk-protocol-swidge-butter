@@ -68,9 +68,10 @@ export declare function isSymbolicNativeTokenIdentifier(chainId: string | number
  *
  * @param {string | number} chainId - The chain identifier used for normalization or lookup.
  * @param {string} token - The caller-provided token identifier or native alias.
+ * @param {ReadonlySet<string>} [extraEvmChainIds] - Additional chains the caller has confirmed as EVM.
  * @returns {string} The canonical token identifier expected by Butter.
  */
-export declare function toButterTokenIdentifier(chainId: string | number, token: string): string;
+export declare function toButterTokenIdentifier(chainId: string | number, token: string, extraEvmChainIds?: ReadonlySet<string>): string;
 /**
  * Normalizes a **transaction hash**, which is a different format space from a token
  * identifier and so needs its own rule.

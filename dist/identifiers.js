@@ -14,7 +14,7 @@
 import { base58check } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
-import { BTC_CHAIN_ID, SOLANA_CHAIN_ID, SYMBOLIC_NATIVE_TOKEN_IDS, TRON_CHAIN_ID } from './constants.js';
+import { addressFamilyForChain, BTC_CHAIN_ID, SOLANA_CHAIN_ID, SYMBOLIC_NATIVE_TOKEN_IDS, TRON_CHAIN_ID } from './constants.js';
 /**
  * Chain-format-aware comparison for token addresses, transaction hashes, and any
  * other opaque on-chain identifier.
@@ -161,9 +161,10 @@ export function isSymbolicNativeTokenIdentifier(chainId, token) {
  *
  * @param {string | number} chainId - The chain identifier used for normalization or lookup.
  * @param {string} token - The caller-provided token identifier or native alias.
+ * @param {ReadonlySet<string>} [extraEvmChainIds] - Additional chains the caller has confirmed as EVM.
  * @returns {string} The canonical token identifier expected by Butter.
  */
-export function toButterTokenIdentifier(chainId, token) {
+export function toButterTokenIdentifier(chainId, token, extraEvmChainIds) {
     const chain = String(chainId);
     const trimmed = token.trim();
     if (normalizeTokenIdentifier(chain, trimmed) !== `native:${chain}`)
@@ -172,7 +173,7 @@ export function toButterTokenIdentifier(chainId, token) {
         return SOLANA_NATIVE_TOKEN;
     if (chain === TRON_CHAIN_ID)
         return TRON_NATIVE_TOKEN;
-    if (chain === BTC_CHAIN_ID)
+    if (chain === BTC_CHAIN_ID || addressFamilyForChain(chain, extraEvmChainIds) === 'evm')
         return ZERO_ADDRESS;
     return trimmed;
 }

@@ -98,14 +98,33 @@ const protocol = new ButterSwidgeProtocol(account, {
 
 The account resolves the sender address, submits swap and approval calldata via
 its EVM `sendTransaction` implementation, and may confirm approval receipts via
-`getTransactionReceipt`. An optional `evm.publicClient`
-enables ERC20 allowance checks (without one, an approval is always submitted and
-confirmed through a receipt lookup). When **every** send reports a gas fee,
+`getTransactionReceipt`. ERC20 execution reads allowance through the optional
+`evm.publicClient`, or through the account's `getAllowance(token, spender)` when
+no public client is configured. Standard WDK EVM accounts already provide this
+method. Custom account adapters must expose it or configure `evm.publicClient`;
+without either reader, execution throws `ButterConfigurationError` before any
+transaction is broadcast. A read failure propagates without trying another
+reader or sending approvals. Quoting and native-token execution do not require
+an allowance reader.
+
+An allowance equal to the input needs no approval. A zero allowance needs one
+exact approval; any other non-zero allowance is first reset with `approve(0)`
+and confirmed, then set to the exact input and confirmed before the swap. After
+each successful receipt, the same allowance reader must report exactly the
+approved value: zero before the amount approval, and the exact input before the
+swap. A successful receipt alone does not prove that `approve()` took effect.
+Mismatches are polled every 2 seconds (shortened to the remaining deadline).
+Each approval shares one `evm.approvalTimeoutMs` budget between receipt and
+allowance confirmation, starting when submission returns its hash. RPC errors
+stop execution immediately; the provider never switches readers or rebroadcasts
+an approval to resolve a mismatch. This supports USDT-like tokens that reject
+changing a non-zero allowance directly.
+When **every** send reports a gas fee,
 the executed `SwidgeResult` reports the sender-reported total; otherwise it
 keeps the route estimate. A sender may return an estimate: WDK EVM currently
 quotes gas before broadcasting, so this value is not a receipt-based actual cost.
-When a quote omits gas metadata, the reported fee is
-still included using the source chain and the generic `native` token identifier.
+When a quote omits gas metadata, the reported fee is still included using the
+source chain and its canonical native-token identifier, as described below.
 
 Version 0.2 removes the former `evm.walletClient` and `toEvmWalletClient` APIs.
 Pass a full WDK EVM account as the protocol's first constructor argument; there
@@ -192,6 +211,20 @@ the exact-in validator intentionally contains no dormant exact-out branch.
   `routeExecutionMarginSeconds` above `evm.approvalTimeoutMs / 1000` (which
   defaults to 10s). These two values are coupled; the
   margin is configurable rather than hardcoded so the coupling stays explicit.
+- Execution rechecks that same margin after `/swap` and immediately before each
+  account `sendTransaction` call, including both ERC20 approvals and every adapter
+  transaction. Remaining lifetime must be **strictly greater** than the margin;
+  setting the margin to `0` still rejects an expired route. These checks use the
+  selected quote's original expiry, including when Butter omitted its timestamp.
+  If a wait consumes the margin, execution stops with `ButterActionRequiredError`;
+  after any broadcast it throws `ButterPartialExecutionError` instead, preserving
+  all submitted hashes, the freshness error as `cause`, and the blocked transaction's
+  role as `failedType`. Freshness diagnostics contain `hash`, `expiresAt`, `now`,
+  and `margin` (timestamps and margin are in seconds). Execution never automatically
+  re-quotes, resends, or revokes an allowance after this failure. Inspect submitted
+  transactions before trying again. The check precedes the account call: it cannot
+  constrain wallet-internal confirmation delays or chain inclusion time, and a
+  final send returning after expiry is still recorded normally.
 - Butter HTTP calls have a complete-request deadline: `requestTimeoutMs`
   defaults to **10,000ms** and covers the fetch plus error-body or JSON-body
   parsing. Timed-out requests abort and throw `ButterApiError`; they are not
@@ -245,6 +278,16 @@ the exact-in validator intentionally contains no dormant exact-out branch.
   error means `failed`, and missing or malformed metadata stays `pending`.
   Normalized `status` receipts remain supported when `meta` is absent. Solana
   same-chain attribution across new instances is not supported.
+- Tron same-chain operations recorded by this instance (including a source
+  broadcast before partial execution failed) use the account's
+  `getTransactionReceipt`, never `evm.publicClient`. Native `receipt.result:
+  'SUCCESS'` means `completed` when top-level `result` is absent or `'SUCESS'`
+  (the official Tron spelling). Top-level `'FAILED'` or a known contract failure
+  means `failed`, taking precedence over success. Missing, malformed, or
+  unrecognized native outcomes stay `pending`. Normalized `status` receipts
+  remain supported only when both native `result` and `receipt` fields are
+  absent. Tron same-chain attribution across new instances is not supported;
+  cross-chain status continues to use Butter's API.
 - `getSwidgeStatus` maps Butter cross states `0 → pending` (crossing),
   `1 → completed`, and `6 → refunded`. There is no numeric `failed` state.
   Any undocumented or intermediate code (e.g. a relaying state) maps
@@ -282,6 +325,12 @@ the exact-in validator intentionally contains no dormant exact-out branch.
   `T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb`, and `btc` maps to the zero-address token
   identifier. The canonical addresses and the generic `native` sentinel are also
   accepted.
+  On recognized EVM chains, `native`, `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee`,
+  and the zero address are all sent to Butter as
+  `0x0000000000000000000000000000000000000000`, for both input and output tokens.
+  Equivalent aliases share the route cache and can be exchanged when executing
+  a pinned `routeHash`. Additional EVM chains use this encoding when listed in
+  `config.evmChainIds`; unknown chains retain their existing representation.
   For symbol-only bridge fee components paid on the source chain, `native` and
   that chain's `btc`/`trx`/`sol` alias share trusted source precision and use the
   caller's input amount for fee caps. This symbol fallback applies only when the
@@ -326,6 +375,23 @@ is where each entry lands in the legacy `swap()`/`bridge()` scalars:
 | `feeConfig` | — | — | referrer fee configuration used to validate `/swap` calldata; never added as a separate fee |
 | No reported fees | `network` | `fee` | zero-amount native-token placeholder, so `fees[]` is never empty |
 
+Network fees, `swapFee.nativeFee`, and zero-fee placeholders always use the
+configured source chain and its canonical native-token identifier in `fees[]`:
+the zero address on recognized EVM chains (including `evmChainIds`),
+`So11111111111111111111111111111111111111112` on Solana,
+`T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb` on Tron, and `native` on Bitcoin or
+unrecognized chains. These identifiers replace response-provided symbols such
+as BNB or TRX. Consumers should identify fee currencies by `chain` and `token`
+together. Native precision still uses `nativeTokenDecimals` or the chain default.
+
+An explicit `gasFee.chainId` must match the source chain, and an explicit
+`gasFee.address` must identify its native asset using a supported address or
+alias. Conflicts and invalid field types throw `ButterApiError` during quoting
+or before execution requests `/swap`, even for zero or absent gas amounts.
+Missing, null, or blank identity fields are allowed; symbols do not determine
+fee identity. Omitting a fee amount still does not count as reporting zero for
+fee-cap enforcement. Bridge and source-token fee identities are unchanged.
+
 `bridgeFee` is reported per component, and the top-level `bridgeFee.amount` summary is
 **never priced**. It is a single figure in a single token describing a fee that can
 span three tokens, so it is not attributable — and amounts in different tokens cannot
@@ -362,6 +428,14 @@ same-token route amounts, required USD metadata, or bridge-component metadata
 needed for valuation makes a configured cap fail closed with
 `ButterFeeValuationError`; the package does not silently treat an unvalued fee as
 zero.
+
+When a non-zero fee needs USD valuation, both `gasFee.inUSD` and
+`totalAmountInUSD` must be strictly positive. A zero USD estimate cannot value
+a non-zero fee and throws `ButterFeeValuationError`, including with a zero bps
+cap. Explicitly zero fees do not require unused USD metadata. Quoting remains
+available, and native-source fee ratios use the caller's input directly.
+Positive USD estimates still come from Butter; this check is not an independent
+price oracle.
 
 Every non-zero bridge component requires a valid `bridgeFee.chainId`, the payment
 chain documented by Butter. A missing or invalid chain rejects both quoting and
@@ -576,11 +650,14 @@ structured context where the error class provides it.
   is the original failure. **Do not blindly retry** — those transactions are
   already on-chain and re-sending would double-execute them; inspect them first.
   This includes an approval that cannot be confirmed (reverted, unknown receipt
-  status, or a confirmation timeout): the approval is already on the wire, so you
+  status, a confirmation timeout, or an allowance that cannot be verified): the approval is already on the wire, so you
   get its hash and the underlying error as `cause` — the swap itself is still never
   sent against an unconfirmed approval. It also includes a send that succeeded but
   reported an unusable gas fee: a transaction is recorded the moment its send
   returns, *before* the fee is validated, so a malformed fee never erases the hash.
+  An allowance timeout has a `ButterConfigurationError` cause with the approval
+  hash, token, spender, expected allowance, last observed allowance (when available),
+  and timeout in `details`; `failedType` remains `approval`.
   Fees are checked at runtime as non-negative bigints and hashes as non-empty
   strings on both the built-in EVM path and the adapter path, because a
   host-supplied sender makes the declared types hints rather than guarantees. The

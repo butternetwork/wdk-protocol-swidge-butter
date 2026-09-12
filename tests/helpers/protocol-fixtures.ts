@@ -361,6 +361,7 @@ export function oversizedAllowanceFetch () {
 
 export function protocolFailingOnSend (account: unknown, failAt: number, rejected: Error) {
     let sends = 0
+    let allowance = 2000000000000000000n
     const baseAccount = account as {
       getAddress: () => Promise<string>
       getTransactionReceipt?: (hash: string) => Promise<unknown>
@@ -383,8 +384,11 @@ export function protocolFailingOnSend (account: unknown, failAt: number, rejecte
       evm: {
         publicClient: {
           // Existing allowance (2e18) exceeds the input (1.5e18).
-          async readContract () { return 2000000000000000000n },
-          async waitForTransactionReceipt () { return { status: 'success' } }
+          async readContract () { return allowance },
+          async waitForTransactionReceipt () {
+            allowance = sends === 1 ? 0n : 1500000000000000000n
+            return { status: 'success' }
+          }
         }
       }
     })
@@ -426,10 +430,15 @@ export function sameChainErc20Fetch () {
   }
 
 export function erc20FeeProtocol (send: (tx: unknown) => Promise<string | { hash?: string, fee?: bigint }>) {
+    let allowance = 0n
     return new ButterSwidgeProtocol({
       async getAddress () { return VALID_SENDER },
+      async getAllowance () { return allowance },
       async sendTransaction (tx) { return send(tx) },
-      async getTransactionReceipt () { return { status: 'success' } }
+      async getTransactionReceipt () {
+        allowance = sameChainErc20Options.fromTokenAmount
+        return { status: 'success' }
+      }
     }, {
       sourceChainId: 56,
       entrance: 'wdk',

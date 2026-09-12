@@ -126,6 +126,15 @@ export interface ButterAccount {
   sendTransaction?: BivariantAsyncMethod<unknown, ButterSendResult>
   /** Returns a transaction's receipt, or null while unconfirmed. */
   getTransactionReceipt?: (hash: string) => Promise<unknown | null>
+  /**
+   * Returns this account's ERC-20 allowance for a spender, in token base units.
+   *
+   * @param {string} token - The ERC-20 contract address.
+   * @param {string} spender - The contract authorized to spend the token.
+   * @returns {Promise<bigint>} The current allowance in token base units.
+   * @throws {Error} If the account's provider cannot read the allowance.
+   */
+  getAllowance?: (token: string, spender: string) => Promise<bigint>
 }
 
 /** Fetch response subset consumed by the Butter HTTP client. */
@@ -351,6 +360,11 @@ export interface ButterSwidgeProtocolConfig extends SwidgeProtocolConfig {
    * is merely un-expired is not good enough. Set this above
    * `evm.approvalTimeoutMs / 1000` when approvals are expected. A pinned
    * `routeHash` inside the margin is rejected rather than silently re-quoted.
+   * Rechecked after `/swap` and immediately before every account send, including
+   * approvals and adapter transactions. Reaching the margin stops the remaining
+   * execution without re-quoting; already submitted hashes are preserved in a
+   * `ButterPartialExecutionError`. Zero still rejects an expired route.
+   * Wallet-internal confirmation delays and chain inclusion are outside this check.
    */
   routeExecutionMarginSeconds?: number
   /**
@@ -364,7 +378,8 @@ export interface ButterSwidgeProtocolConfig extends SwidgeProtocolConfig {
    */
   onWarning?: (warning: ButterWarning) => void
   /**
-   * Additional chain IDs to treat as EVM for the address-family check.
+   * Additional chain IDs to treat as EVM for address-family checks, native-token
+   * request encoding, and canonical native-fee identifiers.
    *
    * `swidge` requires an explicit `recipient` whenever the destination chain's
    * address family differs from the source's **or** is unrecognized, since WDK's
@@ -397,8 +412,8 @@ export interface ButterSwidgeProtocolConfig extends SwidgeProtocolConfig {
   /** The EVM read, send, and approval-confirmation capabilities. */
   evm?: {
     /**
-     * Read-only client for ERC-20 allowance checks. Optional: without it the
-     * provider skips the allowance read and always submits an approval.
+     * Read-only client for ERC-20 allowance checks. Without it the provider uses
+     * account.getAllowance; ERC-20 execution requires one of these readers.
      */
     publicClient?: EvmPublicClient
     /**
@@ -407,7 +422,12 @@ export interface ButterSwidgeProtocolConfig extends SwidgeProtocolConfig {
      * whenever an approval must be sent; account receipts support only 1.
      */
     approvalConfirmations?: number
-    /** Approval confirmation deadline in milliseconds (default 10,000). Zero means immediate timeout. */
+    /**
+     * Per-approval deadline for receipt confirmation and exact allowance verification
+     * in milliseconds (default 10,000), starting when submission returns a hash.
+     * Allowance mismatches are polled every 2 seconds within the remaining budget.
+     * Zero means immediate timeout.
+     */
     approvalTimeoutMs?: number
   }
 }
@@ -468,7 +488,7 @@ export interface ButterRoute {
   priceImpact?: string | number
   /** The bridge fee summary and independently denominated components. */
   bridgeFee?: ButterBridgeFee
-  /** The estimated source-chain network fee. */
+  /** Estimated source-native network fee; explicit chain/address metadata must match that denomination. */
   gasFee?: ButterFee
   /** The authoritative Butter swap fee amounts. */
   swapFee?: { nativeFee?: string, tokenFee?: string, nativeSymbol?: string, tokenSymbol?: string }

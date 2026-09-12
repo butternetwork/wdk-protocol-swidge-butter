@@ -52,6 +52,8 @@ export interface RouteRequestContext {
   tokenDecimals: ReadonlyMap<string, number>
   nativeTokenDecimals: Record<string, number>
   strictSlippageChainIds: Set<string>
+  /** Additional chains the caller has confirmed use EVM native-token encoding. */
+  evmChainIds?: ReadonlySet<string>
   /**
    * Seconds of remaining route lifetime required on the execution path, covering
    * the `/swap` round-trip and the approval wait that still follow. Defaults to
@@ -102,6 +104,26 @@ export class RouteManager {
   /** @private */
   private executionMargin (): number {
     return this.context.executionMarginSeconds ?? ROUTE_EXECUTION_MARGIN_SECONDS
+  }
+
+  /**
+   * Rechecks the selected route's fixed expiry before another execution step.
+   *
+   * @param {CachedRoute} cached - The route selected for this execution attempt.
+   * @returns {void} Returns when the remaining lifetime exceeds the execution margin.
+   * @throws {ButterActionRequiredError} If the route no longer has sufficient lifetime.
+   */
+  assertExecutable (cached: CachedRoute): void {
+    const now = this.context.now()
+    const margin = this.executionMargin()
+    if (cached.expiresAt <= now + margin) {
+      throw new ButterActionRequiredError('Butter quote expires too soon; request a new quote', {
+        hash: cached.route.hash,
+        expiresAt: cached.expiresAt,
+        now,
+        margin
+      })
+    }
   }
 
   /**
@@ -305,8 +327,8 @@ export class RouteManager {
         fromChainId: this.context.sourceChainId,
         toChainId,
         amount,
-        tokenInAddress: toButterTokenIdentifier(this.context.sourceChainId, options.fromToken),
-        tokenOutAddress: toButterTokenIdentifier(toChainId, options.toToken),
+        tokenInAddress: toButterTokenIdentifier(this.context.sourceChainId, options.fromToken, this.context.evmChainIds),
+        tokenOutAddress: toButterTokenIdentifier(toChainId, options.toToken, this.context.evmChainIds),
         type: 'exactIn',
         slippage,
         // Only Solana needs the sender-derived fallback; other chains keep the
