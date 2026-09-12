@@ -21,7 +21,8 @@ import { parseTokenAmount, parseTokenDecimals } from './amounts.js'
 import {
   isNativeTokenIdentifier,
   isSymbolicNativeTokenIdentifier,
-  sameTokenIdentifier
+  sameTokenIdentifier,
+  toButterTokenIdentifier
 } from './identifiers.js'
 import {
   ButterApiError,
@@ -46,6 +47,8 @@ const BPS_DENOMINATOR = 10000n
 export interface FeeContext {
   sourceChainId: string
   sourceToken: string
+  /** Additional chains explicitly configured as EVM. */
+  evmChainIds?: ReadonlySet<string>
   nativeTokenDecimals?: Record<string, number>
   /**
    * The caller's exact input in source-token base units. Used as the denominator
@@ -135,8 +138,10 @@ const DISPLAY_ROUNDING = { rounding: 'floor' } as const
  * @param {ButterRoute} route - The Butter route to inspect or map.
  * @param {FeeContext} context - The source chain, source token decimals, and warning sink used to map each fee.
  * @returns {SwidgeFee[]} The mapped provider result.
+ * @throws {ButterApiError} If fee data is malformed or gas identities conflict with the source chain.
  */
 export function mapRouteFees (route: ButterRoute, context: FeeContext): SwidgeFee[] {
+  validateGasFeeIdentity(route, context)
   const fees: SwidgeFee[] = []
   const sourceToken = route.srcChain?.tokenIn
   const nativeDecimals = nativeDecimalsForChain(context.sourceChainId, context.nativeTokenDecimals)
@@ -167,8 +172,8 @@ export function mapRouteFees (route: ButterRoute, context: FeeContext): SwidgeFe
     fees.push({
       type: 'network',
       amount: parseTokenAmount(route.gasFee?.amount, nativeDecimals, DISPLAY_ROUNDING),
-      token: requiredTokenId(route.gasFee?.address ?? route.gasFee?.symbol ?? nativeTokenId(context), 'network fee'),
-      chain: route.gasFee?.chainId ?? context.sourceChainId,
+      token: nativeTokenId(context),
+      chain: context.sourceChainId,
       included: false,
       description: 'Estimated source chain gas fee'
     })
@@ -177,10 +182,7 @@ export function mapRouteFees (route: ButterRoute, context: FeeContext): SwidgeFe
     fees.push({
       type: 'protocol',
       amount: parseTokenAmount(route.swapFee?.nativeFee, nativeDecimals, DISPLAY_ROUNDING),
-      token: requiredTokenId(
-        route.swapFee?.nativeSymbol ?? route.gasFee?.address ?? route.gasFee?.symbol ?? nativeTokenId(context),
-        'native protocol fee'
-      ),
+      token: nativeTokenId(context),
       chain: context.sourceChainId,
       included: false,
       description: 'Butter native swap fee'
@@ -224,11 +226,7 @@ function reportFeeCaveats (fees: SwidgeFee[], context: FeeContext): SwidgeFee[] 
     return [{
       type: 'network',
       amount: 0n,
-      // A `network` fee is gas, which is always paid in the chain's native token —
-      // never in the input token. `nativeTokenId` only answers when the source token
-      // IS native, so fall back to the generic 'native' identifier (recognized in
-      // by every chain) rather than mislabelling gas as e.g. USDC.
-      token: nativeTokenId(context) ?? 'native',
+      token: nativeTokenId(context),
       chain: context.sourceChainId,
       included: false,
       description: 'Butter reported no fees for this route'
@@ -272,12 +270,14 @@ export function routeNativeFee (route: ButterRoute, context: FeeContext): bigint
  * @param {FeeContext} context - The trusted source amount, decimals, and chain metadata used for valuation.
  * @param {ResolvedFeeLimits} limits - The resolved fee limits to enforce.
  * @returns {void} Returns when every configured fee ratio is within its cap.
+ * @throws {ButterApiError} If gas identities conflict with the source chain.
  */
 export function enforceFeeLimits (
   route: ButterRoute,
   context: FeeContext,
   limits: ResolvedFeeLimits
 ): void {
+  validateGasFeeIdentity(route, context)
   if (limits.maxNetworkFeeBps != null) {
     enforceLimit('network', networkFeeRatios(route, context), limits.maxNetworkFeeBps)
   }
@@ -715,16 +715,22 @@ function usdRatio (feeUsd: string | undefined, inputUsd: string | undefined, lab
 }
 
 /**
- * Converts required Butter USD metadata to the package's fixed 18-decimal base units.
+ * Converts strictly positive Butter USD metadata to fixed 18-decimal base units.
+ * Only non-zero fees reach this valuation path; a zero USD price cannot value them.
  *
  * @param {string | undefined} value - The Butter USD amount to convert.
  * @param {string} label - The human-readable label used in validation errors.
- * @returns {bigint} The USD amount expressed with 18 decimals.
- * @throws {ButterFeeValuationError} If a fee cannot be valued against a trustworthy denominator.
+ * @returns {bigint} The strictly positive USD amount expressed with 18 decimals.
+ * @throws {ButterFeeValuationError} If required USD metadata is absent or zero.
+ * @throws {ButterApiError} If the USD amount is negative, malformed, or exceeds the supported precision.
  */
 function parseUsd (value: string | undefined, label: string): bigint {
   if (value == null) throw new ButterFeeValuationError(`Cannot value Butter ${label} without USD metadata`)
-  return parseTokenAmount(value, USD_DECIMALS)
+  const amount = parseTokenAmount(value, USD_DECIMALS)
+  if (amount === 0n) {
+    throw new ButterFeeValuationError(`Cannot value Butter ${label} without positive USD metadata`, { label, value })
+  }
+  return amount
 }
 
 /**
@@ -816,13 +822,43 @@ function requiredTokenId (value: string | undefined, label: string): string {
 }
 
 /**
- * Returns the configured source-native token identifier used for fee reporting.
+ * Returns the chain-native identifier used consistently for fee reporting.
  *
- * @param {FeeContext} context - The source chain and source token used to identify native-fee denomination.
- * @returns {string | undefined} The source-native token identifier, or undefined when unavailable.
+ * @param {FeeContext} context - The source chain and configured EVM chains.
+ * @returns {string} The canonical native address, or `native` for Bitcoin and unknown chains.
  */
-function nativeTokenId (context: FeeContext): string | undefined {
-  return isNativeSource(context.sourceChainId, context.sourceToken) ? context.sourceToken : undefined
+export function nativeTokenId (context: FeeContext): string {
+  if (context.sourceChainId === BTC_CHAIN_ID) return 'native'
+  return toButterTokenIdentifier(context.sourceChainId, 'native', context.evmChainIds)
+}
+
+/**
+ * Rejects explicit gas metadata that contradicts its source-native denomination.
+ * Symbols are display metadata, not token identities.
+ *
+ * @param {ButterRoute} route - The partially trusted route response.
+ * @param {FeeContext} context - The trusted source chain.
+ * @returns {void} Returns when absent or supplied identities are consistent.
+ * @throws {ButterApiError} If the gas chain or token identity is invalid or conflicting.
+ */
+function validateGasFeeIdentity (route: ButterRoute, context: FeeContext): void {
+  const chain: unknown = route.gasFee?.chainId
+  const address: unknown = route.gasFee?.address
+  const chainAbsent = chain == null || (typeof chain === 'string' && chain.trim() === '')
+  const addressAbsent = address == null || (typeof address === 'string' && address.trim() === '')
+  if (!chainAbsent && !(
+    (typeof chain === 'string' || (typeof chain === 'number' && Number.isSafeInteger(chain) && chain > 0)) &&
+    String(chain).trim() === context.sourceChainId
+  )) {
+    throw new ButterApiError('Butter gas fee chain does not match the source chain', {
+      field: 'gasFee.chainId', sourceChainId: context.sourceChainId, value: chain
+    })
+  }
+  if (!addressAbsent && !(typeof address === 'string' && isNativeTokenIdentifier(context.sourceChainId, address))) {
+    throw new ButterApiError('Butter gas fee token is not the source native token', {
+      field: 'gasFee.address', sourceChainId: context.sourceChainId, value: address
+    })
+  }
 }
 
 /**

@@ -54,13 +54,14 @@ export declare class ButterSwidgeProtocol extends SwidgeProtocol {
      * @throws {ButterExactOutUnsupportedError} If exact-out options are supplied.
      * @throws {ButterUnsupportedError} If the requested route, adapter output, or operation shape is unsupported.
      * @throws {ButterReadOnlyAccountError} If execution lacks a full, send-capable WDK account.
-     * @throws {ButterConfigurationError} If execution configuration, approval confirmation, or native-fee bounds are invalid.
+     * @throws {ButterConfigurationError} If execution configuration, allowance reading capability, approval confirmation, or native-fee bounds are invalid.
+     * @throws {Error} If the selected allowance reader fails before any transaction is broadcast.
      * @throws {ButterActionRequiredError} If the recipient, slippage, quote freshness, or minimum output needs caller action.
      * @throws {ButterNoRouteError} If Butter provides no liquid route.
      * @throws {ButterFeeValuationError} If a configured fee cap cannot value Butter's fee metadata safely.
      * @throws {ButterFeeLimitExceededError} If the route exceeds a configured network or protocol fee cap.
      * @throws {ButterTransactionValidationError} If `/swap` transaction data does not match the quoted intent or configured limits.
-     * @throws {ButterPartialExecutionError} If a send or confirmation fails after at least one transaction was broadcast.
+     * @throws {ButterPartialExecutionError} If a send, confirmation, or route freshness check fails after at least one transaction was broadcast.
      * @throws {ButterApiError} If Butter returns malformed or inconsistent data or a sender reports invalid metadata.
      * @throws {ValueError | ProviderRequiredError | ProviderError | TransactionError | MaximumFeeExceededError} If the WDK account rejects the first transaction before any transaction is broadcast; later failures are reported through `ButterPartialExecutionError.cause`.
      */

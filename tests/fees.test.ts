@@ -136,7 +136,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
       {
         type: 'network',
         amount: 1_000n,
-        token: 'TRX',
+        token: 'T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb',
         chain: TRON_CHAIN_ID,
         included: false,
         description: 'Estimated source chain gas fee'
@@ -144,7 +144,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
       {
         type: 'protocol',
         amount: 2_000n,
-        token: 'TRX',
+        token: 'T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb',
         chain: TRON_CHAIN_ID,
         included: false,
         description: 'Butter native swap fee'

@@ -57,7 +57,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
     assert.deepEqual(quote.fees, [{
       type: 'network',
       amount: 5_000n,
-      token: 'SOL',
+      token: 'So11111111111111111111111111111111111111112',
       chain: SOLANA_CHAIN_ID,
       included: false,
       description: 'Estimated source chain gas fee'

@@ -149,3 +149,13 @@ The default pair is native BNB to BSC USDT. An ERC20 source token additionally
 requires `EXECUTION_FROM_TOKEN_DECIMALS` and may submit an approval transaction.
 The example remains same-chain to limit operational risk. The package supports
 cross-chain Router V3 execution with versioned calldata validation.
+
+If execution fails after broadcasting any transaction, the example exits with
+code 1 and writes a JSON error to stderr. It contains `name`, `message`, every
+broadcast transaction's `hash`, `chain`, and `type` in `transactions`, and
+`failedType` when known. This includes failures with only approval transactions
+and no source transaction. Inspect each hash on its chain before considering a
+retry; only a transaction with type `source` is a swidge operation ID for status
+queries. The example does not retry automatically or print raw error causes and
+configuration. Successful results remain on stdout; ordinary errors remain
+plain messages on stderr.

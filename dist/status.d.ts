@@ -32,6 +32,15 @@ export declare function mapSolanaReceiptStatus(id: string, receipt: unknown, cha
  */
 export declare function classifyReceiptStatus(receipt: EvmTransactionReceipt | null | undefined): 'success' | 'reverted' | 'unknown';
 /**
+ * Maps a raw Tron receipt, giving native outcomes precedence over normalized status.
+ *
+ * @param {string} id - The recorded source transaction hash.
+ * @param {unknown} receipt - The account's raw or normalized transaction receipt.
+ * @param {string | number} chain - The source chain identifier.
+ * @returns {SwidgeStatusResult} The explicit terminal state, or pending for unknown metadata.
+ */
+export declare function mapTronReceiptStatus(id: string, receipt: unknown, chain: string | number): SwidgeStatusResult;
+/**
  * Maps a partially trusted Butter status response to the WDK status contract.
  *
  * @param {string} id - The identifier to normalize or query.

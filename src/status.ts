@@ -85,6 +85,44 @@ export function classifyReceiptStatus (receipt: EvmTransactionReceipt | null | u
   return 'unknown'
 }
 
+// Transaction.Result.contractResult failures (2-15), from
+// https://github.com/tronprotocol/protocol/blob/master/core/Tron.proto
+const TRON_CONTRACT_FAILURES = new Set([
+  'REVERT', 'BAD_JUMP_DESTINATION', 'OUT_OF_MEMORY', 'PRECOMPILED_CONTRACT',
+  'STACK_TOO_SMALL', 'STACK_TOO_LARGE', 'ILLEGAL_OPERATION', 'STACK_OVERFLOW',
+  'OUT_OF_ENERGY', 'OUT_OF_TIME', 'JVM_STACK_OVER_FLOW', 'UNKNOWN',
+  'TRANSFER_FAILED', 'INVALID_CODE'
+])
+
+/**
+ * Maps a raw Tron receipt, giving native outcomes precedence over normalized status.
+ *
+ * @param {string} id - The recorded source transaction hash.
+ * @param {unknown} receipt - The account's raw or normalized transaction receipt.
+ * @param {string | number} chain - The source chain identifier.
+ * @returns {SwidgeStatusResult} The explicit terminal state, or pending for unknown metadata.
+ */
+export function mapTronReceiptStatus (id: string, receipt: unknown, chain: string | number): SwidgeStatusResult {
+  if (receipt == null) return mapReceiptStatus(id, null, chain)
+  let status = 'unknown'
+  if (typeof receipt === 'object' && !Array.isArray(receipt)) {
+    if (!('result' in receipt) && !('receipt' in receipt)) {
+      return mapReceiptStatus(id, receipt as EvmTransactionReceipt, chain)
+    }
+    const result = 'result' in receipt ? receipt.result : undefined
+    const resource = 'receipt' in receipt ? receipt.receipt : undefined
+    const contractResult = resource != null && typeof resource === 'object' &&
+      !Array.isArray(resource) && 'result' in resource ? resource.result : undefined
+    if (result === 'FAILED' || (typeof contractResult === 'string' && TRON_CONTRACT_FAILURES.has(contractResult))) {
+      status = 'reverted'
+    } else if (contractResult === 'SUCCESS' && (!('result' in receipt) || result === 'SUCESS')) {
+      // SUCESS is the official TransactionInfo.code spelling.
+      status = 'success'
+    }
+  }
+  return mapReceiptStatus(id, { status }, chain)
+}
+
 /**
  * Maps a partially trusted Butter status response to the WDK status contract.
  *

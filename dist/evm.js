@@ -137,6 +137,7 @@ export function isNativeToken(token) {
  *
  * @param {ExecuteEvmSwapContext} context - The validated route, sender, swap transaction, and approval bound for one EVM execution.
  * @returns {Promise<ExecuteEvmSwapResult>} The broadcast transactions and sender-reported gas total.
+ * @throws {ButterActionRequiredError} If route freshness fails before any transaction was broadcast.
  * @throws {ButterPartialExecutionError} If execution fails after at least one transaction was broadcast.
  */
 export async function executeEvmSwap(context) {
@@ -189,33 +190,38 @@ export async function executeEvmSwap(context) {
  * @param {ApprovalContext} context - The account, EVM clients, source token, Router, and exact allowance target.
  * @param {RecordSend} record - The callback that records a broadcast transaction.
  * @returns {Promise<void>} A promise that resolves after the operation completes.
+ * @throws {ButterConfigurationError} If allowance reading or approval confirmation is unavailable, or approval confirmation fails.
+ * @throws {Error} If the selected allowance reader or approval sender fails.
+ * @throws {ButterActionRequiredError} If the route no longer has sufficient lifetime before an approval send.
  */
 async function approveIfNeeded(context, record) {
     const publicClient = context.config.evm?.publicClient;
     const amount = context.approvalAmount;
+    let readAllowance;
     if (publicClient) {
-        const allowance = await publicClient.readContract({
+        readAllowance = () => publicClient.readContract({
             address: context.options.fromToken,
             abi: erc20Abi,
             functionName: 'allowance',
             args: [context.sender, context.swapTx.to]
         });
-        // Exact allowance already in place → nothing to do. Any other value (larger
-        // OR smaller) is set to exactly the input so exposure never exceeds it.
-        if (allowance === amount)
-            return;
-        assertApprovalConfirmable(context);
-        // Reset a non-zero allowance to 0 first for tokens (e.g. USDT) that forbid
-        // changing a non-zero allowance directly.
-        if (allowance > 0n)
-            await approveExact(context, 0n, record);
-        await approveExact(context, amount, record);
-        return;
     }
-    // Without an allowance read we cannot detect the current value; a single exact
-    // approval overwrites it to the input amount (bounded for standard ERC-20).
+    else if (context.account?.getAllowance) {
+        const getAllowance = context.account.getAllowance.bind(context.account);
+        readAllowance = () => getAllowance(context.options.fromToken, context.swapTx.to);
+    }
+    else {
+        throw new ButterConfigurationError('ERC20 execution requires an allowance reader: provide evm.publicClient or an account with getAllowance');
+    }
+    const allowance = await readAllowance();
+    // Any different allowance, larger or smaller, is set to the exact input.
+    if (allowance === amount)
+        return;
     assertApprovalConfirmable(context);
-    await approveExact(context, amount, record);
+    // USDT-like tokens require a confirmed reset before another non-zero approval.
+    if (allowance > 0n)
+        await approveExact(context, 0n, record, readAllowance);
+    await approveExact(context, amount, record, readAllowance);
 }
 /**
  * Fails closed when an approval would be submitted with no way to confirm it: a
@@ -239,14 +245,18 @@ function assertApprovalConfirmable(context) {
     }
 }
 /**
- * Sends an exact `approve(router, value)` and waits for it to confirm.
+ * Sends an exact `approve(router, value)` and verifies its receipt and resulting allowance.
  *
  * @param {ApprovalSendContext} context - The account, EVM client, source token, Router transaction, and source chain.
  * @param {bigint} value - The exact ERC-20 allowance to submit.
  * @param {RecordSend} record - The callback that records a broadcast transaction.
+ * @param {() => Promise<bigint>} readAllowance - The fixed allowance reader for this execution.
  * @returns {Promise<void>} A promise that resolves after the operation completes.
+ * @throws {ButterConfigurationError} If the receipt or resulting allowance cannot be confirmed before the deadline.
+ * @throws {Error} If sending, receipt lookup, or allowance lookup fails.
+ * @throws {ButterActionRequiredError} If the route no longer has sufficient lifetime before sending.
  */
-async function approveExact(context, value, record) {
+async function approveExact(context, value, record, readAllowance) {
     const sent = await sendEvmTransaction(context, {
         to: context.options.fromToken,
         value: 0n,
@@ -257,10 +267,30 @@ async function approveExact(context, value, record) {
         }),
         chainId: Number(context.sourceChainId)
     });
+    const timeoutMs = context.config.evm?.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS;
+    const deadline = Date.now() + timeoutMs;
     // Record before confirming: the approval is already broadcast, so a revert or
     // a confirmation timeout must still surface its hash to the caller.
     record(sent, 'approval');
-    await waitForApproval(context, sent.hash);
+    await waitForApproval(context, sent.hash, deadline);
+    let actualAllowance;
+    const timedOut = () => new ButterConfigurationError('Timed out waiting for the ERC20 allowance to match the approval', {
+        hash: sent.hash,
+        token: context.options.fromToken,
+        spender: context.swapTx.to,
+        expectedAllowance: value.toString(),
+        ...(actualAllowance != null ? { actualAllowance: actualAllowance.toString() } : {}),
+        timeoutMs
+    });
+    while (Date.now() < deadline) {
+        actualAllowance = await beforeApprovalDeadline(readAllowance, deadline, sent.hash, timeoutMs, timedOut);
+        if (Date.now() >= deadline)
+            throw timedOut();
+        if (actualAllowance === value)
+            return;
+        await sleep(Math.min(APPROVAL_POLL_INTERVAL_MS, Math.max(deadline - Date.now(), 0)));
+    }
+    throw timedOut();
 }
 /**
  * Waits for the approval transaction to confirm before submitting the swap.
@@ -281,12 +311,12 @@ async function approveExact(context, value, record) {
  *
  * @param {EvmClientContext} context - The public client or WDK account used to obtain the approval receipt.
  * @param {string} hash - The approval transaction hash to confirm.
+ * @param {number} deadline - The shared receipt and allowance confirmation deadline.
  * @returns {Promise<void>} A promise that resolves after the operation completes.
  * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
  */
-async function waitForApproval(context, hash) {
+async function waitForApproval(context, hash, deadline) {
     const timeoutMs = context.config.evm?.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS;
-    const deadline = Date.now() + timeoutMs;
     const publicClient = context.config.evm?.publicClient;
     if (publicClient?.waitForTransactionReceipt) {
         const receiptArgs = {
@@ -356,18 +386,21 @@ function assertApprovalReceiptHash(receipt, hash) {
  * @param {number} deadline - The absolute millisecond deadline for the operation.
  * @param {string} hash - The approval transaction hash included in timeout diagnostics.
  * @param {number} timeoutMs - The operation timeout in milliseconds.
+ * @param {() => ButterConfigurationError} [timedOut] - The timeout diagnostic for the current confirmation phase.
  * @returns {Promise<T>} The lookup result produced before the deadline.
+ * @throws {ButterConfigurationError} If the deadline expires before the lookup completes.
+ * @throws {Error} If the lookup fails.
  */
-async function beforeApprovalDeadline(operation, deadline, hash, timeoutMs) {
+async function beforeApprovalDeadline(operation, deadline, hash, timeoutMs, timedOut = () => approvalTimeoutError(hash, timeoutMs)) {
     const remaining = Math.max(deadline - Date.now(), 0);
     if (remaining === 0)
-        throw approvalTimeoutError(hash, timeoutMs);
+        throw timedOut();
     let timer;
     try {
         return await Promise.race([
             operation(),
             new Promise((_, reject) => {
-                timer = setTimeout(() => reject(approvalTimeoutError(hash, timeoutMs)), remaining);
+                timer = setTimeout(() => reject(timedOut()), remaining);
             })
         ]);
     }
@@ -389,15 +422,17 @@ function approvalTimeoutError(hash, timeoutMs) {
 /**
  * Sends an EVM transaction (carrying `data`/`chainId`) via the WDK EVM account.
  *
- * @param {EvmClientContext} context - The configured WDK account used to submit calldata.
+ * @param {EvmSendContext} context - The WDK account and route freshness guard used to submit calldata.
  * @param {EvmTransactionRequest} tx - The transaction request to validate or send.
  * @returns {Promise<EvmSendResult>} The submitted transaction hash and optional sender-reported fee.
  * @throws {ButterConfigurationError} If a send-capable WDK account is unavailable.
+ * @throws {ButterActionRequiredError} If the route no longer has sufficient lifetime.
  */
 async function sendEvmTransaction(context, tx) {
     const sendTransaction = context.account?.sendTransaction?.bind(context.account);
     if (!sendTransaction)
         throw new ButterConfigurationError('EVM execution requires a send-capable WDK account');
+    context.assertExecutable();
     return normalizeSend(await sendTransaction(tx));
 }
 /**

@@ -28,6 +28,7 @@ type ReceiptSource = 'viem waiter' | 'account receipt'
 type PublicReceipt = Awaited<ReturnType<NonNullable<EvmPublicClient['waitForTransactionReceipt']>>>
 
 function executionHarness (source: ReceiptSource, receipt: unknown) {
+  let allowance = 0n
   const sends: unknown[] = []
   const receiptQueries: string[] = []
   const allowanceQueries: unknown[] = []
@@ -45,6 +46,7 @@ function executionHarness (source: ReceiptSource, receipt: unknown) {
   })
   const protocol = new ButterSwidgeProtocol({
     getAddress: () => VALID_SENDER,
+    getAllowance: async () => allowance,
     sendTransaction: async (transaction: unknown) => {
       sends.push(transaction)
       return sends.length === 1 ? approvalHash : sourceHash
@@ -52,6 +54,7 @@ function executionHarness (source: ReceiptSource, receipt: unknown) {
     getTransactionReceipt: async (hash) => {
       assert.equal(source, 'account receipt')
       receiptQueries.push(hash)
+      allowance = amount
       return receipt
     }
   }, {
@@ -60,11 +63,12 @@ function executionHarness (source: ReceiptSource, receipt: unknown) {
     ...(source === 'viem waiter' ? { evm: { publicClient: toEvmPublicClient({
       readContract: async (args) => {
         allowanceQueries.push(args)
-        return 0n
+        return allowance
       },
       waitForTransactionReceipt: async (args) => {
         assert.deepEqual(args, { hash: approvalHash, confirmations: 1, timeout: 10000 })
         receiptQueries.push(args.hash)
+        allowance = amount
         return receipt as PublicReceipt
       },
       getTransactionReceipt: async () => { throw new Error('Unexpected direct receipt query') },
@@ -146,9 +150,9 @@ for (const source of ['viem waiter', 'account receipt'] as const) {
       assert.deepEqual(harness.sends, [approvalTransaction, {
         to: ROUTER, value: 0n, data: crossChainSwapData(ERC20_TOKEN, amount), chainId: 56
       }])
-      assert.deepEqual(harness.allowanceQueries, source === 'viem waiter' ? [{
+      assert.deepEqual(harness.allowanceQueries, source === 'viem waiter' ? Array.from({ length: 2 }, () => ({
         address: ERC20_TOKEN, abi: erc20Abi, functionName: 'allowance', args: [VALID_SENDER, ROUTER]
-      }] : [])
+      })) : [])
     })
   }
 }

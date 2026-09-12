@@ -7,6 +7,38 @@ and (once published) [Semantic Versioning](https://semver.org).
 ## [Unreleased]
 
 ### Fixed
+- Recheck route lifetime after `/swap` and before every EVM or adapter account
+  send, requiring the existing execution safety margin at each step. Stop when
+  HTTP, allowance, or approval waits consume that margin, retaining broadcast
+  hashes and the blocked role in partial-execution errors without automatic
+  re-quoting or resubmission.
+- Verify the exact ERC-20 allowance after each successful approval receipt,
+  including zero resets, before sending the next transaction. Poll mismatches
+  every two seconds within the approval's shared receipt/allowance deadline;
+  stop on RPC faults or timeout and preserve all broadcast hashes in
+  `ButterPartialExecutionError`. A successful no-op approval can no longer
+  advance execution.
+- Reject zero USD estimates when enforcing caps on non-zero network or native
+  protocol fees for non-native inputs, before requesting swap data or broadcasting.
+- Preserve broadcast hashes, chains, transaction roles, and the failed role in
+  example stderr output after partial execution, without logging raw causes or
+  configuration.
+- Report network and native swap fees with the source chain's canonical native
+  token identifier instead of response-provided symbols or addresses. Reject
+  conflicting gas chain/token metadata before execution, while allowing absent
+  identity metadata. EVM, Solana and Tron use their native address identifiers;
+  Bitcoin and unknown chains use `native`.
+- Encode EVM native-token aliases as the zero address in Butter route requests,
+  for both source and destination tokens, including chains declared through
+  `evmChainIds`. Equivalent aliases now share cached and pinned quotes.
+- Read ERC-20 allowances through the WDK account's `getAllowance` when no EVM
+  public client is configured, resetting non-zero allowances before changing
+  them for USDT-like tokens. Custom account adapters must provide this method
+  or an `evm.publicClient`; execution now fails before broadcasting when neither
+  allowance reader is available.
+- Recognize native Tron success and failure receipts for recorded same-chain
+  operations, querying the Tron account instead of an EVM receipt client and
+  retaining pending status for unknown native outcomes.
 - Recognize chain-local native aliases in symbol-only bridge fee components,
   applying trusted source precision and caller-input fee caps equally to
   `native` and `btc`/`trx`/`sol`.

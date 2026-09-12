@@ -133,7 +133,7 @@ describe('@butternetwork/wdk-protocol-swidge-butter', () => {
           {
             type: 'network',
             amount: 100000000000000n,
-            token: 'BNB',
+            token: '0x0000000000000000000000000000000000000000',
             chain: '56',
             included: false,
             description: 'Estimated source chain gas fee'

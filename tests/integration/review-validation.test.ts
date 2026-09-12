@@ -135,13 +135,14 @@ for (const confirmations of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER 
 }
 
 for (const readAllowance of [false, true]) {
-  it(`refuses multiple approval confirmations before broadcasting with allowance reader ${readAllowance}`, async () => {
+  it(`refuses multiple approval confirmations before broadcasting with public allowance reader ${readAllowance}`, async () => {
     let sends = 0
     let receipts = 0
     const fetch = executionFetch()
     const protocol = new ButterSwidgeProtocol({
       getAddress: () => VALID_SENDER,
       sendTransaction: async () => { sends++; return dummyHash(1) },
+      getAllowance: async () => 0n,
       getTransactionReceipt: async () => { receipts++; return { status: 1, confirmations: 1 } }
     }, {
       ...config, fetch, evm: {
@@ -164,7 +165,7 @@ for (const mode of ['account default', 'public waiter', 'exact allowance'] as co
     let sends = 0
     const receiptQueries: unknown[] = []
     const publicClient: EvmPublicClient = {
-      readContract: async () => mode === 'exact allowance' ? amount : 0n,
+      readContract: async () => mode === 'exact allowance' || receiptQueries.length > 0 ? amount : 0n,
       ...(mode === 'public waiter' ? {
         waitForTransactionReceipt: async (args: { hash: string, confirmations?: number, timeout?: number }) => {
           receiptQueries.push(args)
@@ -175,6 +176,7 @@ for (const mode of ['account default', 'public waiter', 'exact allowance'] as co
     const protocol = new ButterSwidgeProtocol({
       getAddress: () => VALID_SENDER,
       sendTransaction: async () => ({ hash: dummyHash(++sends) }),
+      getAllowance: async () => receiptQueries.length > 0 ? amount : 0n,
       getTransactionReceipt: async (hash) => { receiptQueries.push(hash); return { status: 1 } }
     }, {
       ...config, fetch: executionFetch(),
@@ -198,6 +200,7 @@ for (const [mode, margin] of [['quote', 15], ['execute', 45]] as const) {
       const protocol = new ButterSwidgeProtocol({
         getAddress: () => VALID_SENDER,
         sendTransaction: async () => ({ hash: dummyHash(++sends) }),
+        getAllowance: async () => sends === 0 ? 0n : amount,
         getTransactionReceipt: async () => ({ status: 1 })
       }, { ...config, fetch })
 
@@ -234,6 +237,7 @@ for (const margin of [0, 20, 60]) {
     const protocol = new ButterSwidgeProtocol({
       getAddress: () => VALID_SENDER,
       sendTransaction: async () => ({ hash: dummyHash(++sends) }),
+      getAllowance: async () => sends === 0 ? 0n : amount,
       getTransactionReceipt: async () => ({ status: 1 })
     }, { ...config, fetch, routeExecutionMarginSeconds: margin })
 
@@ -366,7 +370,7 @@ for (const gasFee of [undefined, { amount: '0', symbol: 'BNB' }, { amount: '0.00
       const result = await protocol.swidge(options)
 
       assert.deepEqual(result.fees.filter(({ type }) => type === 'network'), [{
-        type: 'network', amount: reported, token: gasFee ? 'BNB' : 'native',
+        type: 'network', amount: reported, token: '0x0000000000000000000000000000000000000000',
         chain: '56', included: false, description: 'Sender-reported source gas fee'
       }])
       assert.deepEqual(result.fees.filter(({ type }) => type === 'protocol').map(({ amount }) => amount), [20000n])

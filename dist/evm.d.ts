@@ -34,6 +34,8 @@ interface ExecuteEvmSwapContext {
      * caller resolves it from the validated exact-in amount.
      */
     approvalAmount: bigint;
+    /** Rechecks the selected route immediately before invoking the sending account. */
+    assertExecutable: () => void;
 }
 interface ExecuteEvmSwapResult {
     transactions: {
@@ -56,6 +58,7 @@ interface ExecuteEvmSwapResult {
  *
  * @param {ExecuteEvmSwapContext} context - The validated route, sender, swap transaction, and approval bound for one EVM execution.
  * @returns {Promise<ExecuteEvmSwapResult>} The broadcast transactions and sender-reported gas total.
+ * @throws {ButterActionRequiredError} If route freshness fails before any transaction was broadcast.
  * @throws {ButterPartialExecutionError} If execution fails after at least one transaction was broadcast.
  */
 export declare function executeEvmSwap(context: ExecuteEvmSwapContext): Promise<ExecuteEvmSwapResult>;
