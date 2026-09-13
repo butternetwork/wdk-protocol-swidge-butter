@@ -1,0 +1,540 @@
+// Copyright 2026 Butter Network
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+import {
+  ROUTE_CACHE_MAX_ENTRIES,
+  ROUTE_EXECUTION_MARGIN_SECONDS,
+  ROUTE_EXPIRY_MARGIN_SECONDS,
+  ROUTE_TTL_SECONDS,
+  SOLANA_CHAIN_ID,
+  STRICT_CHAIN_MIN_SLIPPAGE_BPS
+} from './constants.js'
+import { nativeDecimalsForChain } from './fees.js'
+import {
+  ButterActionRequiredError,
+  ButterApiError,
+  ButterConfigurationError,
+  ButterExactOutUnsupportedError,
+  ButterNoRouteError
+} from './errors.js'
+import { assertBaseUnitAmount, formatTokenAmount, parseRequiredTokenAmount, parseTokenDecimals } from './amounts.js'
+import {
+  isNativeTokenIdentifier,
+  normalizeTokenKey,
+  sameTokenIdentifier,
+  toButterTokenIdentifier
+} from './identifiers.js'
+import { toButterSlippage } from './slippage.js'
+import type { ButterRoute, ButterRouteChain, CachedRoute, SwidgeOptions } from './types.js'
+
+const BPS_DENOMINATOR = 10000n
+
+export interface RouteRequestContext {
+  sourceChainId: string
+  entrance: string
+  now: () => number
+  /**
+   * Configured decimals, indexed by `normalizeTokenKey`. A Map rather than a record
+   * so the key function that built it is the one the lookup uses; see
+   * `protocol.ts: normalizedTokenDecimals`.
+   */
+  tokenDecimals: ReadonlyMap<string, number>
+  nativeTokenDecimals: Record<string, number>
+  strictSlippageChainIds: Set<string>
+  /** Additional chains the caller has confirmed use EVM native-token encoding. */
+  evmChainIds?: ReadonlySet<string>
+  /**
+   * Seconds of remaining route lifetime required on the execution path, covering
+   * the `/swap` round-trip and the approval wait that still follow. Defaults to
+   * {@link ROUTE_EXECUTION_MARGIN_SECONDS}.
+   */
+  executionMarginSeconds?: number
+  /**
+   * Butter affiliate string (`<nickname>[:rate]`) collecting the integrator's
+   * share. Butter substitutes **its own** default affiliate wallet when this is
+   * absent, and the user pays either way — so leaving it unset is a choice to
+   * forgo the share, not a way to avoid the fee. Validated at construction.
+   */
+  affiliate?: string
+  /** Butter referrer. Mandatory for Solana same-chain routes, optional on EVM. */
+  referrer?: string
+  requestRoute: (params: Record<string, unknown>) => Promise<ButterRoute[] | ButterRoute>
+  /** Optional fallback resolving decimals for tokens absent from `tokenDecimals`. */
+  lookupDecimals?: (token: string) => Promise<number | undefined>
+}
+
+interface RouteLookupOptions {
+  forExecution?: boolean
+  senderFallback?: string
+}
+
+interface RouteRequestResult {
+  request: Record<string, unknown>
+  sourceDecimals: number
+}
+
+export class RouteManager {
+  private readonly context: RouteRequestContext
+  private readonly cache = new Map<string, CachedRoute>()
+  private readonly pendingQuotes = new WeakSet<CachedRoute>()
+  // Secondary index (route hash -> cache key) so a caller can pin an approved
+  // quote by its Butter route hash. Kept in sync with `cache` on set/evict.
+  private readonly hashIndex = new Map<string, string>()
+
+  /**
+   * Creates a route manager instance.
+   *
+   * @param {RouteRequestContext} context - The source-chain request dependencies, decimals, cache clock, and routing metadata.
+   */
+  constructor (context: RouteRequestContext) {
+    this.context = context
+  }
+
+  /** @private */
+  private executionMargin (): number {
+    return this.context.executionMarginSeconds ?? ROUTE_EXECUTION_MARGIN_SECONDS
+  }
+
+  /**
+   * Rechecks the selected route's fixed expiry before another execution step.
+   *
+   * @param {CachedRoute} cached - The route selected for this execution attempt.
+   * @returns {void} Returns when the remaining lifetime exceeds the execution margin.
+   * @throws {ButterActionRequiredError} If the route no longer has sufficient lifetime.
+   */
+  assertExecutable (cached: CachedRoute): void {
+    const now = this.context.now()
+    const margin = this.executionMargin()
+    if (cached.expiresAt <= now + margin) {
+      throw new ButterActionRequiredError('Butter quote expires too soon; request a new quote', {
+        hash: cached.route.hash,
+        expiresAt: cached.expiresAt,
+        now,
+        margin
+      })
+    }
+  }
+
+  /**
+   * Returns a fresh or reusable Butter route matching the caller options.
+   *
+   * @param {SwidgeOptions} options - The exact-in route intent and caller constraints.
+   * @param {RouteLookupOptions} [lookupOptions] - The cache and sender options used for route lookup (default: empty object).
+   * @returns {Promise<CachedRoute>} A matching fresh cached route or newly requested route.
+   * @throws {ButterNoRouteError} If Butter provides no liquid route for the request.
+   * @throws {ButterActionRequiredError} If freshness, the caller minimum, or same-chain slippage is not satisfied.
+   * @throws {ButterApiError} If route topology, identifiers, or output amounts are invalid.
+   */
+  async getRoute (options: SwidgeOptions, lookupOptions: RouteLookupOptions = {}): Promise<CachedRoute> {
+    const { forExecution = false, senderFallback } = lookupOptions
+    const { request, sourceDecimals } = await this.buildRouteRequest(options, senderFallback)
+    const key = stableRouteKey(request, options)
+    const cached = this.cache.get(key)
+    // Execution needs a far larger margin than a quote: a route that is merely
+    // "not expired yet" still has to survive the /swap round-trip and the
+    // approval wait before it lands on-chain.
+    const margin = forExecution ? this.executionMargin() : ROUTE_EXPIRY_MARGIN_SECONDS
+    if (cached) {
+      // The execution path consumes a cached route whether or not it is fresh
+      // enough to use, so a stale entry is never left behind for a later call.
+      if (forExecution) this.evict(key, cached)
+      if (cached.expiresAt - margin > this.context.now()) {
+        this.enforceMinAmountOut(options, cached.route, cached.slippageBps)
+        return cached
+      }
+    }
+
+    const response = await this.context.requestRoute(request)
+    // Butter returns candidates ordered best-output-first, so the first liquid one
+    // is still the best available. Taking `[0]` unconditionally failed the whole
+    // request whenever the top candidate happened to lack liquidity.
+    const route = Array.isArray(response)
+      ? response.find((candidate) => candidate != null && candidate.hasLiquidity !== false)
+      : response
+    if (!route || route.hasLiquidity === false) {
+      throw new ButterNoRouteError('Butter router returned no liquid route', response)
+    }
+    // Runs on whichever candidate was chosen: falling back to a later one must not
+    // skip the chain/token consistency checks.
+    this.validateRouteMatchesRequest(route, request)
+    this.enforceMinAmountOut(options, route, Number(request.slippage))
+    const cachedRoute = {
+      key,
+      route,
+      slippageBps: Number(request.slippage),
+      // The decimals this package resolved for the source token and used to build
+      // the request — from config, /findToken, or the chain's native default. The
+      // route's own `srcChain.tokenIn.decimals` is NOT interchangeable with it: the
+      // route is untrusted, and a fee parsed with understated decimals shrinks by a
+      // power of ten against a denominator measured in real base units.
+      sourceDecimals,
+      expiresAt: routeExpiresAt(route, this.context.now())
+    }
+    if (cachedRoute.expiresAt <= this.context.now() + margin) {
+      throw new ButterActionRequiredError('Butter quote expires too soon; request a new quote', {
+        hash: route.hash,
+        expiresAt: cachedRoute.expiresAt,
+        margin
+      })
+    }
+    if (!forExecution) this.pendingQuotes.add(cachedRoute)
+    return cachedRoute
+  }
+
+  /**
+   * Caches a new candidate only after its complete quote has been mapped successfully.
+   *
+   * @param {CachedRoute} candidate - The newly fetched route whose quote mapping succeeded.
+   * @returns {void} Returns after committing a new candidate or preserving an existing cache hit.
+   */
+  cacheQuote (candidate: CachedRoute): void {
+    // A cache hit may have been consumed by concurrent execution while its quote
+    // was being mapped. Only a newly fetched candidate may create a cache entry.
+    if (!this.pendingQuotes.delete(candidate)) return
+    const previous = this.cache.get(candidate.key)
+    if (previous) this.evict(candidate.key, previous)
+    this.evictStaleRoutes()
+    this.cache.set(candidate.key, candidate)
+    this.hashIndex.set(candidate.route.hash, candidate.key)
+  }
+
+  /**
+   * Consumes a previously quoted route pinned by its Butter hash.
+   *
+   * Returns the cached route (removing it) only when it is still fresh enough to
+   * execute and its request matches the current options; otherwise throws so the
+   * caller re-quotes rather than silently executing a different or stale price.
+   *
+   * A pin is the caller's approved price, so a route inside the execution margin
+   * cannot be silently re-fetched the way {@link getRoute} does — that would
+   * execute a price the caller never saw. It is rejected instead.
+   *
+   * @param {string} hash - The Butter route hash approved by the caller.
+   * @param {SwidgeOptions} options - The execution intent that must match the pinned quote.
+   * @param {string} [senderFallback] - The sender used when the route requires a receiver fallback.
+   * @returns {Promise<CachedRoute>} The pinned route removed from the cache for one execution attempt.
+   * @throws {ButterActionRequiredError} If caller action is required before the operation can continue.
+   */
+  async consumeRouteByHash (hash: string, options: SwidgeOptions, senderFallback?: string): Promise<CachedRoute> {
+    const { request } = await this.buildRouteRequest(options, senderFallback)
+    const key = stableRouteKey(request, options)
+    const indexedKey = this.hashIndex.get(hash)
+    const entry = indexedKey ? this.cache.get(indexedKey) : undefined
+    const usableUntil = this.context.now() + this.executionMargin()
+    if (!entry || entry.key !== key || entry.route.hash !== hash || entry.expiresAt <= usableUntil) {
+      // A failed pin must not consume another quote or a still-live quote with
+      // different options. Only stale indexes and actually expired entries go.
+      if (!entry || entry.route.hash !== hash) this.hashIndex.delete(hash)
+      else if (entry.expiresAt <= this.context.now()) this.evict(entry.key, entry)
+      throw new ButterActionRequiredError('Pinned Butter quote expires too soon to execute or does not match the request; request a new quote', { hash })
+    }
+    this.enforceMinAmountOut(options, entry.route, entry.slippageBps)
+    this.evict(entry.key, entry)
+    return entry
+  }
+
+  /*
+   * Bounds cache growth for long-lived quote-only instances: drops expired
+   * entries, then evicts oldest (insertion-ordered) entries until under the cap.
+   */
+  /** @private */
+  private evictStaleRoutes (): void {
+    const now = this.context.now()
+    for (const [key, entry] of this.cache) {
+      if (entry.expiresAt <= now) this.evict(key, entry)
+    }
+    while (this.cache.size >= ROUTE_CACHE_MAX_ENTRIES) {
+      const oldestKey = this.cache.keys().next().value
+      if (oldestKey === undefined) break
+      const oldest = this.cache.get(oldestKey)
+      if (oldest) this.evict(oldestKey, oldest)
+      else this.cache.delete(oldestKey)
+    }
+  }
+
+  /** @private */
+  private evict (key: string, entry: CachedRoute): void {
+    this.cache.delete(key)
+    if (this.hashIndex.get(entry.route.hash) === key) this.hashIndex.delete(entry.route.hash)
+  }
+
+  /**
+   * Builds the `/route` query, and returns the source-token decimals it resolved
+   * alongside it.
+   *
+   * Those decimals are the trusted ones — from `config.tokenDecimals`, `/findToken`,
+   * or the chain's native default — and they are what converted the caller's base
+   * units into Butter's decimal `amount`. They are returned rather than recomputed
+   * so fee valuation can use exactly the same number instead of the route's own
+   * `srcChain.tokenIn.decimals`, which is untrusted.
+   *
+   * @param {SwidgeOptions} options - The exact-in route intent to encode for Butter.
+   * @param {string} [senderFallback] - The sender used when the route requires a receiver fallback.
+   * @returns {Promise<RouteRequestResult>} The normalized request and trusted source-token decimals.
+   * @throws {ButterActionRequiredError} If caller action is required before the operation can continue.
+   * @throws {ButterConfigurationError} If required provider configuration is missing or invalid.
+   * @throws {ButterExactOutUnsupportedError} If an exact-out operation is requested.
+   */
+  async buildRouteRequest (
+    options: SwidgeOptions,
+    senderFallback?: string
+  ): Promise<RouteRequestResult> {
+    const toChainId = normalizeId(options.toChain ?? this.context.sourceChainId)
+    const isSolanaSource = this.context.sourceChainId === SOLANA_CHAIN_ID
+    // Butter requires an explicit receiver for Solana source. Honor the WDK
+    // default (recipient defaults to the account/sender) using senderFallback
+    // when available, instead of rejecting a resolvable request.
+    const solanaReceiver = options.recipient ?? senderFallback
+    if (isSolanaSource && !solanaReceiver) {
+      throw new ButterActionRequiredError('Butter requires receiver when source chain is Solana')
+    }
+    // Butter documents `referrer` as mandatory for Solana same-chain routes.
+    // Without it the request can never be valid, so fail with a configuration
+    // error rather than forwarding a request Butter is bound to reject.
+    if (isSolanaSource && toChainId === SOLANA_CHAIN_ID && !this.context.referrer) {
+      throw new ButterConfigurationError('Butter requires a referrer for Solana same-chain routes; set config.referrer')
+    }
+    // Exact-in only: `assertQuoteOptions` rejects exact-out before any request
+    // reaches here (see the errno 2000 note there). Butter documents `amount` as
+    // "amount of source token", which is what this sends.
+    if (!('fromTokenAmount' in options) || options.fromTokenAmount == null) {
+      throw new ButterExactOutUnsupportedError()
+    }
+    const sourceDecimals = await this.decimalsFor(options.fromToken)
+    const amount = formatTokenAmount(options.fromTokenAmount, sourceDecimals)
+    const strictChain = this.context.strictSlippageChainIds.has(this.context.sourceChainId) || this.context.strictSlippageChainIds.has(toChainId)
+    const slippage = toButterSlippage(options.slippage, {
+      crossChain: toChainId !== this.context.sourceChainId,
+      sourceChainId: this.context.sourceChainId,
+      toChainId,
+      ...(strictChain ? { strictChainMinimum: STRICT_CHAIN_MIN_SLIPPAGE_BPS } : {})
+    })
+
+    return {
+      sourceDecimals,
+      request: {
+        fromChainId: this.context.sourceChainId,
+        toChainId,
+        amount,
+        tokenInAddress: toButterTokenIdentifier(this.context.sourceChainId, options.fromToken, this.context.evmChainIds),
+        tokenOutAddress: toButterTokenIdentifier(toChainId, options.toToken, this.context.evmChainIds),
+        type: 'exactIn',
+        slippage,
+        // Only Solana needs the sender-derived fallback; other chains keep the
+        // explicit recipient (possibly undefined) so the cache key stays stable.
+        receiver: isSolanaSource ? solanaReceiver : options.recipient,
+        entrance: this.context.entrance,
+        // Spread conditionally so an unconfigured integrator's cache key (and the
+        // outgoing query) stay exactly as they were before these were added.
+        // Both participate in `stableRouteKey`, so changing the affiliate cannot
+        // hit a route cached under the previous one.
+        ...(this.context.affiliate ? { affiliate: this.context.affiliate } : {}),
+        ...(this.context.referrer ? { referrer: this.context.referrer } : {})
+      }
+    }
+  }
+
+  /**
+   * Requires the quoted minimum to satisfy the caller's floor and same-chain slippage.
+   *
+   * @param {SwidgeOptions} options - The options containing the optional caller minimum.
+   * @param {ButterRoute} route - The Butter route to inspect or map.
+   * @param {number} slippageBps - The integer slippage used for this route request.
+   * @returns {void} Returns when the quoted minimum meets or exceeds the caller's floor.
+   * @throws {ButterActionRequiredError} If caller action is required before the operation can continue.
+   */
+  enforceMinAmountOut (options: SwidgeOptions, route: ButterRoute, slippageBps: number): void {
+    // Validated like `fromTokenAmount`: WDK types this as `number | bigint`, so an
+    // out-of-range number reached `BigInt()` and threw a raw RangeError. Zero is a
+    // meaningful request here (no additional explicit floor), unlike an input amount.
+    const requested = options.minAmountOut == null ? 0n : assertBaseUnitAmount(options.minAmountOut, 'minAmountOut', { allowZero: true })
+    const output = routeOutput(route)
+    const sameChain = String(options.toChain ?? this.context.sourceChainId) === this.context.sourceChainId
+    const slippageMinimum = sameChain
+      ? (output.amount * (BPS_DENOMINATOR - BigInt(slippageBps)) + BPS_DENOMINATOR - 1n) / BPS_DENOMINATOR
+      : 0n
+    const minimum = requested > slippageMinimum ? requested : slippageMinimum
+    if (output.minimum < minimum) {
+      throw new ButterActionRequiredError('Butter route minimum output is below the requested minimum or slippage floor', {
+        requestedMinAmountOut: String(requested),
+        slippageMinimum: String(slippageMinimum),
+        routeMinimum: String(output.minimum)
+      })
+    }
+  }
+
+  /** @private */
+  private async decimalsFor (token: string): Promise<number> {
+    // Native aliases and configured keys are chain-aware. Ordinary Base58 mints
+    // remain exact; only validated equivalent formats share a key.
+    if (isNativeTokenIdentifier(this.context.sourceChainId, token)) {
+      return nativeDecimalsForChain(this.context.sourceChainId, this.context.nativeTokenDecimals)
+    }
+    // Same key function the map was built with — see `normalizedTokenDecimals`.
+    const configured = this.context.tokenDecimals.get(normalizeTokenKey(this.context.sourceChainId, token))
+    if (configured != null) return configured
+    const resolved = await this.context.lookupDecimals?.(token)
+    if (resolved != null) return resolved
+    throw new ButterActionRequiredError(
+      `Token decimals are required for ${token}; Butter could not resolve them, configure tokenDecimals`
+    )
+  }
+
+  /** @private */
+  private validateRouteMatchesRequest (route: ButterRoute, request: Record<string, unknown>): void {
+    if (typeof route.hash !== 'string' || route.hash.length === 0 || route.hash !== route.hash.trim()) {
+      throw new ButterApiError('Butter route is missing a valid hash', route)
+    }
+    if (normalizeId(route.srcChain?.chainId) !== normalizeId(request.fromChainId as string | number)) {
+      throw new ButterApiError('Butter route source chain does not match request', { route, request })
+    }
+    // For a cross-chain request, dstChain must be present and match the target.
+    // A missing dstChain denotes a same-chain path in Butter's `/route` shape, so
+    // accepting it for a cross-chain request would quote the wrong (source) leg.
+    const crossChain = normalizeId(request.fromChainId as string | number) !== normalizeId(request.toChainId as string | number)
+    if (!crossChain && (route.dstChain != null || route.bridgeChain != null)) {
+      throw new ButterApiError('Butter same-chain route contains a destination or bridge segment', { route, request })
+    }
+    if (crossChain && !route.dstChain) {
+      throw new ButterApiError('Butter cross-chain route is missing dstChain', { route, request })
+    }
+    if (route.dstChain && normalizeId(route.dstChain.chainId) !== normalizeId(request.toChainId as string | number)) {
+      throw new ButterApiError('Butter route destination chain does not match request', { route, request })
+    }
+    const sourceToken = route.srcChain?.tokenIn?.address?.trim()
+    if (!sourceToken) {
+      throw new ButterApiError('Butter route is missing source token address', { route, request })
+    }
+    if (!sameToken(this.context.sourceChainId, sourceToken, String(request.tokenInAddress))) {
+      throw new ButterApiError('Butter route source token does not match request', { route, request })
+    }
+    const outputToken = outputChain(route).tokenOut
+    const outputTokenAddress = outputToken?.address?.trim()
+    if (!outputTokenAddress) {
+      throw new ButterApiError('Butter route is missing destination token address', { route, request })
+    }
+    if (!sameToken(String(request.toChainId), outputTokenAddress, String(request.tokenOutAddress))) {
+      throw new ButterApiError('Butter route destination token does not match request', { route, request })
+    }
+  }
+}
+
+/**
+ * Selects the output segment after request topology validation.
+ *
+ * @param {ButterRoute} route - The route with validated source and destination chains.
+ * @returns {ButterRouteChain} The single segment defining the destination output.
+ * @throws {ButterApiError} If the output segment is missing.
+ */
+function outputChain (route: ButterRoute): ButterRouteChain {
+  const chain = route.dstChain ?? route.srcChain
+  if (chain == null) throw new ButterApiError('Butter route is missing its output segment', route)
+  return chain
+}
+
+/**
+ * Parses destination amounts once under the output segment's token precision.
+ *
+ * @param {ButterRoute} route - The route with validated request topology.
+ * @returns {{ amount: bigint, minimum: bigint }} The quoted output and minimum in base units.
+ * @throws {ButterApiError} If required output metadata is missing or invalid.
+ */
+export function routeOutput (route: ButterRoute): { amount: bigint, minimum: bigint } {
+  const chain = outputChain(route)
+  const decimals = decimalsOf(chain.tokenOut, 'destination token')
+  return {
+    amount: parseRequiredTokenAmount(chain.totalAmountOut, 'destination total output amount', decimals),
+    minimum: parseRequiredTokenAmount(route.minAmountOut?.amount ?? route.amountOutMin, 'minimum output amount', decimals)
+  }
+}
+
+/**
+ * Returns the conservative expiry timestamp for a Butter route.
+ *
+ * @param {ButterRoute} route - The Butter route to inspect or map.
+ * @param {number} now - The current Unix timestamp in seconds.
+ * @returns {number} The conservative Unix expiry timestamp in seconds.
+ * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
+ */
+export function routeExpiresAt (route: ButterRoute, now: number): number {
+  if (route.timestamp != null) {
+    const timestamp = Number(route.timestamp)
+    if (!Number.isFinite(timestamp) || timestamp < 0) {
+      throw new ButterApiError('Butter route has an invalid timestamp', route)
+    }
+    const seconds = timestamp > 1_000_000_000_000 ? Math.floor(timestamp / 1000) : timestamp
+    return Math.min(seconds + ROUTE_TTL_SECONDS, now + ROUTE_TTL_SECONDS)
+  }
+  return now + ROUTE_TTL_SECONDS
+}
+
+/**
+ * Reads a route token's decimals, requiring them to be present and valid.
+ *
+ * Butter always echoes token decimals on a route; a missing value indicates
+ * malformed data, so we fail rather than silently defaulting to 18 (which
+ * would misscale amounts by orders of magnitude).
+ *
+ * @param {{ decimals?: string | number } | undefined} token - The route token whose decimal metadata is required.
+ * @param {string} [label] - The human-readable label used in validation errors (default: 'token').
+ * @returns {number} The validated token decimal count.
+ * @throws {ButterApiError} If Butter returns malformed, inconsistent, or unsuccessful data.
+ */
+export function decimalsOf (token: { decimals?: string | number } | undefined, label = 'token'): number {
+  const decimals = parseTokenDecimals(token?.decimals)
+  if (decimals == null) {
+    throw new ButterApiError(`Butter route is missing valid ${label} decimals`, token)
+  }
+  return decimals
+}
+
+/**
+ * Builds the canonical cache key for a route request and caller constraints.
+ *
+ * @param {Record<string, unknown>} request - The normalized Butter route request.
+ * @param {SwidgeOptions} options - The caller constraints that affect route identity.
+ * @returns {string} The deterministic route-cache key.
+ */
+function stableRouteKey (request: Record<string, unknown>, options: SwidgeOptions): string {
+  return JSON.stringify({
+    ...request,
+    fromTokenAmount: 'fromTokenAmount' in options && options.fromTokenAmount != null ? String(options.fromTokenAmount) : undefined,
+    toTokenAmount: 'toTokenAmount' in options && options.toTokenAmount != null ? String(options.toTokenAmount) : undefined
+  })
+}
+
+/**
+ * Converts an optional Butter identifier to a string.
+ *
+ * @param {string | number | undefined} id - The identifier to normalize or query.
+ * @returns {string} The identifier converted to a string, or an empty string when absent.
+ */
+function normalizeId (id: string | number | undefined): string {
+  return id == null ? '' : String(id)
+}
+
+/**
+ * Token-intent comparison for `validateRouteMatchesRequest`.
+ *
+ * Chain-format-aware: ordinary Base58 stays exact, while native aliases and valid
+ * Tron Base58Check/hex forms compare through their canonical chain identity.
+ *
+ * @param {string} chainId - The chain identifier used for normalization or lookup.
+ * @param {string} a - The first token identifier to compare.
+ * @param {string} b - The second token identifier to compare.
+ * @returns {boolean} Whether both identifiers denote the same token on the chain.
+ */
+function sameToken (chainId: string, a: string, b: string): boolean {
+  return sameTokenIdentifier(chainId, a, b)
+}

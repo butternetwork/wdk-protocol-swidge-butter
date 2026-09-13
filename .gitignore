@@ -1,0 +1,8 @@
+node_modules/
+dist/src/
+*.tgz
+.worktrees/
+.idea/
+examples/.env
+.env.e2e
+.e2e-results/
