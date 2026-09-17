@@ -194,7 +194,7 @@ describe('WDK documentation requirements', () => {
   it('keeps unreleased changes ahead of the current SemVer release', async () => {
     const changelog = await readFile(join(repositoryRoot, 'CHANGELOG.md'), 'utf8')
     const unreleased = changelog.indexOf('## [Unreleased]')
-    const release = changelog.indexOf('## [0.2.0] - 2026-09-06')
+    const release = changelog.indexOf('## [0.2.0] - 2026-09-17')
 
     assert.notEqual(unreleased, -1)
     assert.notEqual(release, -1)

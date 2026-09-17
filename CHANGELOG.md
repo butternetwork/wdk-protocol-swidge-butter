@@ -6,6 +6,18 @@ and (once published) [Semantic Versioning](https://semver.org).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-17
+
+### Breaking
+- Remove `evm.walletClient`, `toEvmWalletClient`, `EvmWalletClient`, and
+  `ViemWalletClientLike`. EVM integrations must pass a full WDK EVM account to
+  the protocol constructor; that account now submits every approval and Router
+  transaction. There is deliberately no sender fallback after a failed send.
+- Move Butter errors under the corresponding WDK error categories. Existing
+  Butter names remain exported, but callers that caught
+  `ButterActionRequiredError` for fee-limit failures must catch
+  `MaximumFeeExceededError` or `ButterFeeLimitExceededError` instead.
+
 ### Fixed
 - Recheck route lifetime after `/swap` and before every EVM or adapter account
   send, requiring the existing execution safety margin at each step. Stop when
@@ -88,20 +100,6 @@ and (once published) [Semantic Versioning](https://semver.org).
   after a failed pin with mismatching options or an obsolete hash.
 - Reject non-object Router envelopes with `ButterApiError` and omit structured
   transaction hashes and chain identifiers from status results.
-
-## [0.2.0] - 2026-09-06
-
-### Breaking
-- Remove `evm.walletClient`, `toEvmWalletClient`, `EvmWalletClient`, and
-  `ViemWalletClientLike`. EVM integrations must pass a full WDK EVM account to
-  the protocol constructor; that account now submits every approval and Router
-  transaction. There is deliberately no sender fallback after a failed send.
-- Move Butter errors under the corresponding WDK error categories. Existing
-  Butter names remain exported, but callers that caught
-  `ButterActionRequiredError` for fee-limit failures must catch
-  `MaximumFeeExceededError` or `ButterFeeLimitExceededError` instead.
-
-### Fixed
 - Submit EVM Router and approval calldata through the WDK EVM account instead of
   requiring a second signer.
 - Make Butter errors subclasses of the corresponding WDK error categories and
